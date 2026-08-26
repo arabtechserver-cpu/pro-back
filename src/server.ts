@@ -51,9 +51,11 @@ app.get('/api/health', (req, res) => {
 
 import { initOrderSyncCron } from './cron/orderSync';
 import { initBackupCron } from './cron/backupDb';
+import { bootstrapDatabase } from './utils/bootstrap';
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
   initOrderSyncCron();
   initBackupCron();
+  bootstrapDatabase();
 });

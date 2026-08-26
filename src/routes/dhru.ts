@@ -30,4 +30,15 @@ router.get('/services', async (req, res) => {
   }
 });
 
+import { syncDhruServices } from '../scripts/syncDhruServices';
+
+router.post('/sync', async (req, res) => {
+  try {
+    syncDhruServices(); // run in background
+    res.json({ success: true, message: 'Syncing Dhru services in background...' });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to trigger sync' });
+  }
+});
+
 export default router;

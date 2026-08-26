@@ -48,7 +48,7 @@ router.get("/", isAdmin, async (req, res) => {
 });
 
 // GET /api/users/profile - Fetch live user profile & balance
-router.get("/profile", authenticateToken, async (req, res) => {
+router.get("/profile", authenticateToken, async (req: any, res) => {
   try {
     const { email, userId } = req.query;
     let u = null;
@@ -56,10 +56,16 @@ router.get("/profile", authenticateToken, async (req, res) => {
       u = await prisma.user.findUnique({ where: { id: String(userId) } });
     } else if (email) {
       u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() } });
+    } else if (req.user?.id) {
+      u = await prisma.user.findUnique({ where: { id: req.user.id } });
+    } else if (req.user) {
+      u = req.user;
     }
+
     if (!u) {
-      return res.status(404).json({ error: "User not found" });
+      return res.status(404).json({ success: false, error: "User not found" });
     }
+
     return res.json({
       success: true,
       user: {
@@ -74,7 +80,7 @@ router.get("/profile", authenticateToken, async (req, res) => {
       }
     });
   } catch (error: any) {
-    return res.status(500).json({ error: "Failed to fetch user profile" });
+    return res.status(500).json({ success: false, error: "Failed to fetch user profile" });
   }
 });
 

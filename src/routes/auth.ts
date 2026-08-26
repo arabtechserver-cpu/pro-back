@@ -210,4 +210,79 @@ router.post('/login', async (req, res) => {
   }
 });
 
+// POST /api/auth/google - Google Sign-In & One-Tap Authentication
+router.post('/google', async (req, res) => {
+  try {
+    const { credential } = req.body;
+    if (!credential) {
+      return res.status(400).json({ success: false, error: 'Google credential token is required' });
+    }
+
+    // Verify token with Google's public tokeninfo endpoint
+    const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+    if (!verifyRes.ok) {
+      return res.status(401).json({ success: false, error: 'فشل التحقق من حساب Google' });
+    }
+
+    const payload = await verifyRes.json();
+    const { email, name, sub: googleId, picture } = payload;
+
+    if (!email) {
+      return res.status(400).json({ success: false, error: 'لم يتم العثور على بريد إلكتروني مرتبط بحساب Google' });
+    }
+
+    const cleanEmail = email.trim().toLowerCase();
+
+    // Check if user already exists
+    let user = await prisma.user.findFirst({
+      where: { email: cleanEmail }
+    });
+
+    if (!user) {
+      // Create new user automatically
+      const generatedUsername = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + Math.random().toString(36).substring(2, 5);
+      const randomPassword = await bcrypt.hash(Math.random().toString(36) + Date.now(), 10);
+
+      user = await prisma.user.create({
+        data: {
+          fullName: name || cleanEmail.split('@')[0],
+          email: cleanEmail,
+          username: generatedUsername.toLowerCase(),
+          password: randomPassword,
+          country: 'EG',
+          status: 'active',
+          balance: 0.0,
+          role: 'user'
+        }
+      });
+
+      addContactToLoops(cleanEmail, name || cleanEmail.split('@')[0]).catch(() => {});
+    }
+
+    if (user.status === 'suspended') {
+      return res.status(403).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة 🔴' });
+    }
+
+    const token = generateToken({ id: user.id, email: user.email, role: user.role });
+
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        username: user.username,
+        country: user.country,
+        status: user.status,
+        balance: user.balance,
+        role: user.role
+      }
+    });
+  } catch (error: any) {
+    console.error('Google Auth error:', error);
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء تسجيل الدخول بحساب Google' });
+  }
+});
+
 export default router;

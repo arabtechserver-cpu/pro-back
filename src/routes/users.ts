@@ -15,12 +15,12 @@ router.get("/", isAdmin, async (req, res) => {
       whereClause.status = String(status);
     }
     if (q) {
-      const searchStr = String(q).toLowerCase();
+      const searchStr = String(q).trim();
       whereClause.OR = [
-        { fullName: { contains: searchStr } },
-        { email: { contains: searchStr } },
-        { username: { contains: searchStr } },
-        { country: { contains: searchStr } }
+        { fullName: { contains: searchStr, mode: 'insensitive' } },
+        { email: { contains: searchStr, mode: 'insensitive' } },
+        { username: { contains: searchStr, mode: 'insensitive' } },
+        { country: { contains: searchStr, mode: 'insensitive' } }
       ];
     }
 

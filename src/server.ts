@@ -7,6 +7,8 @@ export const prisma = new PrismaClient();
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 
+app.set('trust proxy', 1);
+
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
 app.use(express.json({ limit: '2mb' }));

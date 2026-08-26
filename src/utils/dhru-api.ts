@@ -1,23 +1,20 @@
 export const DHRU_API_URL = process.env.DHRU_API_URL || "https://arab-tech1.online/api/v1";
-export const DHRU_USERNAME = process.env.DHRU_USERNAME || "GSM Team";
-export const DHRU_API_KEY = process.env.DHRU_API_KEY || "";
+export const DHRU_USERNAME = process.env.DHRU_USERNAME || "mina15g4y";
+export const DHRU_API_KEY = process.env.DHRU_API_KEY || "3AE-27F-14D-104-830-375-6D";
 
 type DhruAction = "accountinfo" | "imeiservicelist" | "serverservicelist" | "placeimeiorder" | "placeserverorder" | "getimeiorder" | "getserverorder";
 
 export async function dhruApiRequest(action: DhruAction, parameters: Record<string, string> = {}) {
   const data = new URLSearchParams();
   data.append("username", DHRU_USERNAME);
-  // Using apiaccesskey instead of key to match standard Dhru Fusion spec
+  data.append("key", DHRU_API_KEY);
   data.append("apiaccesskey", DHRU_API_KEY);
-  data.append("key", DHRU_API_KEY); // keep for backward compatibility
   data.append("action", action);
   data.append("requestformat", "JSON");
   
   // Send parameters in the format Dhru API natively expects: parameters[KEY]=VALUE
   Object.entries(parameters).forEach(([key, value]) => {
     data.append(`parameters[${key}]`, value);
-    // Also append the raw key for backward compatibility with some implementations
-    data.append(key, value);
   });
 
   try {

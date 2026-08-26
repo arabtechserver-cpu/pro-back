@@ -9,7 +9,7 @@ const cors_1 = __importDefault(require("cors"));
 const client_1 = require("@prisma/client");
 exports.prisma = new client_1.PrismaClient();
 const app = (0, express_1.default)();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT || 5000;
 app.use((0, cors_1.default)());
 app.use(express_1.default.json({ limit: '200mb' }));
 app.use(express_1.default.urlencoded({ limit: '200mb', extended: true }));

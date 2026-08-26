@@ -24,6 +24,6 @@ RUN npx prisma generate
 # Copy built artifacts from builder
 COPY --from=builder /app/dist ./dist
 
-EXPOSE 3001
+EXPOSE 5000
 
 CMD ["npm", "run", "start"]

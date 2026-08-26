@@ -146,3 +146,13 @@ model AnalyticsEvent {
   metadata     String?  // JSON stringified metadata
   createdAt    DateTime @default(now())
 }
+
+model StoredImage {
+  id        String   @id @default(uuid())
+  filename  String
+  mimeType  String   @default("image/jpeg")
+  data      String   // Base64 image content stored directly in Postgres
+  size      Int      @default(0)
+  createdAt DateTime @default(now())
+}
+

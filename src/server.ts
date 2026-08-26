@@ -11,8 +11,8 @@ app.set('trust proxy', 1);
 
 app.use(helmet());
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
-app.use(express.json({ limit: '2mb' }));
-app.use(express.urlencoded({ limit: '2mb', extended: true }));
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 import path from 'path';
 app.use(express.static(path.join(__dirname, '../public')));
@@ -41,6 +41,8 @@ app.use('/api/dhru', dhruRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/homepage', homepageRoutes);
 app.use('/api/upload', uploadRoutes);
+app.use('/api/media', uploadRoutes);
+app.use('/uploads', uploadRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/analytics', analyticsRoutes);

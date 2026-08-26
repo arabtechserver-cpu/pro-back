@@ -3,6 +3,29 @@ import { getImeiServiceList, getServerServiceList } from '../utils/dhru-api';
 
 const prisma = new PrismaClient();
 
+export function cleanServiceName(serviceName: string, info: string, groupName: string): string {
+  let name = (serviceName || '').trim();
+  
+  if (name.match(/^(تفعيل فوري تلقائي|تفعيل فوري|تفعيل تلقائي|طلب فوري|فوري تلقائي|تفعيل سريع)$/i) || name.length <= 3) {
+    if (info) {
+      let extracted = info;
+      extracted = extracted.replace(/^(تفعيل خدمة|خدمة|باقات وتفعيل خدمات|تفعيل باقة|شراء خدمة|طلب خدمة)\s+/i, '');
+      extracted = extracted.replace(/\s+(فوري عبر API|عبر API|فوري|تلقائياً|تلقائي)$/i, '');
+      extracted = extracted.trim();
+
+      if (extracted.length > 3 && !extracted.match(/^(تفعيل فوري تلقائي|تفعيل فوري|تفعيل تلقائي)$/i)) {
+        return extracted;
+      }
+    }
+
+    if (groupName && groupName.trim().length > 2) {
+      return groupName.trim();
+    }
+  }
+
+  return name;
+}
+
 async function determineCategory(groupName: string, serviceName: string): Promise<string> {
   const text = `${groupName} ${serviceName}`.toLowerCase();
   
@@ -16,8 +39,6 @@ async function determineCategory(groupName: string, serviceName: string): Promis
     return "Server Service";
   }
   
-  // Default to IMEI if no server/remote keywords, or if it matches IMEI keywords
-  // IMEI Keywords: unlock, icloud, bypass, network, carrier, sim, clean, lost, check
   return "IMEI Service";
 }
 
@@ -72,10 +93,12 @@ export async function syncDhruServices() {
         }
         const categoryId = categoryMap.get(categoryName)!;
 
+        const finalName = cleanServiceName(serviceName, info, groupName);
+
         await prisma.dhruService.create({
           data: {
             dhruId,
-            name: serviceName,
+            name: finalName,
             originalName: serviceName,
             groupName,
             credit,
@@ -103,7 +126,7 @@ export async function syncDhruServices() {
         
         let requiresCustomStr: string | null = null;
         if (service['Requires.Custom']) {
-            requiresCustomStr = JSON.stringify(service['Requires.Custom']);
+          requiresCustomStr = JSON.stringify(service['Requires.Custom']);
         }
 
         let categoryName = "Server Service";
@@ -112,13 +135,15 @@ export async function syncDhruServices() {
         }
         const categoryId = categoryMap.get(categoryName)!;
 
+        const finalName = cleanServiceName(serviceName, info, groupName);
+
         // Prevent duplicate dhruId if service exists in both lists
         const existing = await prisma.dhruService.findUnique({ where: { dhruId } });
         if (!existing) {
           await prisma.dhruService.create({
             data: {
               dhruId,
-              name: serviceName,
+              name: finalName,
               originalName: serviceName,
               groupName,
               credit,

@@ -14,6 +14,8 @@ router.get('/account', async (req, res) => {
 
 import { prisma } from '../server';
 
+import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices';
+
 router.get('/services', async (req, res) => {
   try {
     const categories = await prisma.dhruCategory.findMany({
@@ -24,13 +26,20 @@ router.get('/services', async (req, res) => {
         }
       }
     });
-    res.json(categories);
+
+    const cleanedCategories = categories.map((cat) => ({
+      ...cat,
+      services: cat.services.map((srv) => ({
+        ...srv,
+        name: cleanServiceName(srv.name, srv.info || '', srv.groupName || ''),
+      })),
+    }));
+
+    res.json(cleanedCategories);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch Dhru services from DB' });
   }
 });
-
-import { syncDhruServices } from '../scripts/syncDhruServices';
 
 router.post('/sync', async (req, res) => {
   try {

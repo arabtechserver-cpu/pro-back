@@ -12,9 +12,7 @@ router.get('/account', async (req, res) => {
   }
 });
 
-import { PrismaClient } from '@prisma/client';
-
-const prisma = new PrismaClient();
+import { prisma } from '../server';
 
 router.get('/services', async (req, res) => {
   try {

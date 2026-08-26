@@ -12,11 +12,10 @@ router.get('/account', async (req, res) => {
         res.status(500).json({ error: 'Failed to fetch Dhru account info' });
     }
 });
-const client_1 = require("@prisma/client");
-const prisma = new client_1.PrismaClient();
+const server_1 = require("../server");
 router.get('/services', async (req, res) => {
     try {
-        const categories = await prisma.dhruCategory.findMany({
+        const categories = await server_1.prisma.dhruCategory.findMany({
             include: {
                 services: {
                     where: { isActive: true }, // Only return active services to customers

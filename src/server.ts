@@ -1,0 +1,59 @@
+import express from 'express';
+import cors from 'cors';
+import helmet from 'helmet';
+import { PrismaClient } from '@prisma/client';
+
+export const prisma = new PrismaClient();
+const app = express();
+const PORT = Number(process.env.PORT) || 3001;
+
+app.use(helmet());
+app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ limit: '2mb', extended: true }));
+
+import path from 'path';
+app.use(express.static(path.join(__dirname, '../public')));
+
+// Routes
+import authRoutes from './routes/auth';
+import ordersRoutes from './routes/orders';
+import walletRoutes from './routes/wallet';
+import blogRoutes from './routes/blog';
+import dhruRoutes from './routes/dhru';
+import videoRoutes from './routes/video';
+import homepageRoutes from './routes/homepage';
+import uploadRoutes from './routes/upload';
+import usersRoutes from './routes/users';
+import transactionsRoutes from './routes/transactions';
+import paypalRoutes from './routes/paypal';
+import analyticsRoutes from './routes/analytics';
+import backupRoutes from './routes/backup';
+
+app.use('/api/auth', authRoutes);
+app.use('/api/orders', ordersRoutes);
+app.use('/api/wallet/paypal', paypalRoutes);
+app.use('/api/wallet', walletRoutes);
+app.use('/api/blog', blogRoutes);
+app.use('/api/dhru', dhruRoutes);
+app.use('/api/videos', videoRoutes);
+app.use('/api/homepage', homepageRoutes);
+app.use('/api/upload', uploadRoutes);
+app.use('/api/users', usersRoutes);
+app.use('/api/transactions', transactionsRoutes);
+app.use('/api/analytics', analyticsRoutes);
+app.use('/api/backup', backupRoutes);
+
+// Health check
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', message: 'Backend is running' });
+});
+
+import { initOrderSyncCron } from './cron/orderSync';
+import { initBackupCron } from './cron/backupDb';
+
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
+  initOrderSyncCron();
+  initBackupCron();
+});

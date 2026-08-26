@@ -1,0 +1,147 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model Order {
+  id           String   @id @default(uuid())
+  userId       String?
+  user         User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  serviceName  String
+  serviceId    String
+  targetInput  String   // IMEI, Serial, Player ID, SN, etc.
+  quantity     Int      @default(1)
+  price        Float
+  status       String   @default("pending") // "pending" | "processing" | "completed" | "failed"
+  apiOrderId   String?  // ID returned from Dhru API
+  reply        String?  // Unlock code / response returned from API or Admin
+  notes        String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model BlogPost {
+  id        String   @id @default(uuid())
+  titleEn   String
+  titleAr   String
+  excerptEn String
+  excerptAr String
+  contentEn String
+  contentAr String
+  imageUrl  String
+  category  String
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model VideoSeries {
+  id                     String          @id @default(uuid())
+  titleEn                String
+  titleAr                String
+  descriptionEn          String?
+  descriptionAr          String?
+  thumbnail              String?
+  isSubscriptionRequired Boolean         @default(false)
+  price                  Float?          
+  videos                 VideoTutorial[]
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+}
+
+model VideoTutorial {
+  id            String       @id @default(uuid())
+  titleEn       String
+  titleAr       String
+  descriptionEn String?
+  descriptionAr String?
+  videoUrl      String       
+  thumbnail     String?
+  category      String?
+  
+  seriesId      String?
+  series        VideoSeries? @relation(fields: [seriesId], references: [id])
+  orderIndex    Int          @default(0) 
+  
+  isFreePreview Boolean      @default(true) 
+
+  createdAt     DateTime     @default(now())
+}
+
+model WalletTransaction {
+  id        String   @id @default(uuid())
+  userId    String   // Identifier for the user
+  amount    Float
+  type      String   // "deposit" or "withdrawal" or "payment"
+  status    String   @default("completed")
+  createdAt DateTime @default(now())
+}
+
+model DhruCategory {
+  id        String        @id @default(uuid())
+  name      String        
+  services  DhruService[]
+  createdAt DateTime      @default(now())
+}
+
+model DhruService {
+  id           String        @id @default(uuid())
+  dhruId       String        @unique 
+  name         String
+  originalName String        
+  groupName    String        
+  credit       Float
+  time         String
+  info         String?
+  isActive     Boolean       @default(true) 
+  margin       Float         @default(0) 
+  
+  categoryId   String?
+  category     DhruCategory? @relation(fields: [categoryId], references: [id])
+  requiresCustom String?
+  
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model User {
+  id           String        @id @default(uuid())
+  fullName     String
+  email        String        @unique
+  username     String        @unique
+  password     String
+  country      String        @default("EG")
+  role         String        @default("user")
+  status       String        @default("active") // "active" or "suspended"
+  balance      Float         @default(0.0)
+  transactions Transaction[]
+  orders       Order[]
+  createdAt    DateTime      @default(now())
+  updatedAt    DateTime      @updatedAt
+}
+
+model Transaction {
+  id           String   @id @default(uuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type         String   // "شحن محفظة" or "خصم خدمة"
+  amount       Float
+  method       String   // e.g. "فودافون كاش Vodafone Cash"
+  status       String   @default("pending") // "pending" | "completed" | "failed"
+  refNo        String
+  receiptImage String?  // Base64 or URL of receipt image
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model AnalyticsEvent {
+  id           String   @id @default(uuid())
+  eventName    String
+  sessionId    String?
+  path         String?
+  metadata     String?  // JSON stringified metadata
+  createdAt    DateTime @default(now())
+}

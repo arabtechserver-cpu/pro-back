@@ -41,4 +41,14 @@ router.post('/sync', async (req, res) => {
   }
 });
 
+router.get('/my-ip', async (req, res) => {
+  try {
+    const ipRes = await fetch('https://api.ipify.org?format=json');
+    const ipData = await ipRes.json();
+    res.json({ outboundIp: ipData.ip });
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to detect outbound IP' });
+  }
+});
+
 export default router;

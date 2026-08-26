@@ -28,11 +28,18 @@ export async function dhruApiRequest(action: DhruAction, parameters: Record<stri
       cache: "no-store", 
     });
 
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.status}`);
+    const rawText = await response.text();
+    let result: any;
+    try {
+      result = JSON.parse(rawText);
+    } catch (e) {
+      result = { error: rawText };
     }
 
-    const result = await response.json();
+    if (!response.ok || (result && result.SUCCESS === false)) {
+      console.error(`[Dhru API Error] Status: ${response.status} | Response:`, rawText);
+    }
+
     return result;
   } catch (error) {
     console.error("Dhru API Request Failed:", error);

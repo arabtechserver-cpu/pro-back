@@ -42,6 +42,9 @@ async function refreshAdminChatIds() {
       }
     }
 
+    // Always attempt to reload from file as well, to catch out-of-band additions
+    loadAdminChatIds(true);
+
     return adminChatIds;
   } finally {
     isRefreshingAdminChatIds = false;
@@ -49,18 +52,20 @@ async function refreshAdminChatIds() {
 }
 
 // Load persisted Admin Chat IDs from file
-function loadAdminChatIds() {
+function loadAdminChatIds(silent = false) {
   try {
     if (fs.existsSync(ADMIN_FILE_PATH)) {
       const data = fs.readFileSync(ADMIN_FILE_PATH, 'utf-8');
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed)) {
         adminChatIds = normalizeAdminChatIds(parsed);
-        console.log(`[Telegram Bot] Loaded ${adminChatIds.length} registered Admin Chat ID(s):`, adminChatIds);
+        if (!silent) {
+          console.log(`[Telegram Bot] Loaded ${adminChatIds.length} registered Admin Chat ID(s):`, adminChatIds);
+        }
       }
     }
   } catch (err) {
-    console.error('[Telegram Bot] Error reading telegram_admins.json:', err);
+    if (!silent) console.error('[Telegram Bot] Error reading telegram_admins.json:', err);
   }
 
   // Include env variable if set

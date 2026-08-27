@@ -46,45 +46,60 @@ export async function syncDhruServices() {
   console.log("Starting Full Fresh Dhru Services Sync (Wiping old data first)...");
   
   try {
-    // 0. Clean Wipe All Existing Services & Categories
-    await prisma.dhruService.deleteMany({});
-    await prisma.dhruCategory.deleteMany({});
-    console.log("Deleted old services and categories.");
-
-    const imeiResponse = await getImeiServiceList();
-    const serverResponse = await getServerServiceList();
+    // 1. Fetch fresh lists from Dhru API first to ensure provider is reachable
+    const [imeiResponse, serverResponse] = await Promise.all([
+      getImeiServiceList(),
+      getServerServiceList()
+    ]);
     
+    if (imeiResponse?.error && serverResponse?.error) {
+      throw new Error(`تعذر الاتصال بمزود الخدمة Dhru API: ${imeiResponse.message || serverResponse.message || 'خطأ في الاتصال'}`);
+    }
+
     const imeiGroups = (imeiResponse?.SUCCESS?.[0]?.LIST) || [];
     const serverGroups = (serverResponse?.SUCCESS?.[0]?.LIST) || [];
     
-    console.log(`Fetched ${imeiGroups.length} IMEI groups and ${serverGroups.length} Server groups from Dhru.`);
+    if (imeiGroups.length === 0 && serverGroups.length === 0) {
+      throw new Error("لم يتم استلام أي خدمات من المزود. يرجى التحقق من إعدادات الـ API أو عنوان IP المعتمد.");
+    }
 
-    // 1. Ensure the 3 main categories exist
+    console.log(`Fetched ${imeiGroups.length} IMEI groups and ${serverGroups.length} Server groups from Dhru API.`);
+
+    // 2. Clean Wipe All Existing Services & Categories
+    await prisma.dhruService.deleteMany({});
+    await prisma.dhruCategory.deleteMany({});
+    console.log("Cleaned old services and categories from database.");
+
+    // 3. Re-create the 3 standard categories
     const categoryNames = ["IMEI Service", "Server Service", "Remote Service"];
     const categoryMap = new Map<string, string>(); // name -> id
 
     for (const name of categoryNames) {
-      let cat = await prisma.dhruCategory.create({ data: { name } });
+      const cat = await prisma.dhruCategory.create({ data: { name } });
       categoryMap.set(name, cat.id);
     }
 
-    let createdCount = 0;
+    const servicesToInsert: any[] = [];
+    const seenDhruIds = new Set<string>();
 
-    // 2. Process IMEI groups
+    // 4. Process IMEI groups
     for (const group of imeiGroups) {
-      const groupName = group.GROUPNAME;
+      const groupName = group.GROUPNAME || "General IMEI";
       const services = group.SERVICES || [];
 
       for (const service of services) {
         const dhruId = String(service.SERVICEID);
-        const serviceName = service.SERVICENAME;
+        if (!dhruId || seenDhruIds.has(dhruId)) continue;
+        seenDhruIds.add(dhruId);
+
+        const serviceName = service.SERVICENAME || "";
         const credit = parseFloat(service.CREDIT) || 0;
         const time = service.TIME || "";
         const info = service.INFO || "";
         
         let requiresCustomStr: string | null = null;
         if (service['Requires.Custom']) {
-            requiresCustomStr = JSON.stringify(service['Requires.Custom']);
+          requiresCustomStr = JSON.stringify(service['Requires.Custom']);
         }
 
         let categoryName = "IMEI Service";
@@ -92,34 +107,35 @@ export async function syncDhruServices() {
           categoryName = "Remote Service";
         }
         const categoryId = categoryMap.get(categoryName)!;
-
         const finalName = cleanServiceName(serviceName, info, groupName);
 
-        await prisma.dhruService.create({
-          data: {
-            dhruId,
-            name: finalName,
-            originalName: serviceName,
-            groupName,
-            credit,
-            time,
-            info,
-            categoryId,
-            requiresCustom: requiresCustomStr
-          }
+        servicesToInsert.push({
+          dhruId,
+          name: finalName,
+          originalName: serviceName,
+          groupName,
+          credit,
+          time,
+          info,
+          categoryId,
+          requiresCustom: requiresCustomStr,
+          isActive: true,
+          margin: 0
         });
-        createdCount++;
       }
     }
 
-    // 3. Process Server groups
+    // 5. Process Server groups
     for (const group of serverGroups) {
-      const groupName = group.GROUPNAME;
+      const groupName = group.GROUPNAME || "General Server";
       const services = group.SERVICES || [];
 
       for (const service of services) {
         const dhruId = String(service.SERVICEID);
-        const serviceName = service.SERVICENAME;
+        if (!dhruId || seenDhruIds.has(dhruId)) continue;
+        seenDhruIds.add(dhruId);
+
+        const serviceName = service.SERVICENAME || "";
         const credit = parseFloat(service.CREDIT) || 0;
         const time = service.TIME || "";
         const info = service.INFO || "";
@@ -134,41 +150,59 @@ export async function syncDhruServices() {
           categoryName = "Remote Service";
         }
         const categoryId = categoryMap.get(categoryName)!;
-
         const finalName = cleanServiceName(serviceName, info, groupName);
 
-        // Prevent duplicate dhruId if service exists in both lists
-        const existing = await prisma.dhruService.findUnique({ where: { dhruId } });
-        if (!existing) {
-          await prisma.dhruService.create({
-            data: {
-              dhruId,
-              name: finalName,
-              originalName: serviceName,
-              groupName,
-              credit,
-              time,
-              info,
-              categoryId,
-              requiresCustom: requiresCustomStr
-            }
-          });
-          createdCount++;
-        }
+        servicesToInsert.push({
+          dhruId,
+          name: finalName,
+          originalName: serviceName,
+          groupName,
+          credit,
+          time,
+          info,
+          categoryId,
+          requiresCustom: requiresCustomStr,
+          isActive: true,
+          margin: 0
+        });
       }
     }
 
-    console.log(`Sync Complete! Freshly created ${createdCount} services across 3 categories.`);
+    // 6. Batch insert all services
+    if (servicesToInsert.length > 0) {
+      const chunkSize = 500;
+      for (let i = 0; i < servicesToInsert.length; i += chunkSize) {
+        const chunk = servicesToInsert.slice(i, i + chunkSize);
+        await prisma.dhruService.createMany({
+          data: chunk,
+          skipDuplicates: true
+        });
+      }
+    }
+
+    console.log(`Sync Complete! Freshly created ${servicesToInsert.length} services across ${categoryNames.length} categories.`);
     
-    
-  } catch (error) {
+    return {
+      success: true,
+      count: servicesToInsert.length,
+      categoriesCount: categoryNames.length,
+      message: `تمت المزامنة بنجاح! تم استيراد ${servicesToInsert.length} خدمة وتحديث كافة الأسعار والأقسام من المزود.`
+    };
+  } catch (error: any) {
     console.error("Error during sync:", error);
-  } finally {
-    await prisma.$disconnect();
+    throw error;
   }
 }
 
 // Allow running directly from command line
 if (require.main === module) {
-  syncDhruServices();
+  syncDhruServices()
+    .then((res) => {
+      console.log(res);
+      process.exit(0);
+    })
+    .catch((err) => {
+      console.error(err);
+      process.exit(1);
+    });
 }

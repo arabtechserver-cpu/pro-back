@@ -4,7 +4,8 @@ import {
   sendTelegramPhotoNotification,
   getAdminChatIds,
   addAdminChatId,
-  sendTelegramMessage
+  sendTelegramMessage,
+  escapeHtml
 } from '../utils/telegramService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
 
@@ -85,7 +86,7 @@ router.post('/', authenticateToken, async (req, res) => {
         amount: parseFloat(amount),
         method: method.trim(),
         refNo: refNo.trim(),
-        receiptImage: null, // As requested: Images are NOT stored in DB/server, sent ONLY to Telegram
+        receiptImage: receiptImage || null, // Stored in DB so admin can view it in dashboard and Telegram
         status: 'pending'
       }
     });
@@ -94,14 +95,20 @@ router.post('/', authenticateToken, async (req, res) => {
 
     // Notify Telegram Admin
     const userObj = await prisma.user.findUnique({ where: { id: targetUserId } });
+    const safeFullName = escapeHtml(userObj?.fullName || 'عميل');
+    const safeUsername = escapeHtml(userObj?.username || 'مستخدم');
+    const safeEmail = escapeHtml(userObj?.email || 'N/A');
+    const safeMethod = escapeHtml(method);
+    const safeRefNo = escapeHtml(refNo);
+
     const caption = `
 💳 <b>إيداع جديد قيد المراجعة! (New Deposit Pending)</b>
 
-👤 <b>العميل:</b> ${userObj?.fullName || 'عميل'} (@${userObj?.username || 'مستخدم'})
-📧 <b>الإيميل:</b> <code>${userObj?.email || 'N/A'}</code>
+👤 <b>العميل:</b> ${safeFullName} (@${safeUsername})
+📧 <b>الإيميل:</b> <code>${safeEmail}</code>
 💰 <b>المبلغ المطلوب:</b> <code>+$${parseFloat(amount).toFixed(2)} USD</code>
-🏦 <b>طريقة الدفع:</b> ${method}
-🔢 <b>رقم المرجع / الإيصال:</b> <code>${refNo}</code>
+🏦 <b>طريقة الدفع:</b> ${safeMethod}
+🔢 <b>رقم المرجع / الإيصال:</b> <code>${safeRefNo}</code>
 📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
 
 ⏳ <b>الحالة:</b> قيد المراجعة - يُرجى فتح لوحة التحكم واعتماد الإيداع.

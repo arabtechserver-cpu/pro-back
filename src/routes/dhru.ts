@@ -159,10 +159,14 @@ router.get('/services/:id', async (req, res) => {
 
 router.post('/sync', async (req, res) => {
   try {
-    syncDhruServices(); // run in background
-    res.json({ success: true, message: 'Syncing Dhru services in background...' });
-  } catch (error) {
-    res.status(500).json({ error: 'Failed to trigger sync' });
+    const result = await syncDhruServices();
+    res.json(result);
+  } catch (error: any) {
+    console.error('Dhru sync error:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: error?.message || 'فشل في مزامنة الخدمات من المزود' 
+    });
   }
 });
 

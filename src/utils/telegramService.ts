@@ -220,23 +220,45 @@ async function handleIncomingTelegramUpdate(update: any) {
   }
 }
 
+export function removeAdminChatId(chatId: string) {
+  if (adminChatIds.includes(chatId)) {
+    adminChatIds = adminChatIds.filter(id => id !== chatId);
+    saveAdminChatIds();
+    console.log(`[Telegram Bot] Removed invalid Admin Chat ID: ${chatId}`);
+  }
+}
+
+export function escapeHtml(str: string): string {
+  if (!str) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
 // Send Text Message to Telegram
 export async function sendTelegramMessage(chatId: string, text: string, replyMarkup?: any) {
   try {
     await refreshAdminChatIds();
-    await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
+    const res = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
       chat_id: chatId,
       text,
       parse_mode: 'HTML',
       reply_markup: replyMarkup
     });
     console.log(`[Telegram Service] Message sent to Chat ID: ${chatId}`);
+    return res.data;
   } catch (error: any) {
-    console.error(`[Telegram Service Error] Failed to send message to ${chatId}:`, error?.response?.data?.description || error?.message);
+    const errorDesc = error?.response?.data?.description || error?.message;
+    console.error(`[Telegram Service Error] Failed to send message to ${chatId}:`, errorDesc);
+    if (errorDesc && (errorDesc.includes('chat not found') || errorDesc.includes('bot was blocked') || errorDesc.includes('user is deactivated'))) {
+      removeAdminChatId(chatId);
+    }
   }
 }
 
-// Send Photo (Base64 string or file path) directly to Telegram
+// Send Photo (Base64 string, URL, or file path) directly to Telegram with triple fallback guarantee
 export async function sendTelegramPhotoNotification({
   imageSource,
   caption,
@@ -254,47 +276,98 @@ export async function sendTelegramPhotoNotification({
       return;
     }
 
-    for (const chatId of adminChatIds) {
-      try {
-        if (imageSource && (imageSource.startsWith('data:image/') || fs.existsSync(imageSource))) {
+    let photoBuffer: Buffer | null = null;
+    let filename = 'receipt.jpg';
+    let mimeType = 'image/jpeg';
+
+    if (imageSource && typeof imageSource === 'string') {
+      if (imageSource.startsWith('data:image/')) {
+        const match = imageSource.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s);
+        if (match) {
+          mimeType = match[1];
+          const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+          filename = `receipt.${ext}`;
+          photoBuffer = Buffer.from(match[2], 'base64');
+        } else {
+          const raw = imageSource.split(';base64,').pop();
+          if (raw) photoBuffer = Buffer.from(raw, 'base64');
+        }
+      } else if (fs.existsSync(imageSource)) {
+        try {
+          photoBuffer = fs.readFileSync(imageSource);
+          const ext = path.extname(imageSource).slice(1) || 'jpg';
+          filename = `receipt.${ext}`;
+          mimeType = ext === 'png' ? 'image/png' : 'image/jpeg';
+        } catch {}
+      } else if (/^[A-Za-z0-9+/=\s]+$/.test(imageSource.slice(0, 100)) && imageSource.length > 100) {
+        photoBuffer = Buffer.from(imageSource.trim(), 'base64');
+      }
+    }
+
+    const trimmedCaption = caption.length > 1000 ? caption.slice(0, 995) + '...' : caption;
+
+    for (const chatId of [...adminChatIds]) {
+      let delivered = false;
+
+      // 1. Try sendPhoto if image buffer is available
+      if (photoBuffer) {
+        try {
           const form = new FormData();
           form.append('chat_id', chatId);
-          form.append('caption', caption);
+          form.append('caption', trimmedCaption);
           form.append('parse_mode', 'HTML');
           if (replyMarkup) {
             form.append('reply_markup', JSON.stringify(replyMarkup));
           }
-
-          if (imageSource.startsWith('data:image/')) {
-            const base64Data = imageSource.split(';base64,').pop();
-            if (base64Data) {
-              const buffer = Buffer.from(base64Data, 'base64');
-              form.append('photo', buffer, { filename: 'receipt.jpg', contentType: 'image/jpeg' });
-            }
-          } else if (fs.existsSync(imageSource)) {
-            form.append('photo', fs.createReadStream(imageSource));
-          }
+          form.append('photo', photoBuffer, { filename, contentType: mimeType });
 
           await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form, {
-            headers: form.getHeaders()
+            headers: form.getHeaders(),
+            timeout: 25000
           });
           console.log(`🚀 [Telegram Bot] Receipt photo sent successfully to Admin Chat ID: ${chatId}`);
-        } else {
-          await sendTelegramMessage(chatId, caption, replyMarkup);
+          delivered = true;
+        } catch (photoErr: any) {
+          const photoDesc = photoErr?.response?.data?.description || photoErr?.message;
+          console.warn(`[Telegram sendPhoto failed for ${chatId}, trying document fallback]:`, photoDesc);
+
+          if (photoDesc && (photoDesc.includes('chat not found') || photoDesc.includes('bot was blocked') || photoDesc.includes('user is deactivated'))) {
+            removeAdminChatId(chatId);
+            continue;
+          }
+
+          // 2. Fallback to sendDocument
+          try {
+            const docForm = new FormData();
+            docForm.append('chat_id', chatId);
+            docForm.append('caption', trimmedCaption);
+            docForm.append('parse_mode', 'HTML');
+            if (replyMarkup) {
+              docForm.append('reply_markup', JSON.stringify(replyMarkup));
+            }
+            docForm.append('document', photoBuffer, { filename, contentType: mimeType });
+
+            await axios.post(`${TELEGRAM_API_URL}/sendDocument`, docForm, {
+              headers: docForm.getHeaders(),
+              timeout: 25000
+            });
+            console.log(`🚀 [Telegram Bot] Receipt document sent successfully to Admin Chat ID: ${chatId}`);
+            delivered = true;
+          } catch (docErr: any) {
+            console.warn(`[Telegram sendDocument fallback failed for ${chatId}]:`, docErr?.response?.data?.description || docErr?.message);
+          }
         }
-      } catch (error: any) {
-        const errorMsg = error?.response?.data?.description || error?.message;
-        console.error(`[Telegram Photo Delivery Error for ${chatId}]:`, errorMsg);
-        
-        // Fallback for this specific chat
-        await sendTelegramMessage(chatId, caption + `\n\n<i>⚠️ تعذر إرسال صورة الإيصال إليك بسبب مشكلة في الرفع. (${errorMsg})</i>`, replyMarkup);
+      }
+
+      // 3. Fallback to sendMessage (text-only) if photo wasn't delivered or no image attached
+      if (!delivered) {
+        await sendTelegramMessage(chatId, caption + (photoBuffer ? '\n\n<i>⚠️ تعذر إرسال المعاينة المباشرة للصورة.</i>' : ''), replyMarkup);
       }
     }
   } catch (error: any) {
     console.error('[Telegram Photo Delivery Fatal Error]:', error?.message);
   }
 }
-
 
 // Send Document (e.g., Backup ZIP) to Telegram Admins
 export async function sendDocumentToAdmins(filePath: string, caption: string) {
@@ -305,17 +378,18 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
       return;
     }
 
-    for (const chatId of adminChatIds) {
+    for (const chatId of [...adminChatIds]) {
       try {
         if (fs.existsSync(filePath)) {
           const form = new FormData();
           form.append('chat_id', chatId);
-          form.append('caption', caption);
+          form.append('caption', caption.slice(0, 1000));
           form.append('parse_mode', 'HTML');
           form.append('document', fs.createReadStream(filePath));
 
           await axios.post(`${TELEGRAM_API_URL}/sendDocument`, form, {
-            headers: form.getHeaders()
+            headers: form.getHeaders(),
+            timeout: 60000
           });
           console.log(`🚀 [Telegram Bot] Document sent successfully to Admin Chat ID: ${chatId}`);
         } else {
@@ -324,8 +398,11 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
       } catch (error: any) {
         const errorMsg = error?.response?.data?.description || error?.message;
         console.error(`[Telegram Document Delivery Error for ${chatId}]:`, errorMsg);
-        
-        await sendTelegramMessage(chatId, caption + `\n\n<i>⚠️ تعذر إرسال الملف إليك بسبب مشكلة في الرفع. (${errorMsg})</i>`);
+        if (errorMsg && (errorMsg.includes('chat not found') || errorMsg.includes('bot was blocked'))) {
+          removeAdminChatId(chatId);
+        } else {
+          await sendTelegramMessage(chatId, caption + `\n\n<i>⚠️ تعذر إرسال الملف إليك بسبب مشكلة في الرفع. (${errorMsg})</i>`);
+        }
       }
     }
   } catch (error: any) {

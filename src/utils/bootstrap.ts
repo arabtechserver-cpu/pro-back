@@ -1,4 +1,4 @@
-﻿import { prisma } from '../server';
+import { prisma } from '../server';
 import bcrypt from 'bcryptjs';
 import { syncDhruServices } from '../scripts/syncDhruServices';
 
@@ -6,10 +6,19 @@ export async function bootstrapDatabase() {
   try {
     console.log('[Bootstrap] Checking database status...');
 
-    // 1. Check & Create Admin User
-    const userCount = await prisma.user.count();
-    if (userCount === 0) {
-      console.log('[Bootstrap] No users found. Creating default admin user...');
+    // 1. Check & Ensure Admin User is Active
+    const adminUser = await prisma.user.findFirst({
+      where: {
+        OR: [
+          { email: 'admin@admin.com' },
+          { username: 'admin' },
+          { role: 'admin' }
+        ]
+      }
+    });
+
+    if (!adminUser) {
+      console.log('[Bootstrap] No admin user found. Creating default admin user...');
       const hashedPassword = await bcrypt.hash('123456', 10);
       await prisma.user.create({
         data: {
@@ -24,6 +33,16 @@ export async function bootstrapDatabase() {
         },
       });
       console.log('[Bootstrap] Default Admin created (Email: admin@admin.com / Password: 123456)');
+    } else {
+      // Force ensure admin account is ACTIVE and has admin role
+      await prisma.user.update({
+        where: { id: adminUser.id },
+        data: {
+          status: 'active',
+          role: 'admin'
+        }
+      });
+      console.log('[Bootstrap] Admin account status restored to ACTIVE.');
     }
 
     // 2. Check & Sync Dhru Services

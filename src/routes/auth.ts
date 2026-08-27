@@ -179,7 +179,7 @@ router.post('/login', async (req, res) => {
       return res.status(200).json({ success: false, error: 'بيانات الدخول غير صحيحة!' });
     }
 
-    if (dbUser.status === 'suspended') {
+    if (dbUser.role !== 'admin' && dbUser.status === 'suspended') {
       return res.status(200).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة 🔴' });
     }
 

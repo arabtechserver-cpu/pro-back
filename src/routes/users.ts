@@ -10,7 +10,9 @@ router.get("/", isAdmin, async (req, res) => {
   try {
     const { q, status } = req.query;
 
-    const whereClause: any = {};
+    const whereClause: any = {
+      role: { not: 'admin' }
+    };
     if (status && status !== "all") {
       whereClause.status = String(status);
     }
@@ -29,9 +31,9 @@ router.get("/", isAdmin, async (req, res) => {
       orderBy: { createdAt: "desc" }
     });
 
-    const totalUsers = await prisma.user.count();
-    const activeUsers = await prisma.user.count({ where: { status: "active" } });
-    const suspendedUsers = await prisma.user.count({ where: { status: "suspended" } });
+    const totalUsers = await prisma.user.count({ where: { role: { not: 'admin' } } });
+    const activeUsers = await prisma.user.count({ where: { role: { not: 'admin' }, status: "active" } });
+    const suspendedUsers = await prisma.user.count({ where: { role: { not: 'admin' }, status: "suspended" } });
 
     return res.json({
       users,
@@ -200,6 +202,11 @@ router.post("/toggle-status", isAdmin, async (req, res) => {
     const { userId, newStatus } = req.body;
     if (!userId || !newStatus) {
       return res.status(400).json({ error: "userId and newStatus are required" });
+    }
+
+    const targetUser = await prisma.user.findUnique({ where: { id: userId } });
+    if (targetUser?.role === 'admin') {
+      return res.status(400).json({ success: false, error: 'لا يمكن إيقاف حساب الأدمن الرئيسي' });
     }
 
     const updatedUser = await prisma.user.update({

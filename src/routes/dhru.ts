@@ -41,6 +41,36 @@ router.get('/services', async (req, res) => {
   }
 });
 
+router.get('/services/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const service = await prisma.dhruService.findFirst({
+      where: {
+        OR: [
+          { id },
+          { serviceId: isNaN(Number(id)) ? -1 : Number(id) }
+        ]
+      },
+      include: {
+        category: true
+      }
+    });
+
+    if (!service) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    const cleanedService = {
+      ...service,
+      name: cleanServiceName(service.name, service.info || '', service.groupName || '')
+    };
+
+    res.json(cleanedService);
+  } catch (error) {
+    res.status(500).json({ error: 'Failed to fetch service' });
+  }
+});
+
 router.post('/sync', async (req, res) => {
   try {
     syncDhruServices(); // run in background

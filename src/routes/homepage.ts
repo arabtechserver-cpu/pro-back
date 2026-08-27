@@ -11,8 +11,8 @@ const defaultConfig = {
     text1Ar: "تسليم فوري لمعظم الخدمات",
     text2En: "Secure checkout + trusted support",
     text2Ar: "دفع آمن + دعم موثوق على مدار الساعة",
-    whatsapp: "+201141749849",
-    telegram: "@arabtechserveronline",
+    whatsapp: "+16728972935",
+    telegram: "@ARABTECHSUPPURT2",
     email: "eslamgsm1774@gmail.com"
   },
   heroSection: {
@@ -51,7 +51,7 @@ const defaultConfig = {
     supportTitleAr: "هل تحتاج إجابة سريعة؟",
     supportBtnEn: "Chat with GSM Team",
     supportBtnAr: "تحدث مع الدعم الفني",
-    whatsappUrl: "https://wa.me/201141749849"
+    whatsappUrl: "https://api.whatsapp.com/send/?phone=16728972935&text&type=phone_number&app_absent=0"
   },
   serviceLanes: {
     imeiTitleEn: "IMEI Services",

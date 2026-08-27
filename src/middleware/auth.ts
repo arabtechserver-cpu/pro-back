@@ -68,11 +68,8 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
 };
 
 export const generateToken = (payload: any) => {
-  const JWT_SECRET = process.env.JWT_SECRET;
-  if (!JWT_SECRET) {
-    throw new Error('JWT_SECRET is not defined in environment variables');
-  }
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '1d' });
+  const JWT_SECRET = process.env.JWT_SECRET || 'your_super_strong_secret_key_here';
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
 };
 
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {

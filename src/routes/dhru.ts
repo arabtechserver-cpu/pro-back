@@ -30,10 +30,21 @@ router.get('/services', async (req, res) => {
 
     const cleanedCategories = categories.map((cat) => ({
       ...cat,
-      services: cat.services.map((srv) => ({
-        ...srv,
-        name: cleanServiceName(srv.name, srv.info || '', srv.groupName || ''),
-      })),
+      services: cat.services.map((srv) => {
+        const credit = typeof srv.credit === 'number' ? srv.credit : parseFloat(srv.credit as any) || 0;
+        const margin = typeof srv.margin === 'number' ? srv.margin : parseFloat(srv.margin as any) || 0;
+        const finalPrice = Number((credit + margin).toFixed(2));
+
+        return {
+          ...srv,
+          credit,
+          margin,
+          price: finalPrice,
+          finalPrice,
+          sellingPrice: finalPrice,
+          name: cleanServiceName(srv.name, srv.info || '', srv.groupName || ''),
+        };
+      }),
     }));
 
     res.json(cleanedCategories);
@@ -99,10 +110,10 @@ router.post('/services/toggle-group', async (req, res) => {
   }
 });
 
-// POST /api/dhru/services/update - Edit service custom name and profit margin
+// POST /api/dhru/services/update - Edit service custom name, base credit, and profit margin
 router.post('/services/update', async (req, res) => {
   try {
-    const { serviceId, name, margin } = req.body;
+    const { serviceId, name, margin, credit, isActive } = req.body;
     if (!serviceId) {
       return res.status(400).json({ error: 'serviceId is required' });
     }
@@ -113,6 +124,12 @@ router.post('/services/update', async (req, res) => {
     }
     if (margin !== undefined) {
       updateData.margin = parseFloat(margin) || 0;
+    }
+    if (credit !== undefined && !isNaN(parseFloat(credit))) {
+      updateData.credit = Math.max(0, parseFloat(credit));
+    }
+    if (isActive !== undefined) {
+      updateData.isActive = Boolean(isActive);
     }
 
     const updated = await prisma.dhruService.update({
@@ -134,7 +151,7 @@ router.get('/services/:id', async (req, res) => {
       where: {
         OR: [
           { id },
-          { serviceId: isNaN(Number(id)) ? -1 : Number(id) }
+          { dhruId: id }
         ]
       },
       include: {
@@ -146,8 +163,17 @@ router.get('/services/:id', async (req, res) => {
       return res.status(404).json({ error: 'Service not found' });
     }
 
+    const credit = typeof service.credit === 'number' ? service.credit : parseFloat(service.credit as any) || 0;
+    const margin = typeof service.margin === 'number' ? service.margin : parseFloat(service.margin as any) || 0;
+    const finalPrice = Number((credit + margin).toFixed(2));
+
     const cleanedService = {
       ...service,
+      credit,
+      margin,
+      price: finalPrice,
+      finalPrice,
+      sellingPrice: finalPrice,
       name: cleanServiceName(service.name, service.info || '', service.groupName || '')
     };
 

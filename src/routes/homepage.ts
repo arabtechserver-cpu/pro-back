@@ -12,7 +12,7 @@ const defaultConfig = {
     text2En: "Secure checkout + trusted support",
     text2Ar: "دفع آمن + دعم موثوق على مدار الساعة",
     whatsapp: "+201141749849",
-    telegram: "@gsmteamofficial",
+    telegram: "@arabtechserveronline",
     email: "eslamgsm1774@gmail.com"
   },
   heroSection: {

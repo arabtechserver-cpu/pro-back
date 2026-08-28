@@ -145,4 +145,105 @@ router.post('/tutorial', authenticateToken, async (req, res) => {
   }
 });
 
+// PUT /api/blog/posts/:id - Update blog post
+router.put('/posts/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const data = req.body;
+    const baseUrl = 'https://api.arabtechproserver.tech';
+    
+    const processedContentEn = processBase64Images(data.contentEn, baseUrl);
+    const processedContentAr = processBase64Images(data.contentAr, baseUrl);
+
+    let processedImageUrl = data.imageUrl;
+    if (processedImageUrl && processedImageUrl.startsWith('data:image/')) {
+      const imgMatch = processedImageUrl.match(/^data:image\/(.*?);base64,(.+)$/);
+      if (imgMatch) {
+        const ext = imgMatch[1];
+        const base64Data = imgMatch[2];
+        const fs = require('fs');
+        const path = require('path');
+        const filename = `thumb_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
+        const uploadDir = path.join(__dirname, '../../public/uploads');
+        if (!fs.existsSync(uploadDir)) {
+          fs.mkdirSync(uploadDir, { recursive: true });
+        }
+        fs.writeFileSync(path.join(uploadDir, filename), Buffer.from(base64Data, 'base64'));
+        processedImageUrl = `${baseUrl}/uploads/${filename}`;
+      }
+    }
+
+    const post = await prisma.blogPost.update({
+      where: { id: String(id) },
+      data: {
+        titleEn: data.titleEn,
+        titleAr: data.titleAr,
+        excerptEn: data.excerptEn,
+        excerptAr: data.excerptAr,
+        contentEn: processedContentEn,
+        contentAr: processedContentAr,
+        imageUrl: processedImageUrl,
+        category: data.category
+      }
+    });
+
+    res.json(post);
+  } catch (error) {
+    console.error("Error updating blog post:", error);
+    res.status(500).json({ error: 'Failed to update blog post' });
+  }
+});
+
+// DELETE /api/blog/posts/:id - Delete blog post
+router.delete('/posts/:id', authenticateToken, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await prisma.blogPost.delete({ where: { id: String(id) } });
+    res.json({ success: true, message: 'Post deleted successfully' });
+  } catch (error) {
+    console.error("Error deleting blog post:", error);
+    res.status(500).json({ error: 'Failed to delete blog post' });
+  }
+});
+
+// POST /api/blog/seed-defaults - Admin 1-click seed or reset the 10 professional GSM articles
+router.post('/seed-defaults', authenticateToken, async (req, res) => {
+  try {
+    const { tenArticles } = require('../scripts/seed10Articles');
+    let seededCount = 0;
+
+    for (const article of tenArticles) {
+      const existing = await prisma.blogPost.findFirst({
+        where: { titleAr: article.titleAr }
+      });
+
+      if (!existing) {
+        await prisma.blogPost.create({
+          data: {
+            titleAr: article.titleAr,
+            titleEn: article.titleEn,
+            excerptAr: article.excerptAr,
+            excerptEn: article.excerptEn,
+            contentAr: article.contentAr.trim(),
+            contentEn: article.contentEn.trim(),
+            imageUrl: article.imageUrl,
+            category: article.category,
+          }
+        });
+        seededCount++;
+      }
+    }
+
+    const allPosts = await prisma.blogPost.findMany({ orderBy: { createdAt: 'desc' } });
+    res.json({
+      success: true,
+      message: `تم إضافة ${seededCount} مقال بنجاح. إجمالي المقالات الآن: ${allPosts.length}`,
+      posts: allPosts
+    });
+  } catch (error) {
+    console.error("Error seeding default blog posts:", error);
+    res.status(500).json({ error: 'Failed to seed default blog posts' });
+  }
+});
+
 export default router;

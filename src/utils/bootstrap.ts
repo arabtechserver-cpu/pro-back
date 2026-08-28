@@ -85,6 +85,38 @@ export async function bootstrapDatabase() {
       console.log(`[Bootstrap] Found ${serviceCount} existing Dhru services.`);
     }
 
+    // 4. Check & Seed the 10 Professional GSM Blog Articles
+    try {
+      const { tenArticles } = require('../scripts/seed10Articles');
+      const postCount = await prisma.blogPost.count();
+      if (postCount < 10 && Array.isArray(tenArticles)) {
+        console.log(`[Bootstrap] Found ${postCount} existing articles. Seeding the 10 professional GSM articles...`);
+        for (const article of tenArticles) {
+          const existing = await prisma.blogPost.findFirst({
+            where: { titleAr: article.titleAr }
+          });
+          if (!existing) {
+            await prisma.blogPost.create({
+              data: {
+                titleAr: article.titleAr,
+                titleEn: article.titleEn,
+                excerptAr: article.excerptAr,
+                excerptEn: article.excerptEn,
+                contentAr: article.contentAr.trim(),
+                contentEn: article.contentEn.trim(),
+                imageUrl: article.imageUrl,
+                category: article.category,
+              }
+            });
+            console.log(`[Bootstrap] Created article: ${article.titleAr}`);
+          }
+        }
+        console.log('[Bootstrap] 10 Professional Blog Articles seeded successfully!');
+      }
+    } catch (blogErr) {
+      console.error('[Bootstrap] Note on seeding blog articles:', blogErr);
+    }
+
   } catch (error) {
     console.error('[Bootstrap] Error during database bootstrap:', error);
   }

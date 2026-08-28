@@ -53,18 +53,66 @@ router.post('/series', isAdmin, async (req, res) => {
     const { titleEn, titleAr, descriptionEn, descriptionAr, isSubscriptionRequired, price, thumbnail } = req.body;
     const series = await prisma.videoSeries.create({
       data: {
-        titleEn,
-        titleAr,
-        descriptionEn,
-        descriptionAr,
-        isSubscriptionRequired,
-        price,
-        thumbnail
+        titleEn: titleEn || '',
+        titleAr: titleAr || '',
+        descriptionEn: descriptionEn || null,
+        descriptionAr: descriptionAr || null,
+        isSubscriptionRequired: Boolean(isSubscriptionRequired),
+        price: price !== undefined && price !== null ? parseFloat(price) : null,
+        thumbnail: thumbnail || null
       }
     });
     res.status(201).json(series);
   } catch (error) {
     res.status(500).json({ error: 'Failed to create video series' });
+  }
+});
+
+// PUT update video series
+router.put('/series/:id', isAdmin, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    const { titleEn, titleAr, descriptionEn, descriptionAr, isSubscriptionRequired, price, thumbnail } = req.body;
+
+    const updated = await prisma.videoSeries.update({
+      where: { id },
+      data: {
+        titleEn: titleEn !== undefined ? titleEn : undefined,
+        titleAr: titleAr !== undefined ? titleAr : undefined,
+        descriptionEn: descriptionEn !== undefined ? descriptionEn : undefined,
+        descriptionAr: descriptionAr !== undefined ? descriptionAr : undefined,
+        isSubscriptionRequired: isSubscriptionRequired !== undefined ? Boolean(isSubscriptionRequired) : undefined,
+        price: price !== undefined ? (price !== null && price !== '' ? parseFloat(price) : null) : undefined,
+        thumbnail: thumbnail !== undefined ? thumbnail : undefined
+      }
+    });
+
+    res.json({ success: true, series: updated });
+  } catch (error) {
+    console.error('Update series error:', error);
+    res.status(500).json({ error: 'Failed to update video series' });
+  }
+});
+
+// DELETE video series
+router.delete('/series/:id', isAdmin, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    
+    // First detach any tutorials linked to this series
+    await prisma.videoTutorial.updateMany({
+      where: { seriesId: id },
+      data: { seriesId: null }
+    });
+
+    await prisma.videoSeries.delete({
+      where: { id }
+    });
+
+    res.json({ success: true, message: 'Series deleted successfully' });
+  } catch (error) {
+    console.error('Delete series error:', error);
+    res.status(500).json({ error: 'Failed to delete video series' });
   }
 });
 
@@ -121,16 +169,16 @@ router.post('/tutorials', isAdmin, async (req, res) => {
     const { titleEn, titleAr, descriptionEn, descriptionAr, videoUrl, thumbnail, category, seriesId, orderIndex, isFreePreview } = req.body;
     const tutorial = await prisma.videoTutorial.create({
       data: {
-        titleEn,
-        titleAr,
-        descriptionEn,
-        descriptionAr,
+        titleEn: titleEn || '',
+        titleAr: titleAr || '',
+        descriptionEn: descriptionEn || null,
+        descriptionAr: descriptionAr || null,
         videoUrl,
-        thumbnail,
-        category,
+        thumbnail: thumbnail || null,
+        category: category || null,
         seriesId: seriesId || null,
-        orderIndex: orderIndex || 0,
-        isFreePreview: isFreePreview !== undefined ? isFreePreview : true
+        orderIndex: orderIndex !== undefined ? parseInt(orderIndex) || 0 : 0,
+        isFreePreview: isFreePreview !== undefined ? Boolean(isFreePreview) : true
       }
     });
 
@@ -145,7 +193,53 @@ router.post('/tutorials', isAdmin, async (req, res) => {
 
     res.status(201).json(tutorial);
   } catch (error) {
+    console.error('Create tutorial error:', error);
     res.status(500).json({ error: 'Failed to create video tutorial' });
+  }
+});
+
+// PUT update video tutorial
+router.put('/tutorials/:id', isAdmin, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+    const { titleEn, titleAr, descriptionEn, descriptionAr, videoUrl, thumbnail, category, seriesId, orderIndex, isFreePreview } = req.body;
+
+    const updated = await prisma.videoTutorial.update({
+      where: { id },
+      data: {
+        titleEn: titleEn !== undefined ? titleEn : undefined,
+        titleAr: titleAr !== undefined ? titleAr : undefined,
+        descriptionEn: descriptionEn !== undefined ? descriptionEn : undefined,
+        descriptionAr: descriptionAr !== undefined ? descriptionAr : undefined,
+        videoUrl: videoUrl !== undefined ? videoUrl : undefined,
+        thumbnail: thumbnail !== undefined ? thumbnail : undefined,
+        category: category !== undefined ? category : undefined,
+        seriesId: seriesId !== undefined ? (seriesId || null) : undefined,
+        orderIndex: orderIndex !== undefined ? parseInt(orderIndex) || 0 : undefined,
+        isFreePreview: isFreePreview !== undefined ? Boolean(isFreePreview) : undefined
+      }
+    });
+
+    res.json({ success: true, tutorial: updated });
+  } catch (error) {
+    console.error('Update tutorial error:', error);
+    res.status(500).json({ error: 'Failed to update video tutorial' });
+  }
+});
+
+// DELETE video tutorial
+router.delete('/tutorials/:id', isAdmin, async (req, res) => {
+  try {
+    const id = req.params.id as string;
+
+    await prisma.videoTutorial.delete({
+      where: { id }
+    });
+
+    res.json({ success: true, message: 'Tutorial deleted successfully' });
+  } catch (error) {
+    console.error('Delete tutorial error:', error);
+    res.status(500).json({ error: 'Failed to delete video tutorial' });
   }
 });
 

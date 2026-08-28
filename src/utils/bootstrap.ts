@@ -85,17 +85,32 @@ export async function bootstrapDatabase() {
       console.log(`[Bootstrap] Found ${serviceCount} existing Dhru services.`);
     }
 
-    // 4. Check & Seed the 10 Professional GSM Blog Articles
+    // 4. Check, Deduplicate & Synchronize the 10 Professional GSM Blog Articles
     try {
       const { tenArticles } = require('../scripts/seed10Articles');
-      const postCount = await prisma.blogPost.count();
-      if (postCount < 10 && Array.isArray(tenArticles)) {
-        console.log(`[Bootstrap] Found ${postCount} existing articles. Seeding the 10 professional GSM articles...`);
+      if (Array.isArray(tenArticles)) {
+        // Fetch all existing posts
+        const existingPosts = await prisma.blogPost.findMany();
+        
+        // 1. Remove duplicates sharing the same title
+        const seenTitles = new Set();
+        for (const post of existingPosts) {
+          const cleanTitle = (post.titleAr || '').trim();
+          if (seenTitles.has(cleanTitle)) {
+            await prisma.blogPost.delete({ where: { id: post.id } });
+            console.log(`[Bootstrap] Deleted duplicate blog post: ${cleanTitle}`);
+          } else {
+            seenTitles.add(cleanTitle);
+          }
+        }
+
+        // 2. Ensure each of the 10 curated articles is in the DB with fresh high-contrast content
         for (const article of tenArticles) {
-          const existing = await prisma.blogPost.findFirst({
+          const match = await prisma.blogPost.findFirst({
             where: { titleAr: article.titleAr }
           });
-          if (!existing) {
+
+          if (!match) {
             await prisma.blogPost.create({
               data: {
                 titleAr: article.titleAr,
@@ -109,9 +124,23 @@ export async function bootstrapDatabase() {
               }
             });
             console.log(`[Bootstrap] Created article: ${article.titleAr}`);
+          } else {
+            await prisma.blogPost.update({
+              where: { id: match.id },
+              data: {
+                titleEn: article.titleEn,
+                excerptAr: article.excerptAr,
+                excerptEn: article.excerptEn,
+                contentAr: article.contentAr.trim(),
+                contentEn: article.contentEn.trim(),
+                imageUrl: article.imageUrl,
+                category: article.category,
+              }
+            });
           }
         }
-        console.log('[Bootstrap] 10 Professional Blog Articles seeded successfully!');
+
+        console.log('[Bootstrap] 10 Professional Blog Articles verified and synchronized without duplicates!');
       }
     } catch (blogErr) {
       console.error('[Bootstrap] Note on seeding blog articles:', blogErr);

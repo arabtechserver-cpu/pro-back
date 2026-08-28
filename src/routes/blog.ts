@@ -210,8 +210,20 @@ router.delete('/posts/:id', authenticateToken, async (req, res) => {
 router.post('/seed-defaults', authenticateToken, async (req, res) => {
   try {
     const { tenArticles } = require('../scripts/seed10Articles');
-    let seededCount = 0;
+    
+    // 1. Remove duplicate articles
+    const existingPosts = await prisma.blogPost.findMany();
+    const seenTitles = new Set();
+    for (const post of existingPosts) {
+      const cleanTitle = (post.titleAr || '').trim();
+      if (seenTitles.has(cleanTitle)) {
+        await prisma.blogPost.delete({ where: { id: post.id } });
+      } else {
+        seenTitles.add(cleanTitle);
+      }
+    }
 
+    // 2. Ensure each article is up to date
     for (const article of tenArticles) {
       const existing = await prisma.blogPost.findFirst({
         where: { titleAr: article.titleAr }
@@ -230,14 +242,26 @@ router.post('/seed-defaults', authenticateToken, async (req, res) => {
             category: article.category,
           }
         });
-        seededCount++;
+      } else {
+        await prisma.blogPost.update({
+          where: { id: existing.id },
+          data: {
+            titleEn: article.titleEn,
+            excerptAr: article.excerptAr,
+            excerptEn: article.excerptEn,
+            contentAr: article.contentAr.trim(),
+            contentEn: article.contentEn.trim(),
+            imageUrl: article.imageUrl,
+            category: article.category,
+          }
+        });
       }
     }
 
     const allPosts = await prisma.blogPost.findMany({ orderBy: { createdAt: 'desc' } });
     res.json({
       success: true,
-      message: `تم إضافة ${seededCount} مقال بنجاح. إجمالي المقالات الآن: ${allPosts.length}`,
+      message: `تم تحديث وضبط الـ ${allPosts.length} مقال بنجاح وإزالة أي تكرار.`,
       posts: allPosts
     });
   } catch (error) {

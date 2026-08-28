@@ -37,7 +37,7 @@ export const tenArticles = [
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
         <h4 class="text-xl font-bold text-on-surface mb-2">جاهز لتفعيل أداتك الآن؟</h4>
         <p class="text-sm text-on-surface-variant mb-4">اشحن محفظتك واحصل على تفعيلك الرسمي المباشر بنقرة واحدة فقط.</p>
-        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           طلب تفعيل UnlockTool فوراً
         </a>
       </div>
@@ -101,7 +101,7 @@ export const tenArticles = [
       </div>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           شراء تفعيل Chimera أو شحن كريدت فوراً
         </a>
       </div>
@@ -149,7 +149,7 @@ export const tenArticles = [
       <p>نوفر تفعيلات Borneo الرسمية لجهاز واحد (Single User) أو جهازين (Double User) لمدة 3 شهور، 6 شهور، أو سنة كاملة مع كود التفعيل الفوري.</p>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           تفعيل كود Borneo Schematics الآن
         </a>
       </div>
@@ -219,7 +219,7 @@ export const tenArticles = [
       <p>إذا كنت تريد أداة واحدة تغطي أكبر عدد ممكن من الأجهزة اليومية (FRP، حسابات Mi، تخطي آيفون)، فإن <strong>UnlockTool</strong> هي الخيار الأنسب. أما إذا كان عملك يركز على صيانة شبكات سامسونج والتفليش الاحترافي، فإن <strong>Chimera Tool</strong> لا غنى عنها.</p>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           تصفح كافة تفعيلات الأدوات والبوكسات
         </a>
       </div>
@@ -265,7 +265,7 @@ export const tenArticles = [
       </div>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing?cat=samsung" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing?cat=samsung" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           طلب خدمة تخطي Samsung FRP فوراً
         </a>
       </div>
@@ -282,7 +282,7 @@ export const tenArticles = [
       </ol>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing?cat=samsung" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing?cat=samsung" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Order Samsung FRP Service
         </a>
       </div>
@@ -312,7 +312,7 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing?cat=apple" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing?cat=apple" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           تصفح خدمات فك وتخطي iCloud
         </a>
       </div>
@@ -328,7 +328,7 @@ export const tenArticles = [
       <p>Instant activation allowing full cellular phone calls, 5G data, FaceTime, and App Store usage.</p>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing?cat=apple" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing?cat=apple" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           View iCloud & Apple Services
         </a>
       </div>
@@ -354,7 +354,7 @@ export const tenArticles = [
       </ol>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing?cat=xiaomi" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing?cat=xiaomi" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           طلب فك حساب شاومي عبر السيرفر
         </a>
       </div>
@@ -371,7 +371,7 @@ export const tenArticles = [
       </ol>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing?cat=xiaomi" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing?cat=xiaomi" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Submit Xiaomi Mi Account Order
         </a>
       </div>
@@ -396,7 +396,7 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing?cat=network" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing?cat=network" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           طلب فك شبكة الآيفون عبر الـ IMEI
         </a>
       </div>
@@ -413,7 +413,7 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing?cat=network" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing?cat=network" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Order Carrier Unlock Service
         </a>
       </div>
@@ -439,7 +439,7 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/ar/pricing?cat=check" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/ar/pricing?cat=check" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           طلب فحص IMEI فوري (بدءاً من سنتات قليلة)
         </a>
       </div>
@@ -456,7 +456,7 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing?cat=check" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing?cat=check" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Run Instant IMEI Check
         </a>
       </div>
@@ -491,7 +491,7 @@ export const tenArticles = [
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
         <h4 class="text-xl font-bold text-on-surface mb-2">انضم إلى شبكة وكلائنا الآن مجاناً</h4>
         <p class="text-sm text-on-surface-variant mb-4">أنشئ حسابك وابدأ العمل والربح خلال دقائق معدودة.</p>
-        <a href="/ar/register" class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl font-bold text-lg">
+        <a href="/ar/register" class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl font-bold text-lg !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           إنشاء حساب وكيل مجاني
         </a>
       </div>
@@ -509,7 +509,7 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/register" class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl font-bold text-lg">
+        <a href="/en/register" class="btn-primary inline-flex items-center gap-2 px-8 py-3 rounded-xl font-bold text-lg !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Register Free Reseller Account
         </a>
       </div>

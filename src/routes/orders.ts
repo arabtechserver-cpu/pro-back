@@ -18,21 +18,26 @@ router.get('/', authenticateToken, async (req, res) => {
       if (u) targetUserId = u.id;
     }
 
-    if (!targetUserId) {
-      if ((req as any).user?.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied: Admins only' });
-      }
-      // Admin request - fetch all orders
-      const allOrders = await prisma.order.findMany({
-        take: 100,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          user: {
-            select: { fullName: true, email: true, username: true, balance: true }
+    if (!targetUserId && (req as any).user) {
+      if ((req as any).user.role === 'admin' || (req as any).user.role === 'super_admin') {
+        // Admin request - fetch all orders
+        const allOrders = await prisma.order.findMany({
+          take: 100,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            user: {
+              select: { fullName: true, email: true, username: true, balance: true }
+            }
           }
-        }
-      });
-      return res.json({ success: true, orders: allOrders });
+        });
+        return res.json({ success: true, orders: allOrders });
+      } else {
+        targetUserId = (req as any).user.id;
+      }
+    }
+
+    if (!targetUserId) {
+      return res.json({ success: true, orders: [] });
     }
 
     // Customer request - fetch user's orders

@@ -23,24 +23,29 @@ router.get('/', authenticateToken, async (req, res) => {
       if (u) targetUserId = u.id;
     }
 
-    if (!targetUserId) {
-      if ((req as any).user?.role !== 'admin') {
-        return res.status(403).json({ error: 'Access denied' });
-      }
-      const allTx = await prisma.transaction.findMany({
-        orderBy: { createdAt: 'desc' },
-        include: {
-          user: {
-            select: {
-              fullName: true,
-              email: true,
-              username: true,
-              balance: true
+    if (!targetUserId && (req as any).user) {
+      if ((req as any).user.role === 'admin' || (req as any).user.role === 'super_admin') {
+        const allTx = await prisma.transaction.findMany({
+          orderBy: { createdAt: 'desc' },
+          include: {
+            user: {
+              select: {
+                fullName: true,
+                email: true,
+                username: true,
+                balance: true
+              }
             }
           }
-        }
-      });
-      return res.json({ success: true, transactions: allTx });
+        });
+        return res.json({ success: true, transactions: allTx });
+      } else {
+        targetUserId = (req as any).user.id;
+      }
+    }
+
+    if (!targetUserId) {
+      return res.json({ success: true, transactions: [] });
     }
 
     const txs = await prisma.transaction.findMany({
@@ -73,6 +78,10 @@ router.post('/', authenticateToken, async (req, res) => {
       if (dbUser) {
         targetUserId = dbUser.id;
       }
+    }
+
+    if (!targetUserId && (req as any).user?.id) {
+      targetUserId = (req as any).user.id;
     }
 
     if (!targetUserId) {

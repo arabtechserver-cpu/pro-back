@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from '../server';
-import { authenticateToken } from '../middleware/auth';
+import { isAdmin } from '../middleware/auth';
 
 const router = Router();
 
@@ -48,7 +48,7 @@ router.get('/series/:id', async (req, res) => {
 });
 
 // POST new video series
-router.post('/series', authenticateToken, async (req, res) => {
+router.post('/series', isAdmin, async (req, res) => {
   try {
     const { titleEn, titleAr, descriptionEn, descriptionAr, isSubscriptionRequired, price, thumbnail } = req.body;
     const series = await prisma.videoSeries.create({
@@ -116,7 +116,7 @@ router.get('/tutorials/:id', async (req, res) => {
 import { broadcastNewItemToSubscribers } from './newsletter';
 
 // POST new video tutorial
-router.post('/tutorials', authenticateToken, async (req, res) => {
+router.post('/tutorials', isAdmin, async (req, res) => {
   try {
     const { titleEn, titleAr, descriptionEn, descriptionAr, videoUrl, thumbnail, category, seriesId, orderIndex, isFreePreview } = req.body;
     const tutorial = await prisma.videoTutorial.create({

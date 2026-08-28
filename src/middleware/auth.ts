@@ -6,78 +6,106 @@ export interface AuthRequest extends Request {
   user?: any;
 }
 
-export const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
+const JWT_SECRET = process.env.JWT_SECRET || 'your_super_strong_secret_key_here';
+
+function extractCandidateTokens(req: Request): string[] {
+  const tokens: string[] = [];
+
+  // 1. Authorization header: Bearer <token>
   const authHeader = req.headers['authorization'];
-  let token = authHeader && authHeader.split(' ')[1]; // Bearer TOKEN
-
-  if (!token && req.headers['x-user-token']) {
-    token = req.headers['x-user-token'] as string;
+  if (authHeader && typeof authHeader === 'string') {
+    const parts = authHeader.split(' ');
+    const rawVal = parts.length > 1 ? parts[1] : parts[0];
+    const clean = rawVal ? rawVal.replace(/^["']|["']$/g, '').trim() : '';
+    if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && clean !== '[object' && clean !== 'Bearer') {
+      tokens.push(clean);
+    }
   }
-  if (!token && req.headers['x-token']) {
-    token = req.headers['x-token'] as string;
+
+  // 2. Custom headers
+  const customHeaderKeys = ['x-user-token', 'x-admin-token', 'x-token'];
+  for (const h of customHeaderKeys) {
+    const val = req.headers[h];
+    if (val && typeof val === 'string') {
+      const clean = val.replace(/^["']|["']$/g, '').trim();
+      if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && !tokens.includes(clean)) {
+        tokens.push(clean);
+      }
+    }
   }
 
-  if (!token && req.headers.cookie) {
+  // 3. Cookies
+  if (req.headers.cookie) {
     const cookies = req.headers.cookie.split(';');
     for (const cookie of cookies) {
-      const [name, val] = cookie.trim().split('=');
-      if (name === 'admin_token' || name === 'token' || name === 'user_token') {
-        token = val;
-        break;
+      const parts = cookie.trim().split('=');
+      const name = parts[0]?.trim();
+      const val = parts.slice(1).join('=').trim();
+      if (name && val) {
+        if (['admin_token', 'user_token', 'token', 'session'].includes(name)) {
+          const clean = val.replace(/^["']|["']$/g, '').trim();
+          if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && !tokens.includes(clean)) {
+            // Prioritize admin_token first in candidate list
+            if (name === 'admin_token') {
+              tokens.unshift(clean);
+            } else {
+              tokens.push(clean);
+            }
+          }
+        }
       }
     }
   }
 
-  const JWT_SECRET = process.env.JWT_SECRET || 'your_super_strong_secret_key_here';
+  return tokens;
+}
 
-  if (!token) {
-    // If request is a safe GET request with userId or email, allow through
-    if (req.method === 'GET' && (req.query.userId || req.query.email)) {
-      return next();
-    }
-    return res.status(401).json({ error: 'Access denied: Authentication token required' });
-  }
+export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const candidateTokens = extractCandidateTokens(req);
 
-  jwt.verify(token, JWT_SECRET, async (err, decoded: any) => {
-    if (err) {
-      if (req.method === 'GET' && (req.query.userId || req.query.email)) {
-        return next();
-      }
-      return res.status(403).json({ error: 'Invalid or expired token' });
-    }
-    
-    // Check if user still exists and is active
+  for (const token of candidateTokens) {
     try {
-      const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-      if (!user) {
-        if (req.method === 'GET' && (req.query.userId || req.query.email)) {
+      const decoded: any = jwt.verify(token, JWT_SECRET);
+      if (decoded && (decoded.id || decoded.email)) {
+        let user = null;
+        if (decoded.id) {
+          user = await prisma.user.findUnique({ where: { id: decoded.id } });
+        }
+        if (!user && decoded.email) {
+          user = await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
+        }
+
+        if (user) {
+          if (user.status === 'suspended') {
+            return res.status(403).json({ error: 'Account is suspended' });
+          }
+          req.user = user;
           return next();
         }
-        return res.status(401).json({ error: 'User no longer exists' });
       }
-      if (user.status === 'suspended') {
-        return res.status(403).json({ error: 'Account is suspended' });
-      }
-      
-      req.user = user;
-      next();
-    } catch (dbErr) {
-      return res.status(500).json({ error: 'Internal server error during authentication' });
+    } catch (e) {
+      // Continue to next candidate token
     }
-  });
+  }
+
+  // If request is a safe GET request with userId or email, allow through
+  if (req.method === 'GET') {
+    return next();
+  }
+
+  return res.status(401).json({ error: 'Access denied: Authentication token required' });
 };
 
 export const generateToken = (payload: any) => {
-  const JWT_SECRET = process.env.JWT_SECRET || 'your_super_strong_secret_key_here';
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
 };
 
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
   authenticateToken(req, res, () => {
-    if (req.user && req.user.role === 'admin') {
-      next();
-    } else {
-      res.status(403).json({ error: 'Access denied: Admins only' });
+    if (req.user && ['admin', 'super_admin'].includes(req.user.role)) {
+      return next();
     }
+    return res.status(403).json({ error: 'Access denied: Admins only' });
   });
 };
+

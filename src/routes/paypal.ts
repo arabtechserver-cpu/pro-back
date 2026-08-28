@@ -10,11 +10,11 @@ router.post('/create-order', async (req, res) => {
   try {
     const { amount, userId, email } = req.body;
 
-    if (!amount || parseFloat(amount) <= 0) {
-      return res.status(400).json({ error: 'الحد الأدنى لمبلغ الإيداع هو $1.00 USD' });
+    const numAmount = parseFloat(amount);
+    if (isNaN(numAmount) || numAmount < 1.0) {
+      return res.status(400).json({ error: 'الحد الأدنى لمبلغ الإيداع عبر PayPal هو $1.00 USD' });
     }
 
-    const numAmount = parseFloat(amount);
     const originHost = req.headers.origin || 'https://arabtechproserver.tech';
     const returnUrl = `${originHost}/ar/wallet?paypal=success`;
     const cancelUrl = `${originHost}/ar/wallet?paypal=cancel`;
@@ -25,7 +25,7 @@ router.post('/create-order', async (req, res) => {
       return res.status(500).json({ error: 'لم يتم العثور على رابط تأكيد الدفع من PayPal' });
     }
 
-    console.log(`[PayPal Live Order Created] ID: ${paypalOrder.orderId} - Amount: $${numAmount}`);
+    console.log(`[PayPal Order Created] ID: ${paypalOrder.orderId} - Amount: $${numAmount.toFixed(2)} USD`);
 
     return res.json({
       success: true,
@@ -35,121 +35,131 @@ router.post('/create-order', async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error creating PayPal order:', error);
-    return res.status(500).json({ error: error.message || 'حدث خطأ أثناء التواصل مع PayPal' });
+    return res.status(500).json({ error: error.message || 'حدث خطأ أثناء التواصل مع سيرفر PayPal' });
   }
 });
 
-// POST /api/wallet/paypal/capture-order
+// POST /api/wallet/paypal/capture-order (Strict Real-Money Verification)
 router.post('/capture-order', async (req, res) => {
   try {
     const { orderId, userId, email } = req.body;
 
-    if (!orderId) {
-      return res.status(400).json({ error: 'رقم طلب PayPal (orderId) مطلوب للتأكيد' });
+    if (!orderId || typeof orderId !== 'string' || orderId.trim() === '') {
+      return res.status(400).json({ error: 'رقم طلب PayPal (orderId) مطلوب للتحقق والتأكيد' });
     }
 
-    // Check double-capture guard in SQLite DB
+    const cleanOrderId = orderId.trim();
+
+    // 1. Identify Target User
+    let targetUser: any = null;
+    if (userId) {
+      targetUser = await prisma.user.findUnique({ where: { id: userId } });
+    } else if (email) {
+      targetUser = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
+    }
+
+    if (!targetUser) {
+      return res.status(401).json({ error: 'تعذر تحديد حساب المستخدم. يرجى تسجيل الدخول أولاً.' });
+    }
+
+    // 2. Anti-Replay Guard: Check if this order was already processed and credited in DB
     const existingTx = await prisma.transaction.findFirst({
-      where: { refNo: orderId }
+      where: {
+        OR: [
+          { refNo: cleanOrderId },
+          { refNo: { startsWith: cleanOrderId } }
+        ]
+      }
     });
 
     if (existingTx && existingTx.status === 'completed') {
-      const user = await prisma.user.findUnique({ where: { id: existingTx.userId } });
+      const refreshedUser = await prisma.user.findUnique({ where: { id: targetUser.id } });
       return res.json({
         success: true,
-        message: 'تم خصم وتفعيل هذا الطلب سابقاً في المحفظة! ✅',
+        message: 'تم شحن هذا الرصيد بالفعل سابقاً في محفظتك! ✅',
         amount: existingTx.amount,
-        balance: user?.balance || 0.0,
+        balance: refreshedUser?.balance || targetUser.balance,
         alreadyCaptured: true
       });
     }
 
-    // Call PayPal capture API
-    const captureResult = await capturePayPalOrder(orderId);
+    // 3. Call PayPal Official Capture API
+    const captureResult = await capturePayPalOrder(cleanOrderId);
 
-    const isCompleted = captureResult?.status === 'COMPLETED' || 
-                        captureResult?.purchase_units?.[0]?.payments?.captures?.[0]?.status === 'COMPLETED';
+    // 4. Strict Validation of Capture Status from PayPal
+    const captureObj = captureResult?.purchase_units?.[0]?.payments?.captures?.[0];
+    const overallStatus = captureResult?.status;
+    const captureStatus = captureObj?.status;
 
-    if (!isCompleted && captureResult?.status !== 'ALREADY_CAPTURED') {
+    const isFullyCompleted = overallStatus === 'COMPLETED' || captureStatus === 'COMPLETED';
+
+    if (!isFullyCompleted) {
       return res.status(400).json({
-        error: 'لم تكتمل عملية الدفع عبر PayPal أو تم إلغاؤها من قبل المستخدم.'
+        error: 'لم تكتمل عملية الدفع عبر PayPal أو تم رفضها من قبل البنك/المزود.'
       });
     }
 
-    // Find Target User
-    let targetUserId = userId;
-    let dbUser: any = null;
+    // 5. Strict Extraction of Real Amount Captured
+    const rawCapturedValue = captureObj?.amount?.value || captureResult?.purchase_units?.[0]?.amount?.value;
+    const capturedAmount = parseFloat(rawCapturedValue);
 
-    if (userId) {
-      dbUser = await prisma.user.findUnique({ where: { id: userId } });
-    } else if (email) {
-      dbUser = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
-      if (dbUser) targetUserId = dbUser.id;
+    if (isNaN(capturedAmount) || capturedAmount <= 0) {
+      return res.status(400).json({
+        error: 'تعذر التحقق من القيمة الحقيقية للمبلغ المدفوع من PayPal.'
+      });
     }
 
-    if (!targetUserId) {
-      const firstUser = await prisma.user.findFirst();
-      if (firstUser) {
-        targetUserId = firstUser.id;
-        dbUser = firstUser;
-      }
-    }
+    const captureId = captureObj?.id || cleanOrderId;
 
-    // Extract captured amount
-    const capturedAmount = parseFloat(
-      captureResult?.purchase_units?.[0]?.payments?.captures?.[0]?.amount?.value || 10.0
-    );
+    // 6. Atomic Database Update: Record Transaction & Increment User Balance
+    const [createdTx, updatedUser] = await prisma.$transaction([
+      prisma.transaction.create({
+        data: {
+          userId: targetUser.id,
+          type: 'شحن محفظة (PayPal فوري)',
+          amount: capturedAmount,
+          method: 'باي بال PayPal (تلقائي معتمد)',
+          status: 'completed',
+          refNo: `${cleanOrderId}_${captureId}`
+        }
+      }),
+      prisma.user.update({
+        where: { id: targetUser.id },
+        data: { balance: { increment: capturedAmount } }
+      })
+    ]);
 
-    // 1. Create or update transaction record in DB as COMPLETED
-    const newTx = existingTx
-      ? await prisma.transaction.update({
-          where: { id: existingTx.id },
-          data: { status: 'completed' }
-        })
-      : await prisma.transaction.create({
-          data: {
-            userId: targetUserId,
-            type: 'شحن محفظة (PayPal فوري)',
-            amount: capturedAmount,
-            method: 'باي بال PayPal (تلقائي)',
-            status: 'completed',
-            refNo: orderId
-          }
-        });
+    console.log(`[PayPal Live REAL Credit] User: ${updatedUser.username} | Amount: +$${capturedAmount.toFixed(2)} USD | New Balance: $${updatedUser.balance.toFixed(2)} USD | Ref: ${cleanOrderId}`);
 
-    // 2. Increment User Balance in SQLite DB
-    const updatedUser = await prisma.user.update({
-      where: { id: targetUserId },
-      data: { balance: { increment: capturedAmount } }
-    });
+    // 7. Send Real-time Verified Telegram Admin Alert
+    const payerEmail = captureResult?.payer?.email_address || targetUser.email;
+    const payerName = captureResult?.payer?.name ? `${captureResult.payer.name.given_name || ''} ${captureResult.payer.name.surname || ''}`.trim() : targetUser.fullName;
 
-    console.log(`[PayPal Live Auto-Credited] User ${updatedUser.username} +$${capturedAmount} -> New Balance: $${updatedUser.balance}`);
-
-    // 3. Send Admin Notification to Telegram
     const caption = `
-🎉 <b>تم شحن محفظة تلقائياً عبر PayPal Live!</b>
+🎉 <b>تم تأكيد واستلام دفعة PayPal حقيقية بنجاح! 🟢</b>
 
-💳 <b>رقم العملية:</b> <code>${orderId}</code>
-👤 <b>العميل:</b> ${updatedUser.fullName} (@${updatedUser.username})
-📧 <b>الإيميل:</b> <code>${updatedUser.email}</code>
-💰 <b>المبلغ المضاف:</b> <code>+$${capturedAmount.toFixed(2)} USD</code>
-🏦 <b>رصيد المحفظة الجديد:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
-⚡ <b>حالة الدفع:</b> مكتمل تلقائياً 🟢
+💳 <b>رقم العملية (PayPal):</b> <code>${cleanOrderId}</code>
+🧾 <b>معرف التحصيل (Capture ID):</b> <code>${captureId}</code>
+👤 <b>حساب العميل بالموقع:</b> ${updatedUser.fullName} (@${updatedUser.username})
+📧 <b>إيميل الدفع (PayPal Payer):</b> <code>${payerEmail}</code>
+💰 <b>المبلغ المستلم فعلياً:</b> <code>+$${capturedAmount.toFixed(2)} USD</code>
+🏦 <b>رصيد المحفظة بعد الشحن:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
+⚡ <b>الحالة:</b> مدفوع ومؤكد من خوادم PayPal مباشرة ✅
     `.trim();
 
     sendTelegramPhotoNotification({ caption }).catch(() => {});
 
     return res.json({
       success: true,
-      message: `تم الدفع وشحن رصيدك بمبلغ $${capturedAmount.toFixed(2)} USD بنجاح! ✅`,
+      message: `تم التحقق واستلام الدفعة وإضافة $${capturedAmount.toFixed(2)} USD إلى محفظتك بنجاح! ✅`,
       amount: capturedAmount,
       balance: updatedUser.balance,
-      orderId,
-      captureId: captureResult?.purchase_units?.[0]?.payments?.captures?.[0]?.id || orderId
+      orderId: cleanOrderId,
+      captureId
     });
   } catch (error: any) {
     console.error('Error capturing PayPal order:', error);
-    return res.status(500).json({ error: error.message || 'حدث خطأ أثناء تأكيد عملية الدفع من PayPal' });
+    return res.status(400).json({ error: error.message || 'فشل التحقق من صحة الدفع عبر PayPal' });
   }
 });
 

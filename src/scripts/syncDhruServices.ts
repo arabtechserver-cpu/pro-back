@@ -43,7 +43,7 @@ async function determineCategory(groupName: string, serviceName: string): Promis
 }
 
 export async function syncDhruServices() {
-  console.log("Starting Full Fresh Dhru Services Sync with Smart Data Preservation...");
+  console.log("Starting Non-Destructive Dhru Services Sync (Preserving All Service & Category IDs)...");
   
   try {
     // 1. Fetch fresh lists from Dhru API first to ensure provider is reachable
@@ -65,39 +65,33 @@ export async function syncDhruServices() {
 
     console.log(`Fetched ${imeiGroups.length} IMEI groups and ${serverGroups.length} Server groups from Dhru API.`);
 
-    // 2. Fetch and backup existing admin customizations (margins, custom names, custom credits, visibility)
-    const existingServices = await prisma.dhruService.findMany();
-    const existingCustomsMap = new Map<string, { margin: number; customName?: string; customCredit?: number; isActive: boolean }>();
-
-    for (const s of existingServices) {
-      if (s.dhruId) {
-        existingCustomsMap.set(s.dhruId, {
-          margin: s.margin || 0,
-          customName: s.name !== s.originalName ? s.name : undefined,
-          customCredit: s.credit > 0 ? s.credit : undefined,
-          isActive: s.isActive
-        });
-      }
-    }
-
-    // 3. Clean Wipe All Existing Services & Categories
-    await prisma.dhruService.deleteMany({});
-    await prisma.dhruCategory.deleteMany({});
-    console.log("Cleaned old services and categories from database.");
-
-    // 4. Re-create the 3 standard categories
+    // 2. Ensure the 3 standard categories exist without deleting or altering existing category IDs
     const categoryNames = ["IMEI Service", "Server Service", "Remote Service"];
     const categoryMap = new Map<string, string>(); // name -> id
 
     for (const name of categoryNames) {
-      const cat = await prisma.dhruCategory.create({ data: { name } });
+      let cat = await prisma.dhruCategory.findFirst({ where: { name } });
+      if (!cat) {
+        cat = await prisma.dhruCategory.create({ data: { name } });
+      }
       categoryMap.set(name, cat.id);
     }
 
-    const servicesToInsert: any[] = [];
+    // 3. Fetch all existing services from database to preserve their IDs and admin settings
+    const existingServices = await prisma.dhruService.findMany();
+    const existingMap = new Map<string, any>(); // dhruId -> existingService
+
+    for (const s of existingServices) {
+      if (s.dhruId) {
+        existingMap.set(s.dhruId, s);
+      }
+    }
+
+    const newServicesToInsert: any[] = [];
+    const servicesToUpdate: any[] = [];
     const seenDhruIds = new Set<string>();
 
-    // Helper to process a service item
+    // Helper to process each service item
     const processService = (service: any, groupName: string, defaultCategory: string) => {
       const dhruId = String(service.SERVICEID);
       if (!dhruId || seenDhruIds.has(dhruId)) return;
@@ -122,44 +116,53 @@ export async function syncDhruServices() {
       const categoryId = categoryMap.get(categoryName)!;
       const cleanName = cleanServiceName(serviceName, info, groupName);
 
-      // Check existing custom overrides
-      const existingCustom = existingCustomsMap.get(dhruId);
-      const finalMargin = existingCustom ? existingCustom.margin : 0;
-      const finalName = (existingCustom && existingCustom.customName) ? existingCustom.customName : cleanName;
-      
-      // If admin had set a custom credit previously and provider returned 0, preserve custom credit
-      if (credit === 0 && existingCustom && existingCustom.customCredit && existingCustom.customCredit > 0) {
-        credit = existingCustom.customCredit;
+      const existing = existingMap.get(dhruId);
+
+      if (existing) {
+        // PRESERVE EXISTING SERVICE ID & ADMIN CUSTOMIZATIONS
+        const finalMargin = existing.margin ?? 0;
+        const finalName = (existing.name && existing.name !== existing.originalName) ? existing.name : cleanName;
+        const finalCredit = (credit === 0 && existing.credit > 0) ? existing.credit : credit;
+        const finalActive = existing.isActive;
+
+        servicesToUpdate.push({
+          id: existing.id, // KEEP SAME DATABASE ID SO NO LINK BREAKS!
+          data: {
+            name: finalName,
+            originalName: serviceName,
+            groupName,
+            credit: finalCredit,
+            time,
+            info,
+            categoryId,
+            requiresCustom: requiresCustomStr,
+            isActive: finalActive,
+            margin: finalMargin
+          }
+        });
+      } else {
+        // NEW SERVICE: CREATE IT
+        const isNoticeOrRefund = 
+          credit === 0 && 
+          (serviceName.match(/rules?|refund|instruction|notice|تنبيه|شروط|استرجاع/i) || groupName.match(/rules?|refund/i));
+
+        newServicesToInsert.push({
+          dhruId,
+          name: cleanName,
+          originalName: serviceName,
+          groupName,
+          credit,
+          time,
+          info,
+          categoryId,
+          requiresCustom: requiresCustomStr,
+          isActive: !isNoticeOrRefund,
+          margin: 0
+        });
       }
-
-      // Check if this is a rule, instruction, or refund request with 0 price
-      const isNoticeOrRefund = 
-        credit === 0 && 
-        (serviceName.match(/rules?|refund|instruction|notice|تنبيه|شروط|استرجاع/i) || groupName.match(/rules?|refund/i));
-
-      let isActive = true;
-      if (existingCustom !== undefined) {
-        isActive = existingCustom.isActive;
-      } else if (isNoticeOrRefund) {
-        isActive = false; // Hide 0-price rules and refund notices by default from customer catalog
-      }
-
-      servicesToInsert.push({
-        dhruId,
-        name: finalName,
-        originalName: serviceName,
-        groupName,
-        credit,
-        time,
-        info,
-        categoryId,
-        requiresCustom: requiresCustomStr,
-        isActive,
-        margin: finalMargin
-      });
     };
 
-    // 5. Process IMEI groups
+    // 4. Process IMEI groups
     for (const group of imeiGroups) {
       const groupName = group.GROUPNAME || "General IMEI";
       const services = group.SERVICES || [];
@@ -168,7 +171,7 @@ export async function syncDhruServices() {
       }
     }
 
-    // 6. Process Server groups
+    // 5. Process Server groups
     for (const group of serverGroups) {
       const groupName = group.GROUPNAME || "General Server";
       const services = group.SERVICES || [];
@@ -177,25 +180,46 @@ export async function syncDhruServices() {
       }
     }
 
-    // 7. Batch insert all services
-    if (servicesToInsert.length > 0) {
+    // 6. Insert new services in batch
+    if (newServicesToInsert.length > 0) {
       const chunkSize = 500;
-      for (let i = 0; i < servicesToInsert.length; i += chunkSize) {
-        const chunk = servicesToInsert.slice(i, i + chunkSize);
+      for (let i = 0; i < newServicesToInsert.length; i += chunkSize) {
+        const chunk = newServicesToInsert.slice(i, i + chunkSize);
         await prisma.dhruService.createMany({
           data: chunk,
           skipDuplicates: true
         });
       }
+      console.log(`[Sync] Created ${newServicesToInsert.length} new services.`);
     }
 
-    console.log(`Sync Complete! Freshly created ${servicesToInsert.length} services across ${categoryNames.length} categories.`);
+    // 7. Update existing services in parallel chunks of 50 to preserve all IDs & URLs
+    if (servicesToUpdate.length > 0) {
+      const updateBatchSize = 50;
+      for (let i = 0; i < servicesToUpdate.length; i += updateBatchSize) {
+        const batch = servicesToUpdate.slice(i, i + updateBatchSize);
+        await Promise.all(
+          batch.map((item) =>
+            prisma.dhruService.update({
+              where: { id: item.id },
+              data: item.data
+            })
+          )
+        );
+      }
+      console.log(`[Sync] Updated ${servicesToUpdate.length} existing services in-place without changing any IDs.`);
+    }
+
+    const totalCount = newServicesToInsert.length + servicesToUpdate.length;
+    console.log(`Sync Complete! Total ${totalCount} services synced without changing any link or ID.`);
     
     return {
       success: true,
-      count: servicesToInsert.length,
+      count: totalCount,
+      updatedCount: servicesToUpdate.length,
+      createdCount: newServicesToInsert.length,
       categoriesCount: categoryNames.length,
-      message: `تمت المزامنة بنجاح! تم استيراد ${servicesToInsert.length} خدمة وتحديث كافة الأسعار والأقسام من المزود.`
+      message: `تمت المزامنة بنجاح! تم تحديث ${servicesToUpdate.length} خدمة وإضافة ${newServicesToInsert.length} خدمة جديدة مع الحفاظ الكامل على كافة الروابط الثابتة.`
     };
   } catch (error: any) {
     console.error("Error during sync:", error);

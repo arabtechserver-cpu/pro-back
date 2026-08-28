@@ -18,14 +18,45 @@ router.get('/posts', async (req, res) => {
 // GET single blog post
 router.get('/posts/:id', async (req, res) => {
   try {
-    const post = await prisma.blogPost.findUnique({
-      where: { id: req.params.id }
+    const rawId = req.params.id;
+    let decodedId = rawId;
+    try {
+      decodedId = decodeURIComponent(rawId).trim();
+    } catch (_) {}
+
+    // 1. Direct search by ID
+    let post = await prisma.blogPost.findUnique({
+      where: { id: rawId }
     });
+
+    // 2. Search by decoded ID
+    if (!post && decodedId !== rawId) {
+      post = await prisma.blogPost.findUnique({
+        where: { id: decodedId }
+      });
+    }
+
+    // 3. Fallback search by title or partial match if legacy UUID or title slug was used
+    if (!post) {
+      post = await prisma.blogPost.findFirst({
+        where: {
+          OR: [
+            { id: decodedId },
+            { titleAr: decodedId },
+            { titleEn: decodedId },
+            { titleAr: { contains: decodedId, mode: 'insensitive' } },
+            { titleEn: { contains: decodedId, mode: 'insensitive' } },
+          ]
+        }
+      });
+    }
+
     if (!post) {
       return res.status(404).json({ error: 'Post not found' });
     }
     res.json(post);
   } catch (error) {
+    console.error("Error in GET /posts/:id:", error);
     res.status(500).json({ error: 'Failed to fetch post' });
   }
 });
@@ -43,9 +74,34 @@ router.get('/tutorials', async (req, res) => {
 // GET single tutorial
 router.get('/tutorials/:id', async (req, res) => {
   try {
-    const tutorial = await prisma.videoTutorial.findUnique({
-      where: { id: req.params.id }
+    const rawId = req.params.id;
+    let decodedId = rawId;
+    try {
+      decodedId = decodeURIComponent(rawId).trim();
+    } catch (_) {}
+
+    let tutorial = await prisma.videoTutorial.findUnique({
+      where: { id: rawId }
     });
+
+    if (!tutorial && decodedId !== rawId) {
+      tutorial = await prisma.videoTutorial.findUnique({
+        where: { id: decodedId }
+      });
+    }
+
+    if (!tutorial) {
+      tutorial = await prisma.videoTutorial.findFirst({
+        where: {
+          OR: [
+            { id: decodedId },
+            { titleAr: decodedId },
+            { titleEn: decodedId },
+          ]
+        }
+      });
+    }
+
     if (!tutorial) {
       return res.status(404).json({ error: 'Tutorial not found' });
     }

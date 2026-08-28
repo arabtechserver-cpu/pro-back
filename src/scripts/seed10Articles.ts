@@ -4,6 +4,7 @@ const prisma = new PrismaClient();
 
 export const tenArticles = [
   {
+    id: "unlocktool-activation-guide-2026",
     titleAr: "دليل تفعيل أداة UnlockTool الشامل ومميزاتها لعام 2026",
     titleEn: "Complete Guide to UnlockTool Activation & Features (2026 Update)",
     excerptAr: "تعرف على كل ما يخص أداة UnlockTool الأشهر عالمياً: مدة التفعيلات (3، 6، 12 شهر)، الموديلات والمعالجات المدعومة (MTK, Qualcomm, Apple Ramdisk)، وكيفية التفعيل الفوري عبر السيرفر.",
@@ -76,6 +77,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "chimera-tool-activation-guide",
     titleAr: "أداة شيميرا (Chimera Tool): التفعيل، الأرصدة، وطريقة الاستخدام الاحترافية",
     titleEn: "Chimera Tool Complete Guide: Activation, Credits, & Master Usage",
     excerptAr: "دليل شامل لأداة Chimera Tool العملاقة: الفرق بين باقة Samsung وباقة PRO الشاملة، طريقة شراء الكريدتس، وإصلاح شبكات ومعالجات Exynos و Snapdragon.",
@@ -120,13 +122,14 @@ export const tenArticles = [
       <p>Certain high-security operations (such as server-based CSC change or Carrier Unlock) consume Chimera Credits. You can top-up any credit quantity directly into your username automatically 24/7 on our platform.</p>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Buy Chimera License & Credits
         </a>
       </div>
     `
   },
   {
+    id: "borneo-schematics-activation-guide",
     titleAr: "شرح وتفعيل مخططات بورنيو (Borneo Schematics) لفنيي الصيانة والهاردوير",
     titleEn: "Borneo Schematics Official Activation & Hardware Repair Guide",
     excerptAr: "تعرف على أداة Borneo Schematics الرائدة في مخططات الهاردوير ومسارات الشحن والإضاءة وتتبع أعطال البوردات لهواتف آيفون، سامسونج، وشاومي.",
@@ -167,13 +170,14 @@ export const tenArticles = [
       </ul>
 
       <div class="p-6 rounded-2xl bg-surface-container-high border border-outline-variant/30 text-center my-8">
-        <a href="/en/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold">
+        <a href="/en/pricing" class="btn-primary inline-flex items-center gap-2 px-6 py-2.5 rounded-xl font-bold !text-[#0c1324] !no-underline" style="color: #0c1324 !important; text-decoration: none !important; font-weight: 800;">
           Get Borneo Schematics License Code
         </a>
       </div>
     `
   },
   {
+    id: "unlocktool-vs-chimera-vs-dft-pro",
     titleAr: "مقارنة شاملة بين أقوى أدوات السوفت وير: (UnlockTool vs Chimera vs DFT Pro)",
     titleEn: "Ultimate Comparison: UnlockTool vs Chimera vs DFT Pro",
     excerptAr: "مقارنة تفصيلية لاختيار الأداة المناسبة لمركز الصيانة الخاص بك: نقاط القوة، التكلفة، ودعم الحمايات والموديلات لكل أداة.",
@@ -242,6 +246,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "samsung-frp-google-account-bypass",
     titleAr: "الدليل الكامل لتخطي حساب جوجل (FRP) لجميع هواتف سامسونج",
     titleEn: "Complete Samsung FRP Google Account Bypass Guide (2026)",
     excerptAr: "طرق تخطي حساب جوجل بعد الفورمات لهواتف سامسونج أندرويد 13، 14، 15: السيرفر الأوتوماتيكي، ثغرة وضع الاختبار MTP، وخدمات IMEI المباشرة.",
@@ -289,6 +294,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "iphone-icloud-removal-fmi-off",
     titleAr: "خدمات فك وتخطي iCloud لأجهزة الآيفون والآيباد: الطرق الرسمية والسيرفر",
     titleEn: "Official iPhone iCloud Removal & FMI OFF Server Guide",
     excerptAr: "دليل فك وإزالة حسابات آبل FMI OFF من السيرفر الرسمي، والفرق بين الفك الدائم (Clean IMEI) وتخطي الـ Ramdisk مع تفعيل المكالمات.",
@@ -335,6 +341,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "xiaomi-mi-cloud-clean-removal",
     titleAr: "طريقة حذف حساب شاومي (Mi Account) نهائياً عبر السيرفر الرسمي",
     titleEn: "Xiaomi Mi Cloud Clean Official Server Removal & Bypass",
     excerptAr: "شرح خطوات إزالة حسابات شاومي المقفولة برمز القفل (Unlock Code) عبر السيرفر الرسمي بدون فتح الهاتف، مع ضمان عدم عودة القفل بعد الفورمات.",
@@ -378,6 +385,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "carrier-unlock-iphone-imei",
     titleAr: "كيفية فك شفرة شبكات الآيفون المقفلة رسمياً عبر الـ IMEI (AT&T, T-Mobile, Verizon)",
     titleEn: "How to Permanently Carrier Unlock iPhone via Official IMEI",
     excerptAr: "دليل فك تشفير شبكات الهواتف الأمريكية والأوروبية رسمياً لتشغيل جميع شرائح الاتصال المحلية والدولية مدى الحياة بدون شرائح توربو.",
@@ -420,6 +428,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "imei-check-status-gsx-blacklist",
     titleAr: "أهمية فحص IMEI الهاتف قبل الشراء (Blacklist / Clean / iCloud Status / Carrier Check)",
     titleEn: "Why You Must Check Phone IMEI Status: Blacklist, Clean & iCloud GSX",
     excerptAr: "كيف تتجنب شراء هواتف مسروقة أو مقفولة شبكة أو عليها أقساط عبر خدمات الفحص المباشر والسريع بالسيرفر خلال ثوانٍ معدودة.",
@@ -463,6 +472,7 @@ export const tenArticles = [
     `
   },
   {
+    id: "start-gsm-software-reseller-business",
     titleAr: "كيف تبدأ مشروع خدمات السوفت وير وتحقق أرباحاً كوكيل معتمد عبر عرب تك برو سيرفر",
     titleEn: "How to Start a Profitable GSM Software Business with Arab Tech Pro Server",
     excerptAr: "دليل عملي للمبتدئين وأصحاب المحلات لزيادة دخلهم اليومي من خدمات فك الشفرات وتفعيل الأدوات، وربط السيرفر مع موقعك عبر الـ API.",
@@ -518,14 +528,23 @@ export const tenArticles = [
 ];
 
 async function main() {
-  console.log("Seeding the 10 Professional Blog Articles...");
-  
-  // Clear existing articles to ensure clean list of 10
-  await prisma.blogPost.deleteMany({});
+  console.log("Seeding and Synchronizing the 10 Professional Blog Articles (Preserving Permanent IDs)...");
 
   for (const article of tenArticles) {
-    const created = await prisma.blogPost.create({
-      data: {
+    const created = await prisma.blogPost.upsert({
+      where: { id: article.id },
+      update: {
+        titleAr: article.titleAr,
+        titleEn: article.titleEn,
+        excerptAr: article.excerptAr,
+        excerptEn: article.excerptEn,
+        contentAr: article.contentAr.trim(),
+        contentEn: article.contentEn.trim(),
+        imageUrl: article.imageUrl,
+        category: article.category,
+      },
+      create: {
+        id: article.id,
         titleAr: article.titleAr,
         titleEn: article.titleEn,
         excerptAr: article.excerptAr,
@@ -536,10 +555,10 @@ async function main() {
         category: article.category,
       }
     });
-    console.log(`Created: ${created.titleAr}`);
+    console.log(`Synchronized: ${created.titleAr} (${created.id})`);
   }
 
-  console.log(`Successfully seeded all ${tenArticles.length} blog articles!`);
+  console.log(`Successfully synchronized all ${tenArticles.length} blog articles with permanent fixed IDs!`);
 }
 
 main()

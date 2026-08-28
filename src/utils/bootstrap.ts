@@ -107,12 +107,18 @@ export async function bootstrapDatabase() {
         // 2. Ensure each of the 10 curated articles is in the DB with fresh high-contrast content
         for (const article of tenArticles) {
           const match = await prisma.blogPost.findFirst({
-            where: { titleAr: article.titleAr }
+            where: {
+              OR: [
+                { id: article.id },
+                { titleAr: article.titleAr }
+              ]
+            }
           });
 
           if (!match) {
             await prisma.blogPost.create({
               data: {
+                id: article.id,
                 titleAr: article.titleAr,
                 titleEn: article.titleEn,
                 excerptAr: article.excerptAr,

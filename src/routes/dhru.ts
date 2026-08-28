@@ -196,13 +196,49 @@ router.post('/sync', async (req, res) => {
   }
 });
 
-router.get('/my-ip', async (req, res) => {
+import { broadcastNewItemToSubscribers } from './newsletter';
+
+// POST /api/dhru/services/notify - Admin notify subscribers about a specific service or tool
+router.post('/services/notify', async (req, res) => {
   try {
-    const ipRes = await fetch('https://api.ipify.org?format=json');
-    const ipData = await ipRes.json();
-    res.json({ outboundIp: ipData.ip });
+    const { serviceId, customMessage } = req.body;
+    if (!serviceId) {
+      return res.status(400).json({ error: 'serviceId is required' });
+    }
+
+    const service = await prisma.dhruService.findFirst({
+      where: {
+        OR: [{ id: serviceId }, { dhruId: serviceId }]
+      }
+    });
+
+    if (!service) {
+      return res.status(404).json({ error: 'Service not found' });
+    }
+
+    const credit = typeof service.credit === 'number' ? service.credit : parseFloat(service.credit as any) || 0;
+    const margin = typeof service.margin === 'number' ? service.margin : parseFloat(service.margin as any) || 0;
+    const price = (credit + margin).toFixed(2);
+
+    const title = `خدمة وتفعيل جديد: ${service.name}`;
+    const message = customMessage || `يسرنا إعلامكم بتوفر خدمة وتفعيل (${service.name}) عبر سيرفر عرب تك برو بسعر $${price} USD وبتسليم فوري.\n\nتفضل بطلب الخدمة الآن عبر المنصة.`;
+
+    const result = await broadcastNewItemToSubscribers({
+      title,
+      message,
+      category: 'Service Update',
+      actionUrl: `https://arabtechproserver.tech/ar/pricing?search=${encodeURIComponent(service.name)}`,
+      actionText: 'طلب الخدمة الآن'
+    });
+
+    res.json({
+      success: true,
+      message: `تم إرسال إشعار الخدمة بنجاح إلى ${result.count} مشترك!`,
+      sentCount: result.count
+    });
   } catch (error) {
-    res.status(500).json({ error: 'Failed to detect outbound IP' });
+    console.error('Notify service error:', error);
+    res.status(500).json({ error: 'Failed to broadcast service notification' });
   }
 });
 

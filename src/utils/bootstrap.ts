@@ -45,7 +45,37 @@ export async function bootstrapDatabase() {
       console.log('[Bootstrap] Admin account status restored to ACTIVE.');
     }
 
-    // 2. Check & Sync Dhru Services
+    // 2. Check & Ensure Newsletter Tables Exist
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "Subscriber" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "email" TEXT NOT NULL UNIQUE,
+          "name" TEXT,
+          "isActive" BOOLEAN NOT NULL DEFAULT true,
+          "source" TEXT NOT NULL DEFAULT 'homepage',
+          "subscribedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "lastNotifiedAt" TIMESTAMP(3)
+        );
+      `);
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "NewsletterBroadcast" (
+          "id" TEXT NOT NULL PRIMARY KEY,
+          "subject" TEXT NOT NULL,
+          "title" TEXT NOT NULL,
+          "message" TEXT NOT NULL,
+          "category" TEXT NOT NULL DEFAULT 'General',
+          "actionUrl" TEXT,
+          "actionText" TEXT,
+          "sentCount" INTEGER NOT NULL DEFAULT 0,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+    } catch (tblErr) {
+      console.warn('[Bootstrap] Note on newsletter tables check:', tblErr);
+    }
+
+    // 3. Check & Sync Dhru Services
     const serviceCount = await prisma.dhruService.count();
     if (serviceCount === 0) {
       console.log('[Bootstrap] No Dhru services found in DB. Starting automatic services sync...');

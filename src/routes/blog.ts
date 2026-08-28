@@ -55,6 +55,8 @@ router.get('/tutorials/:id', async (req, res) => {
   }
 });
 
+import { broadcastNewItemToSubscribers } from './newsletter';
+
 // POST new blog
 router.post('/post', authenticateToken, async (req, res) => {
   try {
@@ -98,6 +100,16 @@ router.post('/post', authenticateToken, async (req, res) => {
         category: data.category
       }
     });
+
+    // Notify subscribers in background about the new article
+    broadcastNewItemToSubscribers({
+      title: `مقال جديد: ${post.titleAr || post.titleEn}`,
+      message: `${post.excerptAr || post.excerptEn}\n\nتم نشر مقال جديد في مدونة عرب تك برو سيرفر. اضغط على الرابط لقراءة المقال كاملاً والاستفادة من الشرح.`,
+      category: "Blog",
+      actionUrl: `https://arabtechproserver.tech/ar/blog/${post.id}`,
+      actionText: "قراءة المقال الآن"
+    }).catch((err) => console.error("Error sending blog newsletter:", err));
+
     res.status(201).json(post);
   } catch (error) {
     console.error("Error creating blog post:", error);
@@ -117,6 +129,16 @@ router.post('/tutorial', authenticateToken, async (req, res) => {
         category: data.category || "General"
       }
     });
+
+    // Notify subscribers in background about the new video tutorial
+    broadcastNewItemToSubscribers({
+      title: `فيديو وشرح تعليمي جديد: ${tutorial.titleAr || tutorial.titleEn}`,
+      message: `تم إضافة فيديو وشرح تعليمي جديد في أكاديمية عرب تك برو: ${tutorial.titleAr || tutorial.titleEn}. شاهد الفيديو الآن وتعلم طريقة التنفيذ خطوة بخطوة.`,
+      category: "Tutorial",
+      actionUrl: `https://arabtechproserver.tech/ar/tutorials/${tutorial.id}`,
+      actionText: "مشاهدة الفيديو التعليمي"
+    }).catch((err) => console.error("Error sending tutorial newsletter:", err));
+
     res.status(201).json(tutorial);
   } catch (error) {
     res.status(500).json({ error: 'Failed to create tutorial' });

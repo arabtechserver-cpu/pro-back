@@ -31,6 +31,7 @@ import transactionsRoutes from './routes/transactions';
 import paypalRoutes from './routes/paypal';
 import analyticsRoutes from './routes/analytics';
 import backupRoutes from './routes/backup';
+import newsletterRoutes from './routes/newsletter';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', ordersRoutes);
@@ -47,6 +48,7 @@ app.use('/api/users', usersRoutes);
 app.use('/api/transactions', transactionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/backup', backupRoutes);
+app.use('/api/newsletter', newsletterRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

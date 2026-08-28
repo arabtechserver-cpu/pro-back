@@ -113,6 +113,8 @@ router.get('/tutorials/:id', async (req, res) => {
   }
 });
 
+import { broadcastNewItemToSubscribers } from './newsletter';
+
 // POST new video tutorial
 router.post('/tutorials', authenticateToken, async (req, res) => {
   try {
@@ -131,6 +133,16 @@ router.post('/tutorials', authenticateToken, async (req, res) => {
         isFreePreview: isFreePreview !== undefined ? isFreePreview : true
       }
     });
+
+    // Notify subscribers about new tutorial
+    broadcastNewItemToSubscribers({
+      title: `درس وفيديو جديد: ${tutorial.titleAr || tutorial.titleEn}`,
+      message: `تمت إضافة شرح تعليمي جديد: ${tutorial.titleAr || tutorial.titleEn}. تفضل بمشاهدة الفيديو والتطبيق العملي.`,
+      category: "Tutorial",
+      actionUrl: `https://arabtechproserver.tech/ar/tutorials/${tutorial.id}`,
+      actionText: "مشاهدة الفيديو"
+    }).catch(() => {});
+
     res.status(201).json(tutorial);
   } catch (error) {
     res.status(500).json({ error: 'Failed to create video tutorial' });

@@ -156,3 +156,25 @@ model StoredImage {
   createdAt DateTime @default(now())
 }
 
+model Subscriber {
+  id             String    @id @default(uuid())
+  email          String    @unique
+  name           String?
+  isActive       Boolean   @default(true)
+  source         String    @default("homepage")
+  subscribedAt   DateTime  @default(now())
+  lastNotifiedAt DateTime?
+}
+
+model NewsletterBroadcast {
+  id          String   @id @default(uuid())
+  subject     String
+  title       String
+  message     String
+  category    String   @default("General") // "Service Update" | "Tool Offer" | "Announcement" | "Blog"
+  actionUrl   String?
+  actionText  String?
+  sentCount   Int      @default(0)
+  createdAt   DateTime @default(now())
+}
+

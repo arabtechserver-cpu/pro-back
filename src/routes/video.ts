@@ -149,7 +149,15 @@ router.get('/tutorials/:id', async (req, res) => {
     const tutorial = await prisma.videoTutorial.findUnique({
       where: { id: req.params.id },
       include: {
-        series: true
+        series: {
+          include: {
+            videos: {
+              orderBy: {
+                orderIndex: 'asc'
+              }
+            }
+          }
+        }
       }
     });
     if (!tutorial) {

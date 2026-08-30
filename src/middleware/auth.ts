@@ -45,7 +45,6 @@ function extractCandidateTokens(req: Request): string[] {
         if (['admin_token', 'user_token', 'token', 'session'].includes(name)) {
           const clean = val.replace(/^["']|["']$/g, '').trim();
           if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && !tokens.includes(clean)) {
-            // Prioritize admin_token first in candidate list
             if (name === 'admin_token') {
               tokens.unshift(clean);
             } else {
@@ -55,6 +54,11 @@ function extractCandidateTokens(req: Request): string[] {
         }
       }
     }
+  }
+
+  // 4. Query param token (useful for direct file downloads)
+  if (req.query && typeof req.query.token === 'string') {
+    tokens.push(req.query.token);
   }
 
   return tokens;
@@ -108,4 +112,3 @@ export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => 
     return res.status(403).json({ error: 'Access denied: Admins only' });
   });
 };
-

@@ -22,6 +22,7 @@ router.get("/", isAdmin, async (req, res) => {
         { fullName: { contains: searchStr, mode: 'insensitive' } },
         { email: { contains: searchStr, mode: 'insensitive' } },
         { username: { contains: searchStr, mode: 'insensitive' } },
+        { phone: { contains: searchStr, mode: 'insensitive' } },
         { country: { contains: searchStr, mode: 'insensitive' } }
       ];
     }
@@ -75,6 +76,7 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
         fullName: u.fullName,
         username: u.username,
         email: u.email,
+        phone: u.phone,
         country: u.country,
         balance: u.balance,
         role: u.role,
@@ -86,13 +88,13 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
   }
 });
 
-// POST /api/users/update-credentials - Update self profile credentials (username, email, password)
+// POST /api/users/update-credentials - Update self profile credentials (username, email, password, phone)
 router.post("/update-credentials", authenticateToken, async (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
 
-    const { username, email, newPassword, currentPassword } = req.body;
+    const { username, email, phone, newPassword, currentPassword } = req.body;
     if (!currentPassword) {
       return res.status(400).json({ error: "الرجاء إدخال كلمة المرور الحالية للتأكيد" });
     }
@@ -117,6 +119,10 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
       updateData.email = email;
     }
 
+    if (phone !== undefined && phone !== currentUser.phone) {
+      updateData.phone = phone ? String(phone).trim() : null;
+    }
+
     if (newPassword) {
       if (newPassword.length < 4) return res.status(400).json({ error: "كلمة المرور الجديدة يجب أن لا تقل عن 4 أحرف" });
       updateData.password = await bcrypt.hash(newPassword, 10);
@@ -137,7 +143,8 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
       user: {
         id: updatedUser.id,
         username: updatedUser.username,
-        email: updatedUser.email
+        email: updatedUser.email,
+        phone: updatedUser.phone
       }
     });
   } catch (error: any) {
@@ -149,7 +156,7 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
 // POST Register new user
 router.post("/register", async (req, res) => {
   try {
-    const { fullName, email, username, password, country } = req.body;
+    const { fullName, email, username, password, country, phone } = req.body;
 
     if (!fullName || !email || !username || !password) {
       return res.status(400).json({ error: "الرجاء تعبئة جميع الحقول المطلوبة" });
@@ -173,6 +180,7 @@ router.post("/register", async (req, res) => {
         email,
         username,
         password: hashedPassword,
+        phone: phone ? String(phone).trim() : null,
         country: country || "EG",
         status: "active"
       }
@@ -186,6 +194,7 @@ router.post("/register", async (req, res) => {
         fullName: newUser.fullName,
         email: newUser.email,
         username: newUser.username,
+        phone: newUser.phone,
         country: newUser.country,
         status: newUser.status
       }

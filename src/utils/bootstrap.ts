@@ -26,6 +26,7 @@ export async function bootstrapDatabase() {
           email: 'admin@admin.com',
           username: 'admin',
           password: hashedPassword,
+          phone: '+201000000000',
           country: 'EG',
           role: 'admin',
           status: 'active',
@@ -43,6 +44,13 @@ export async function bootstrapDatabase() {
         }
       });
       console.log('[Bootstrap] Admin account status restored to ACTIVE.');
+    }
+
+    // Auto-migrate User table to add phone column if missing
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "phone" TEXT;`);
+    } catch (colErr) {
+      // Ignore if column exists or unsupported syntax
     }
 
     // 2. Check & Ensure Newsletter Tables Exist

@@ -33,6 +33,7 @@ router.get('/', authenticateToken, async (req, res) => {
                 fullName: true,
                 email: true,
                 username: true,
+                phone: true,
                 balance: true
               }
             }

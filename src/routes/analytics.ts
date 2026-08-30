@@ -113,4 +113,112 @@ router.get('/summary', isAdmin, async (req, res) => {
   }
 });
 
+// GET /api/analytics/dashboard-stats - Live comprehensive admin dashboard figures
+router.get('/dashboard-stats', isAdmin, async (req, res) => {
+  try {
+    const [
+      totalUsers,
+      activeUsers,
+      suspendedUsers,
+      totalOrders,
+      completedOrders,
+      pendingOrders,
+      rejectedOrders,
+      totalTransactions,
+      pendingTransactions,
+      completedTransactions,
+      balanceAggregate,
+      totalCategories,
+      totalServices,
+      activeServices,
+      recentOrders,
+      recentTransactions,
+      recentUsers
+    ] = await Promise.all([
+      prisma.user.count({ where: { role: { not: 'admin' } } }),
+      prisma.user.count({ where: { role: { not: 'admin' }, status: 'active' } }),
+      prisma.user.count({ where: { role: { not: 'admin' }, status: 'suspended' } }),
+      prisma.order.count(),
+      prisma.order.count({ where: { status: 'completed' } }),
+      prisma.order.count({ where: { status: 'pending' } }),
+      prisma.order.count({ where: { status: { in: ['rejected', 'failed'] } } }),
+      prisma.transaction.count(),
+      prisma.transaction.count({ where: { status: 'pending' } }),
+      prisma.transaction.count({ where: { status: 'completed' } }),
+      prisma.user.aggregate({
+        where: { role: { not: 'admin' } },
+        _sum: { balance: true }
+      }),
+      prisma.dhruCategory.count(),
+      prisma.dhruService.count(),
+      prisma.dhruService.count({ where: { isActive: true } }),
+      prisma.order.findMany({
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: { select: { fullName: true, email: true, username: true, phone: true } }
+        }
+      }),
+      prisma.transaction.findMany({
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: { select: { fullName: true, email: true, username: true, phone: true } }
+        }
+      }),
+      prisma.user.findMany({
+        where: { role: { not: 'admin' } },
+        take: 6,
+        orderBy: { createdAt: 'desc' },
+        select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true, country: true, status: true, createdAt: true }
+      })
+    ]);
+
+    let dhruInfo: any = null;
+    try {
+      const { getAccountInfo } = require('../utils/dhru-api');
+      dhruInfo = await getAccountInfo();
+    } catch {
+      dhruInfo = null;
+    }
+
+    return res.json({
+      success: true,
+      data: {
+        users: {
+          total: totalUsers,
+          active: activeUsers,
+          suspended: suspendedUsers,
+          totalBalances: balanceAggregate._sum.balance || 0
+        },
+        orders: {
+          total: totalOrders,
+          completed: completedOrders,
+          pending: pendingOrders,
+          rejected: rejectedOrders
+        },
+        transactions: {
+          total: totalTransactions,
+          pending: pendingTransactions,
+          completed: completedTransactions
+        },
+        services: {
+          categories: totalCategories,
+          total: totalServices,
+          active: activeServices
+        },
+        dhru: dhruInfo,
+        recent: {
+          orders: recentOrders,
+          transactions: recentTransactions,
+          users: recentUsers
+        }
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching dashboard stats:', error);
+    return res.status(500).json({ error: 'Failed to fetch dashboard stats' });
+  }
+});
+
 export default router;

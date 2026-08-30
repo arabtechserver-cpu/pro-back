@@ -21,7 +21,7 @@ const otpStore = new Map<string, { code: string; expiresAt: number }>();
 // POST /api/auth/register - Direct & Fast Registration
 router.post('/register', async (req, res) => {
   try {
-    const { fullName, email, username, password, country } = req.body;
+    const { fullName, email, username, password, country, phone } = req.body;
 
     if (!fullName || !email || !username || !password) {
       return res.status(200).json({ success: false, error: 'الرجاء تعبئة جميع الحقول المطلوبة' });
@@ -29,6 +29,7 @@ router.post('/register', async (req, res) => {
 
     const cleanEmail = email.trim().toLowerCase();
     const cleanUsername = username.trim().toLowerCase();
+    const cleanPhone = phone ? String(phone).trim() : null;
 
     const existingEmail = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (existingEmail) {
@@ -48,6 +49,7 @@ router.post('/register', async (req, res) => {
         email: cleanEmail,
         username: cleanUsername,
         password: hashedPassword,
+        phone: cleanPhone,
         country: country || 'EG',
         status: 'active',
         balance: 0.0
@@ -67,6 +69,7 @@ router.post('/register', async (req, res) => {
         fullName: newUser.fullName,
         email: newUser.email,
         username: newUser.username,
+        phone: newUser.phone,
         country: newUser.country,
         status: newUser.status,
         balance: newUser.balance
@@ -198,6 +201,7 @@ router.post('/login', async (req, res) => {
         fullName: dbUser.fullName,
         email: dbUser.email,
         username: dbUser.username,
+        phone: dbUser.phone,
         country: dbUser.country,
         status: dbUser.status,
         balance: dbUser.balance,
@@ -273,6 +277,7 @@ router.post('/google', async (req, res) => {
         fullName: user.fullName,
         email: user.email,
         username: user.username,
+        phone: user.phone,
         country: user.country,
         status: user.status,
         balance: user.balance,

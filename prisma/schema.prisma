@@ -104,6 +104,9 @@ model DhruService {
   category     DhruCategory? @relation(fields: [categoryId], references: [id])
   requiresCustom String?
   
+  providerId   String?
+  provider     ApiProvider?  @relation(fields: [providerId], references: [id], onDelete: Cascade)
+  
   createdAt    DateTime      @default(now())
   updatedAt    DateTime      @updatedAt
 }
@@ -114,6 +117,7 @@ model User {
   email        String        @unique
   username     String        @unique
   password     String
+  phone        String?
   country      String        @default("EG")
   role         String        @default("user")
   status       String        @default("active") // "active" or "suspended"
@@ -176,5 +180,22 @@ model NewsletterBroadcast {
   actionText  String?
   sentCount   Int      @default(0)
   createdAt   DateTime @default(now())
+}
+
+model ApiProvider {
+  id            String        @id @default(uuid())
+  name          String
+  apiUrl        String
+  username      String?
+  apiKey        String
+  type          String        @default("dhru") // "dhru" | "perfectpanel" | "gsm" | "dynamic"
+  isActive      Boolean       @default(true)
+  balance       Float         @default(0.0)
+  currency      String        @default("USD")
+  lastSyncAt    DateTime?
+  servicesCount Int           @default(0)
+  services      DhruService[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
 }
 

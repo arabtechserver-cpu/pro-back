@@ -9,13 +9,21 @@ const PORT = Number(process.env.PORT) || 5000;
 
 app.set('trust proxy', 1);
 
-app.use(helmet());
+app.use(helmet({
+  crossOriginResourcePolicy: { policy: "cross-origin" },
+  crossOriginEmbedderPolicy: false,
+}));
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ limit: '10mb', extended: true }));
+app.use(express.json({ limit: '150mb' }));
+app.use(express.urlencoded({ limit: '150mb', extended: true }));
 
 import path from 'path';
-app.use(express.static(path.join(__dirname, '../public')));
+app.use(express.static(path.join(__dirname, '../public'), {
+  setHeaders: (res) => {
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+  }
+}));
 
 // Routes
 import authRoutes from './routes/auth';
@@ -32,6 +40,7 @@ import paypalRoutes from './routes/paypal';
 import analyticsRoutes from './routes/analytics';
 import backupRoutes from './routes/backup';
 import newsletterRoutes from './routes/newsletter';
+import providersRoutes from './routes/providers';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/orders', ordersRoutes);
@@ -39,6 +48,7 @@ app.use('/api/wallet/paypal', paypalRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/dhru', dhruRoutes);
+app.use('/api/providers', providersRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/homepage', homepageRoutes);
 app.use('/api/upload', uploadRoutes);

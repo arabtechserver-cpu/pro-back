@@ -242,4 +242,89 @@ router.post('/services/notify', async (req, res) => {
   }
 });
 
+// POST /api/dhru/services/delete-all - Delete all services & categories
+router.post('/services/delete-all', async (req, res) => {
+  try {
+    const deletedServices = await prisma.dhruService.deleteMany({});
+    const deletedCategories = await prisma.dhruCategory.deleteMany({});
+
+    return res.json({
+      success: true,
+      servicesCount: deletedServices.count,
+      categoriesCount: deletedCategories.count,
+      message: `تم حذف كافة الخدمات (${deletedServices.count} خدمة) والأقسام بنجاح.`
+    });
+  } catch (error: any) {
+    console.error('Delete all services error:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء حذف الخدمات' });
+  }
+});
+
+// POST /api/dhru/services/bulk-margin - Bulk apply profit margin to all services
+router.post('/services/bulk-margin', async (req, res) => {
+  try {
+    const { type, value, applyTo, categoryId } = req.body;
+    const numVal = parseFloat(value);
+
+    if (isNaN(numVal) || numVal < 0) {
+      return res.status(400).json({ error: 'قيمة الهامش غير صالحة' });
+    }
+
+    const whereClause: any = {};
+    if (applyTo === 'active') {
+      whereClause.isActive = true;
+    }
+    if (categoryId) {
+      whereClause.categoryId = categoryId;
+    }
+
+    const allServices = await prisma.dhruService.findMany({ where: whereClause });
+
+    if (type === 'replace') {
+      // Set fixed margin directly
+      const result = await prisma.dhruService.updateMany({
+        where: whereClause,
+        data: { margin: numVal }
+      });
+      return res.json({
+        success: true,
+        updatedCount: result.count,
+        message: `تم تعيين هامش ربح بقيمة $${numVal.toFixed(2)} لـ ${result.count} خدمة بنجاح!`
+      });
+    }
+
+    // Process individual calculations for fixed addition or percentage
+    let updatedCount = 0;
+    for (const service of allServices) {
+      const credit = typeof service.credit === 'number' ? service.credit : parseFloat(service.credit as any) || 0;
+      const currentMargin = typeof service.margin === 'number' ? service.margin : parseFloat(service.margin as any) || 0;
+
+      let newMargin = currentMargin;
+      if (type === 'fixed') {
+        newMargin = Math.max(0, parseFloat((currentMargin + numVal).toFixed(2)));
+      } else if (type === 'percentage') {
+        // Calculate margin as percentage of base credit
+        newMargin = Math.max(0, parseFloat(((credit * numVal) / 100).toFixed(2)));
+      }
+
+      await prisma.dhruService.update({
+        where: { id: service.id },
+        data: { margin: newMargin }
+      });
+      updatedCount++;
+    }
+
+    return res.json({
+      success: true,
+      updatedCount,
+      message: type === 'percentage'
+        ? `تم تطبيق نسبة ربح ${numVal}% على سعر التكلفة لـ ${updatedCount} خدمة بنجاح!`
+        : `تمت إضافة $${numVal.toFixed(2)} لهامش الربح لـ ${updatedCount} خدمة بنجاح!`
+    });
+  } catch (error: any) {
+    console.error('Bulk margin error:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء تحديث هوامش الربح' });
+  }
+});
+
 export default router;

@@ -26,7 +26,7 @@ router.get('/', authenticateToken, async (req, res) => {
           orderBy: { createdAt: 'desc' },
           include: {
             user: {
-              select: { fullName: true, email: true, username: true, balance: true }
+              select: { fullName: true, email: true, username: true, phone: true, balance: true }
             }
           }
         });
@@ -46,7 +46,7 @@ router.get('/', authenticateToken, async (req, res) => {
       orderBy: { createdAt: 'desc' },
       include: {
         user: {
-          select: { fullName: true, email: true, username: true, balance: true }
+          select: { fullName: true, email: true, username: true, phone: true, balance: true }
         }
       }
     });

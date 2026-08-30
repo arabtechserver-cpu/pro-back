@@ -21,6 +21,7 @@ router.get("/", async (req, res) => {
                 { fullName: { contains: searchStr } },
                 { email: { contains: searchStr } },
                 { username: { contains: searchStr } },
+                { phone: { contains: searchStr } },
                 { country: { contains: searchStr } }
             ];
         }
@@ -66,6 +67,7 @@ router.get("/profile", async (req, res) => {
                 fullName: u.fullName,
                 username: u.username,
                 email: u.email,
+                phone: u.phone,
                 country: u.country,
                 balance: u.balance,
                 role: u.role,
@@ -80,7 +82,7 @@ router.get("/profile", async (req, res) => {
 // POST Register new user
 router.post("/register", async (req, res) => {
     try {
-        const { fullName, email, username, password, country } = req.body;
+        const { fullName, email, username, password, country, phone } = req.body;
         if (!fullName || !email || !username || !password) {
             return res.status(400).json({ error: "الرجاء تعبئة جميع الحقول المطلوبة" });
         }
@@ -99,6 +101,7 @@ router.post("/register", async (req, res) => {
                 email,
                 username,
                 password: hashedPassword,
+                phone: phone ? String(phone).trim() : null,
                 country: country || "EG",
                 status: "active"
             }
@@ -111,6 +114,7 @@ router.post("/register", async (req, res) => {
                 fullName: newUser.fullName,
                 email: newUser.email,
                 username: newUser.username,
+                phone: newUser.phone,
                 country: newUser.country,
                 status: newUser.status
             }

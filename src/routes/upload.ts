@@ -74,6 +74,9 @@ router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
 
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+
     // Check if ID matches database record or filename
     let stored = await prisma.storedImage.findFirst({
       where: {
@@ -89,6 +92,8 @@ router.get('/:id', async (req, res) => {
       res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
       res.setHeader('Content-Length', imgBuffer.length);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       return res.end(imgBuffer);
     }
 
@@ -98,6 +103,8 @@ router.get('/:id', async (req, res) => {
       const ext = path.extname(localFilePath).replace('.', '') || 'jpeg';
       res.setHeader('Content-Type', `image/${ext}`);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Access-Control-Allow-Origin', '*');
       return fs.createReadStream(localFilePath).pipe(res);
     }
 

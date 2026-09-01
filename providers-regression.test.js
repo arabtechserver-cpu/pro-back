@@ -14,6 +14,34 @@ function run() {
   assert.equal(typeof providers.getProviderApiErrorMessage, "function");
   assert.equal(typeof providers.isProviderApiSuccess, "function");
 
+  const normalizeRequestedServiceTypes =
+    providers.normalizeRequestedServiceTypes || (() => []);
+  assert.deepEqual(
+    normalizeRequestedServiceTypes(["imei", "remote", "invalid", "imei"]),
+    ["imei", "remote"]
+  );
+  assert.deepEqual(
+    normalizeRequestedServiceTypes(undefined),
+    ["imei", "server", "remote"]
+  );
+  assert.deepEqual(normalizeRequestedServiceTypes([]), []);
+
+  const getProviderServiceType =
+    providers.getProviderServiceType || (() => "unknown");
+  assert.equal(getProviderServiceType("IMEI Service"), "imei");
+  assert.equal(getProviderServiceType("Server Service"), "server");
+  assert.equal(getProviderServiceType("Remote Service"), "remote");
+
+  const getProviderServiceApiActions =
+    providers.getProviderServiceApiActions || (() => []);
+  assert.deepEqual(
+    getProviderServiceApiActions(["imei", "remote"]),
+    [
+      { type: "imei", action: "imeiservicelist" },
+      { type: "remote", action: "remoteservicelist" }
+    ]
+  );
+
   assert.deepEqual(
     providers.extractProviderAccountInfo({
       SUCCESS: [{ AccountInfo: { credit: "57.84", currency: "USD" } }]

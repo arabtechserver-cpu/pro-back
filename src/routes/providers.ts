@@ -669,6 +669,37 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
 router.post("/:id/balance", (req, res) => checkAndUpdateProviderBalance(req.params.id, res));
 router.get("/:id/balance", (req, res) => checkAndUpdateProviderBalance(req.params.id, res));
 
+export type ProviderServiceType = "imei" | "server" | "remote";
+
+const PROVIDER_SERVICE_TYPES: ProviderServiceType[] = ["imei", "server", "remote"];
+
+export function normalizeRequestedServiceTypes(input: unknown): ProviderServiceType[] {
+  if (input === undefined || input === null) return [...PROVIDER_SERVICE_TYPES];
+  if (!Array.isArray(input)) return [];
+
+  const normalized = input
+    .map((value) => String(value).trim().toLowerCase())
+    .filter((value): value is ProviderServiceType => PROVIDER_SERVICE_TYPES.includes(value as ProviderServiceType));
+  return Array.from(new Set(normalized));
+}
+
+export function getProviderServiceType(categoryName: unknown): ProviderServiceType | "unknown" {
+  const normalized = String(categoryName || "").toLowerCase();
+  if (normalized.includes("remote")) return "remote";
+  if (normalized.includes("server")) return "server";
+  if (normalized.includes("imei")) return "imei";
+  return "unknown";
+}
+
+export function getProviderServiceApiActions(types: ProviderServiceType[]) {
+  const actions = {
+    imei: "imeiservicelist",
+    server: "serverservicelist",
+    remote: "remoteservicelist"
+  } as const;
+  return types.map((type) => ({ type, action: actions[type] }));
+}
+
 // Helper: parse raw services list from provider responses
 export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes?: any) {
   const extractedServices: any[] = [];
@@ -789,19 +820,30 @@ router.post("/:id/sync", async (req, res) => {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
-    const [imeiRes, serverRes, remoteRes] = await Promise.all([
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist"),
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
-    ]);
+    const requestedServiceTypes = normalizeRequestedServiceTypes(
+      req.body.serviceTypes ?? req.body.service_types
+    );
+    if (requestedServiceTypes.length === 0) {
+      return res.status(400).json({ error: "يرجى اختيار قسم واحد على الأقل: IMEI أو Server أو Remote" });
+    }
 
-    const responses = [imeiRes, serverRes, remoteRes];
+    const fetchedResponses = await Promise.all(
+      getProviderServiceApiActions(requestedServiceTypes).map(async ({ type, action }) => ({
+        type,
+        response: await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, action)
+      }))
+    );
+    const responses = fetchedResponses.map(({ response }) => response);
     if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
       return res.status(400).json({
         error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`
       });
     }
 
+    const responseByType = new Map(fetchedResponses.map(({ type, response }) => [type, response]));
+    const imeiRes = responseByType.get("imei");
+    const serverRes = responseByType.get("server");
+    const remoteRes = responseByType.get("remote");
     const allServices = parseAllProviderServices(imeiRes, serverRes, remoteRes);
 
     if (allServices.length === 0) {
@@ -936,8 +978,10 @@ router.post("/:id/sync", async (req, res) => {
 
     return res.json({
       success: true,
-      count: totalSynced,
-      message: `تمت المزامنة بنجاح! تم استيراد وتحديث ${totalSynced} خدمة من المزود (${provider.name}).`
+      count: allServices.length,
+      totalCount: totalSynced,
+      serviceTypes: requestedServiceTypes,
+      message: `تمت المزامنة بنجاح! تم جلب وتحديث ${allServices.length} خدمة من الأقسام المحددة. إجمالي خدمات المزود: ${totalSynced}.`
     });
   } catch (error: any) {
     console.error("Provider sync error:", error);
@@ -1065,14 +1109,21 @@ router.get("/:id/services", async (req, res) => {
         info: true,
         isActive: true,
         margin: true,
-        requiresCustom: true
+        requiresCustom: true,
+        dhruCategory: {
+          select: { name: true }
+        }
       },
       orderBy: { name: "asc" }
     });
 
     return res.json({
       success: true,
-      services
+      services: services.map((service) => ({
+        ...service,
+        category_name: service.dhruCategory?.name || null,
+        service_type: getProviderServiceType(service.dhruCategory?.name)
+      }))
     });
   } catch (error: any) {
     console.error("Fetch provider services error:", error);

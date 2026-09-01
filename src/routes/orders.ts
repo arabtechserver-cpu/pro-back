@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../server';
 import { placeImeiOrder, placeServerOrder, getImeiOrder, getServerOrder, normalizeProviderCustomFields } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
-import { parseOrderMetadata } from '../utils/order-response';
+import { buildOrderFieldDetails, getOrderServiceType, parseOrderMetadata } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
@@ -71,8 +71,11 @@ async function enrichOrdersWithProviderData(orders: any[]) {
           }
         : null,
       serviceDhruId: srv?.dhruId || null,
+      providerServiceId: srv?.dhruId ? getProviderRemoteServiceId(srv.dhruId) : null,
       serviceCategory: srv?.dhruCategory?.name || null,
+      serviceType: getOrderServiceType(srv?.dhruCategory?.name),
       groupName: srv?.groupName || null,
+      fieldDetails: buildOrderFieldDetails(srv?.requiresCustom, metadata.customFields),
       cost,
       profit,
       customFields: metadata.customFields,

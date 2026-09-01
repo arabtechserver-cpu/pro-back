@@ -35,4 +35,38 @@ assert.equal(
 );
 assert.equal(orderResponse.parseOrderMetadata("legacy note").visibleNote, "legacy note");
 
+const buildOrderFieldDetails =
+  orderResponse.buildOrderFieldDetails || (() => []);
+assert.deepEqual(
+  buildOrderFieldDetails(
+    JSON.stringify([
+      {
+        id: "custom_PlayerID",
+        field_id: "PlayerID",
+        label: "custom_PlayerID",
+        type: "text",
+        required: true
+      }
+    ]),
+    { custom_PlayerID: "51470430069" }
+  ),
+  [
+    {
+      id: "custom_PlayerID",
+      providerFieldId: "PlayerID",
+      label: "PlayerID",
+      type: "text",
+      required: true,
+      value: "51470430069",
+      missing: false
+    }
+  ]
+);
+
+const getOrderServiceType =
+  orderResponse.getOrderServiceType || (() => "unknown");
+assert.equal(getOrderServiceType("IMEI Service"), "imei");
+assert.equal(getOrderServiceType("Server Service"), "server");
+assert.equal(getOrderServiceType("Remote Service"), "remote");
+
 console.log("order dispatch field tests passed");

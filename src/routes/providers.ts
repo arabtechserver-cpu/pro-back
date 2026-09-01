@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { prisma } from "../server";
 import { cleanServiceName } from "../scripts/syncDhruServices";
+import { buildProviderServiceId } from "../utils/provider-service-id";
 import https from "https";
 import http from "http";
 
@@ -669,7 +670,7 @@ router.post("/:id/balance", (req, res) => checkAndUpdateProviderBalance(req.para
 router.get("/:id/balance", (req, res) => checkAndUpdateProviderBalance(req.params.id, res));
 
 // Helper: parse raw services list from provider responses
-function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes?: any) {
+export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes?: any) {
   const extractedServices: any[] = [];
 
   const processGroups = (groupData: any, type: "imei" | "server" | "remote") => {
@@ -821,11 +822,10 @@ router.post("/:id/sync", async (req, res) => {
       categoryMap.set(name, cat.id);
     }
 
-    // Load existing services for this provider or all services to match
+    // Services belong to one provider. The same remote service number may
+    // legitimately exist at multiple providers.
     const existingServices = await prisma.dhruService.findMany({
-      where: {
-        OR: [{ providerId: provider.id }, { providerId: null }]
-      }
+      where: { providerId: provider.id }
     });
     const existingMap = new Map<string, any>();
     for (const s of existingServices) {
@@ -840,9 +840,10 @@ router.post("/:id/sync", async (req, res) => {
     const exchangeRate = parseFloat(req.body.exchangeRate ?? req.body.exchange_rate) || 1;
 
     for (const s of allServices) {
-      const dhruId = String(s.id);
-      if (!dhruId || seenDhruIds.has(dhruId)) continue;
-      seenDhruIds.add(dhruId);
+      const remoteServiceId = String(s.id);
+      if (!remoteServiceId || seenDhruIds.has(remoteServiceId)) continue;
+      seenDhruIds.add(remoteServiceId);
+      const dhruId = buildProviderServiceId(provider.id, remoteServiceId);
 
       const serviceName = s.name || "";
       const groupName = s.group_name || s.groupName || "General";
@@ -924,7 +925,7 @@ router.post("/:id/sync", async (req, res) => {
       }
     }
 
-    const totalSynced = newServicesToInsert.length + servicesToUpdate.length;
+    const totalSynced = await prisma.dhruService.count({ where: { providerId: provider.id } });
 
     await prisma.apiProvider.update({
       where: { id },
@@ -973,8 +974,9 @@ router.post("/:id/import-services", async (req, res) => {
 
     let count = 0;
     for (const s of services) {
-      const dhruId = String(s.id || s.service_id);
-      if (!dhruId) continue;
+      const remoteServiceId = String(s.id || s.service_id);
+      if (!remoteServiceId) continue;
+      const dhruId = buildProviderServiceId(provider.id, remoteServiceId);
 
       const serviceName = s.name || s.service_name || "";
       const groupName = s.group_name || s.groupName || "General";

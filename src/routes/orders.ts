@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../server';
 import { placeImeiOrder, placeServerOrder, getImeiOrder, getServerOrder } from '../utils/dhru-api';
+import { getProviderRemoteServiceId } from '../utils/provider-service-id';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
@@ -376,10 +377,10 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
 
     if (dhruService.dhruCategory?.name === 'IMEI Service' || dhruService.groupName?.toLowerCase().includes('imei')) {
       const imeiToSend = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
-      dhruResponse = await placeImeiOrder(dhruService.dhruId, imeiToSend, customFields, providerConfig);
+      dhruResponse = await placeImeiOrder(getProviderRemoteServiceId(dhruService.dhruId), imeiToSend, customFields, providerConfig);
     } else {
       const inputToSend = String(order.targetInput).trim();
-      dhruResponse = await placeServerOrder(dhruService.dhruId, order.quantity, customFields, inputToSend, providerConfig);
+      dhruResponse = await placeServerOrder(getProviderRemoteServiceId(dhruService.dhruId), order.quantity, customFields, inputToSend, providerConfig);
     }
 
     if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {

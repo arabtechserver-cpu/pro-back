@@ -1,5 +1,8 @@
 const assert = require("assert");
+const fs = require("fs");
+const path = require("path");
 const providers = require("./dist/routes/providers.js");
+const providerServiceIds = require("./dist/utils/provider-service-id.js");
 
 function run() {
   assert.equal(
@@ -34,6 +37,22 @@ function run() {
     providers.getProviderApiErrorMessage({ ERROR: [{ MESSAGE: "Invalid API key" }] }),
     "Invalid API key"
   );
+
+  const firstProviderServiceId = providerServiceIds.buildProviderServiceId("provider-a", "1477000001");
+  const secondProviderServiceId = providerServiceIds.buildProviderServiceId("provider-b", "1477000001");
+  assert.notEqual(firstProviderServiceId, secondProviderServiceId);
+  assert.equal(providerServiceIds.getProviderRemoteServiceId(firstProviderServiceId), "1477000001");
+  assert.equal(providerServiceIds.getProviderRemoteServiceId(secondProviderServiceId), "1477000001");
+  assert.equal(providerServiceIds.getProviderRemoteServiceId("1477000001"), "1477000001");
+
+  const imeiPayload = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "dhru_imei_services.json"), "utf8"));
+  const serverPayload = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "dhru_server_services.json"), "utf8"));
+  const parsedServices = providers.parseAllProviderServices({ data: imeiPayload }, { data: serverPayload });
+  assert.ok(parsedServices.length >= 1171, "expected every provider service to be parsed");
+  const serviceWithEmail = parsedServices.find((service) => service.service_id === "1477000001");
+  assert.equal(serviceWithEmail.group_name, "Haafedk Tool iCloud");
+  assert.equal(serviceWithEmail.customFields[0].name, "custom_Email");
+  assert.equal(serviceWithEmail.customFields[0].required, true);
 
   console.log("providers regression tests passed");
 }

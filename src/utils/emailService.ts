@@ -154,13 +154,79 @@ export async function sendEmail({
   });
 }
 
+// Loops Configuration
+const LOOPS_API_KEY = process.env.LOOPS_API_KEY || "";
+const LOOPS_TRANSACTIONAL_ID_OTP = process.env.LOOPS_TRANSACTIONAL_ID_OTP || "cmrv2rlz301lp0j2pig1clc4n";
+
+export async function sendLoopsTransactionalEmail(
+  email: string,
+  transactionalId: string,
+  dataVariables: Record<string, any>
+): Promise<boolean> {
+  if (!LOOPS_API_KEY) return false;
+  return new Promise((resolve) => {
+    const postData = JSON.stringify({
+      transactionalId,
+      email: email.trim().toLowerCase(),
+      dataVariables
+    });
+
+    const options = {
+      hostname: "app.loops.so",
+      port: 443,
+      path: "/api/v1/transactional",
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${LOOPS_API_KEY}`,
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(postData)
+      }
+    };
+
+    const req = https.request(options, (res) => {
+      let data = "";
+      res.on("data", (c) => (data += c));
+      res.on("end", () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          console.log(`🚀 [Loops Success] Transactional email sent to: ${email}`);
+          resolve(true);
+        } else {
+          console.warn(`[Loops Error ${res.statusCode}]:`, data);
+          resolve(false);
+        }
+      });
+    });
+
+    req.on("error", (err) => {
+      console.error("[Loops Network Error]:", err?.message);
+      resolve(false);
+    });
+
+    req.write(postData);
+    req.end();
+  });
+}
+
 /**
- * Send Transactional OTP Email
+ * Send Transactional OTP Email (Loops Primary with Fallback)
  */
 export const sendOtpEmailViaLoops = async (email: string, payload: OtpPayload): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
-  const title = `كود التحقق الخاص بك: ${payload.code}`;
   const username = payload.username || "عزيزنا العميل";
+
+  if (LOOPS_API_KEY) {
+    const loopsSent = await sendLoopsTransactionalEmail(cleanEmail, LOOPS_TRANSACTIONAL_ID_OTP, {
+      code: payload.code,
+      otpCode: payload.code,
+      otp: payload.code,
+      username,
+      actionLabel: payload.actionLabel || "كود التحقق",
+      siteName: "عرب تك برو سيرفر"
+    });
+    if (loopsSent) return true;
+  }
+
+  const title = `كود التحقق الخاص بك: ${payload.code}`;
   const message = `كود التحقق الخاص بك هو: <b>${payload.code}</b>.\nيرجى إدخاله في الموقع لتأكيد العملية.\nهذا الكود صالح لمدة 10 دقائق فقط للحفاظ على أمان حسابك.`;
 
   const html = generateLuxuryEmailHtml({

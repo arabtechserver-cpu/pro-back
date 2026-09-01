@@ -174,6 +174,7 @@ export function initOrderSyncCron() {
           }
           else {
             // Still processing (status 0 or 1) - reset retry counter if it was set
+            console.log(`[CRON] Order ${order.id} is still processing (Status: ${apiStatus}).`);
             if (order.notes?.includes('retry:')) {
               await prisma.order.update({
                 where: { id: order.id },

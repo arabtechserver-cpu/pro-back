@@ -1,4 +1,4 @@
-import { prisma } from './server';
+import { prisma } from "./utils/prisma";
 import { placeImeiOrder, getImeiOrder } from './utils/dhru-api';
 
 async function testFullFlow() {

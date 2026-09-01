@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import { createPayPalOrder, capturePayPalOrder } from '../services/paypalService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';

@@ -1,9 +1,7 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
-import { PrismaClient } from '@prisma/client';
-
-export const prisma = new PrismaClient();
+import { prisma } from './utils/prisma';
 const app = express();
 const PORT = Number(process.env.PORT) || 5000;
 

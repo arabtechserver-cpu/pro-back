@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { prisma } from "../server";
+import { prisma } from "../utils/prisma";
 import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
 import https from "https";
@@ -751,6 +751,35 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           s.SERVICETYPE ?? s.SERVICE_TYPE ?? s.serviceType ?? s.service_type,
           type
         );
+
+        if (apiServiceType === "imei") {
+          const existingImeiIndex = normalizedFields.findIndex((f: any) => {
+             const lowerName = String(f.name || f.field_id || "").toLowerCase();
+             return lowerName === "imei" || lowerName === "custom_imei" || lowerName.includes("imei");
+          });
+
+          if (existingImeiIndex !== -1) {
+            normalizedFields[existingImeiIndex].required = true;
+            if (existingImeiIndex > 0) {
+              const [imeiField] = normalizedFields.splice(existingImeiIndex, 1);
+              normalizedFields.unshift(imeiField);
+            }
+          } else {
+            normalizedFields.unshift({
+              id: "custom_IMEI",
+              field_id: "IMEI",
+              name: "IMEI",
+              label: "IMEI",
+              type: "text",
+              fieldtype: "text",
+              required: true,
+              description: "",
+              placeholder: "أدخل IMEI",
+              options: [],
+              fieldoptions: []
+            });
+          }
+        }
 
         extractedServices.push({
           id: sId,

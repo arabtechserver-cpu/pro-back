@@ -1,4 +1,4 @@
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import bcrypt from 'bcryptjs';
 import { syncDhruServices } from '../scripts/syncDhruServices';
 

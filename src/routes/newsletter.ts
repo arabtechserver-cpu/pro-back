@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { prisma } from "../server";
+import { prisma } from "../utils/prisma";
 import { isAdmin } from "../middleware/auth";
 import { 
   addContactToLoops, 

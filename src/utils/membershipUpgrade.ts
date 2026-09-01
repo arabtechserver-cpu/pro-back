@@ -1,4 +1,4 @@
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 
 /**
  * Automatically checks and upgrades a user's membership tier

@@ -1,4 +1,4 @@
-import { prisma } from './server';
+import { prisma } from "./utils/prisma";
 
 async function fixGhostOrders() {
   const ghostOrders = await prisma.order.findMany({

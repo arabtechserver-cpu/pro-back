@@ -3,7 +3,7 @@ import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import { placeImeiOrder, placeServerOrder } from './dhru-api';
 import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailService';
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
@@ -756,4 +756,3 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
 
 // Start listener automatically
 startTelegramBotPolling();
-

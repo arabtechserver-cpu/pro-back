@@ -2,7 +2,7 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { isAdmin } from '../middleware/auth';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 
 const router = Router();
 const BACKUPS_DIR = path.join(__dirname, '..', '..', 'backups');

@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 
 const router = Router();
 const UPLOAD_DIR = path.join(__dirname, '../../public/uploads');

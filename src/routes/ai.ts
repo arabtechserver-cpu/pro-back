@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import { sendTelegramPhotoNotification, sendTelegramAlert } from '../utils/telegramService';
 
 const router = Router();

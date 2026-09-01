@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import { placeImeiOrder, placeServerOrder, getImeiOrder, getServerOrder, normalizeProviderCustomFields } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
 import { buildOrderFieldDetails, resolveOrderServiceType, parseOrderMetadata } from '../utils/order-response';

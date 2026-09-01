@@ -2,7 +2,7 @@ import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
 import { sendDocumentToAdmins } from '../utils/telegramService';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 
 export function initBackupCron() {
   console.log('[CRON] Initializing Daily JSON Backup Cron Job (runs at 00:00 every day)');

@@ -12,7 +12,7 @@ router.get('/account', async (req, res) => {
   }
 });
 
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 
 import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices';
 import { serializeAdminServiceCategories, serializePricingServiceCategories } from "../utils/admin-service-response";

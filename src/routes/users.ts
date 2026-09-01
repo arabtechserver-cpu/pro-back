@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { prisma } from "../server";
+import { prisma } from "../utils/prisma";
 import bcrypt from "bcryptjs";
 import { isAdmin, authenticateToken } from "../middleware/auth";
 import { checkAndAutoUpgradeMembership } from "../utils/membershipUpgrade";

@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { getImeiServiceList, getServerServiceList } from '../utils/dhru-api';
+import { extractCustomFields, normalizeCustomField } from '../routes/providers';
 
 const prisma = new PrismaClient();
 
@@ -104,15 +105,46 @@ export async function syncDhruServices() {
       const time = service.TIME || "";
       const info = service.INFO || "";
       
-      let requiresCustomStr: string | null = null;
-      if (service['Requires.Custom']) {
-        requiresCustomStr = JSON.stringify(service['Requires.Custom']);
-      }
+      const rawCustomFields = extractCustomFields(service);
+      const normalizedFields = rawCustomFields.map(normalizeCustomField).filter(Boolean);
 
       let categoryName = defaultCategory;
       if (`${groupName} ${serviceName}`.match(/remote|rent|teamviewer|anydesk|usb|flexi/i)) {
         categoryName = "Remote Service";
+      } else if (`${groupName} ${serviceName}`.match(/tool|activation|credit|account|license|pro|dongle|box|server|log|pack/i)) {
+        categoryName = "Server Service";
       }
+
+      if (categoryName === "IMEI Service" || defaultCategory === "IMEI Service") {
+        const existingImeiIndex = normalizedFields.findIndex((f: any) => {
+           const lowerName = String(f.name || f.field_id || "").toLowerCase();
+           return lowerName === "imei" || lowerName === "custom_imei" || lowerName.includes("imei");
+        });
+
+        if (existingImeiIndex !== -1) {
+          normalizedFields[existingImeiIndex].required = true;
+          if (existingImeiIndex > 0) {
+            const [imeiField] = normalizedFields.splice(existingImeiIndex, 1);
+            normalizedFields.unshift(imeiField);
+          }
+        } else {
+          normalizedFields.unshift({
+            id: "custom_IMEI",
+            field_id: "IMEI",
+            name: "IMEI",
+            label: "IMEI",
+            type: "text",
+            fieldtype: "text",
+            required: true,
+            description: "",
+            placeholder: "أدخل IMEI",
+            options: [],
+            fieldoptions: []
+          });
+        }
+      }
+
+      let requiresCustomStr: string | null = normalizedFields.length > 0 ? JSON.stringify(normalizedFields) : null;
       const categoryId = categoryMap.get(categoryName)!;
       const cleanName = cleanServiceName(serviceName, info, groupName);
 

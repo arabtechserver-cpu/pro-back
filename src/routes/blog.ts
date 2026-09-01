@@ -1,5 +1,5 @@
 import { Router } from 'express';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import { authenticateToken } from '../middleware/auth';
 import { processBase64Images } from '../utils/imageHandler';
 

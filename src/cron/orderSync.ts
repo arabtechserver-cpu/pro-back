@@ -1,5 +1,5 @@
 import cron from 'node-cron';
-import { prisma } from '../server';
+import { prisma } from "../utils/prisma";
 import { getImeiOrder, getServerOrder } from '../utils/dhru-api';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';

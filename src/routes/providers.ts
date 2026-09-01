@@ -1,6 +1,8 @@
 import { Router } from "express";
 import { prisma } from "../server";
 import { cleanServiceName } from "../scripts/syncDhruServices";
+import https from "https";
+import http from "http";
 
 const router = Router();
 
@@ -227,49 +229,96 @@ export function normalizeCustomField(cf: any): any {
 }
 
 // Helper to make API calls to any provider
-export async function makeProviderApiCall(
+export function makeProviderApiCall(
   apiUrl: string,
   username: string | null | undefined,
   apiKey: string,
   action: string,
   parameters: Record<string, string> = {}
-) {
-  const targetUrl = normalizeApiUrl(apiUrl);
-  const data = new URLSearchParams();
-  if (username) data.append("username", username.trim());
-  data.append("key", apiKey.trim());
-  data.append("apiaccesskey", apiKey.trim());
-  data.append("action", action);
-  data.append("requestformat", "JSON");
-
-  // Format parameters
-  Object.entries(parameters).forEach(([k, v]) => {
-    data.append(`parameters[${k}]`, v);
-  });
-
-  try {
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json, text/plain, */*"
-      },
-      body: data.toString(),
-      cache: "no-store"
-    });
-
-    const rawText = await response.text();
-    let result: any;
+): Promise<{ ok: boolean; status: number; data: any; raw: string; targetUrl: string }> {
+  return new Promise((resolve) => {
     try {
-      result = JSON.parse(rawText);
-    } catch {
-      result = { error: rawText };
+      const targetUrl = normalizeApiUrl(apiUrl);
+      const data = new URLSearchParams();
+      if (username) data.append("username", username.trim());
+      data.append("key", apiKey.trim());
+      data.append("apiaccesskey", apiKey.trim());
+      data.append("action", action);
+      data.append("requestformat", "JSON");
+
+      // Format parameters
+      Object.entries(parameters).forEach(([k, v]) => {
+        data.append(`parameters[${k}]`, v);
+      });
+
+      const postData = data.toString();
+      const urlObj = new URL(targetUrl);
+      
+      const options = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: "POST",
+        // Enforce IPv4 lookup explicitly to match old dhruClient.js behavior inside Docker
+        family: 4, 
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(postData),
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "application/json, text/plain, */*"
+        },
+        timeout: 60000
+      };
+
+      const client = urlObj.protocol === "https:" ? https : http;
+      
+      const req = client.request(options, (res) => {
+        let rawText = "";
+        res.on("data", (chunk) => { rawText += chunk; });
+        res.on("end", () => {
+          let result: any;
+          try {
+            result = JSON.parse(rawText);
+          } catch {
+            result = { error: rawText };
+          }
+          resolve({ ok: (res.statusCode || 200) < 400, status: res.statusCode || 200, data: result, raw: rawText, targetUrl });
+        });
+      });
+
+      req.on("error", (err: any) => {
+        resolve({
+          ok: false,
+          status: 500,
+          data: { error: `Network error connecting to API: ${err.message}` },
+          raw: err.message,
+          targetUrl
+        });
+      });
+
+      req.on("timeout", () => {
+        req.destroy();
+        resolve({
+          ok: false,
+          status: 504,
+          data: { error: "API request timed out" },
+          raw: "Timeout",
+          targetUrl
+        });
+      });
+
+      req.write(postData);
+      req.end();
+    } catch (err: any) {
+      resolve({
+        ok: false,
+        status: 500,
+        data: { error: err.message },
+        raw: err.message,
+        targetUrl: apiUrl
+      });
     }
-    return { ok: response.ok, status: response.status, data: result, raw: rawText, targetUrl };
-  } catch (err: any) {
-    return { ok: false, error: err.message || "Failed to reach provider API" };
-  }
+  });
 }
 
 // GET /api/providers - List all providers

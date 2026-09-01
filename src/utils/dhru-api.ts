@@ -26,13 +26,20 @@ export function normalizeTargetApiUrl(rawUrl?: string): string {
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     url = "https://" + url;
   }
-  try {
-    const parsed = new URL(url);
-    if (!parsed.pathname || parsed.pathname === "/" || parsed.pathname === "") {
-      parsed.pathname = "/api/index.php";
-      return parsed.toString();
+  const urlObj = new URL(url);
+  const path = urlObj.pathname.replace(/\/+$/, "");
+  const hasExplicitApiEndpoint =
+    /\/api\/index\.php$/i.test(path) ||
+    /\/api\/v\d+$/i.test(path) ||
+    (path.includes("/api/") && !/\/api$/i.test(path));
+
+  if (!hasExplicitApiEndpoint) {
+    if (/\/api$/i.test(path)) {
+      url = url.replace(/\/$/, '') + '/index.php';
+    } else {
+      url = url.replace(/\/$/, '') + '/api/index.php';
     }
-  } catch {}
+  }
   return url;
 }
 

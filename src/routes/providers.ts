@@ -13,14 +13,95 @@ export function normalizeApiUrl(rawUrl: string): string {
   if (!url.startsWith("http://") && !url.startsWith("https://")) {
     url = "https://" + url;
   }
-  try {
-    const parsed = new URL(url);
-    if (!parsed.pathname || parsed.pathname === "/" || parsed.pathname === "") {
-      parsed.pathname = "/api/index.php";
-      return parsed.toString();
+  const urlObj = new URL(url);
+  const path = urlObj.pathname.replace(/\/+$/, "");
+  const hasExplicitApiEndpoint =
+    /\/api\/index\.php$/i.test(path) ||
+    /\/api\/v\d+$/i.test(path) ||
+    (path.includes("/api/") && !/\/api$/i.test(path));
+
+  if (!hasExplicitApiEndpoint) {
+    if (/\/api$/i.test(path)) {
+      url = url.replace(/\/$/, '') + '/index.php';
+    } else {
+      url = url.replace(/\/$/, '') + '/api/index.php';
     }
-  } catch {}
+  }
   return url;
+}
+
+function collectAccountInfoCandidates(payload: any): any[] {
+  if (!payload || typeof payload !== "object") return [];
+
+  const candidates: any[] = [payload];
+
+  if (Array.isArray(payload.SUCCESS)) candidates.push(...payload.SUCCESS);
+  else if (payload.SUCCESS && typeof payload.SUCCESS === "object") candidates.push(payload.SUCCESS);
+
+  if (Array.isArray(payload.RESULT)) candidates.push(...payload.RESULT);
+  else if (payload.RESULT && typeof payload.RESULT === "object") candidates.push(payload.RESULT);
+
+  return candidates.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    return [candidate, candidate.AccountInfo, candidate.accountinfo, candidate.accountInfo].filter(Boolean);
+  });
+}
+
+function parseProviderNumber(value: any): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = parseFloat(String(value).replace(/[^\d.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+export function extractProviderAccountInfo(payload: any): { balance: number; currency: string } | null {
+  const candidates = collectAccountInfoCandidates(payload);
+
+  for (const candidate of candidates) {
+    const balance =
+      parseProviderNumber(candidate?.credit) ??
+      parseProviderNumber(candidate?.balance) ??
+      parseProviderNumber(candidate?.credits) ??
+      parseProviderNumber(candidate?.amount);
+
+    if (balance === null) continue;
+
+    const currency = String(candidate?.currency || candidate?.Currency || payload?.currency || "USD").trim() || "USD";
+    return { balance, currency };
+  }
+
+  return null;
+}
+
+export function getProviderApiErrorMessage(payload: any): string | null {
+  if (!payload) return null;
+
+  const rawError = payload.ERROR ?? payload.Error ?? payload.error ?? payload.message ?? payload.MESSAGE;
+  if (!rawError) return null;
+
+  if (Array.isArray(rawError) && rawError[0]) {
+    return stripHtml(String(rawError[0].MESSAGE || rawError[0].message || rawError[0].error || rawError[0]));
+  }
+
+  if (typeof rawError === "object") {
+    return stripHtml(String(rawError.MESSAGE || rawError.message || JSON.stringify(rawError)));
+  }
+
+  return stripHtml(String(rawError));
+}
+
+export function isProviderApiSuccess(payload: any): boolean {
+  if (!payload) return false;
+  if (payload.SUCCESS === false) return false;
+  if (getProviderApiErrorMessage(payload)) return false;
+  return extractProviderAccountInfo(payload) !== null || Boolean(payload.SUCCESS) || Boolean(payload.RESULT);
+}
+
+function summarizeProviderApiFailure(responses: Array<{ data: any; raw: string }>): string {
+  for (const response of responses) {
+    const message = getProviderApiErrorMessage(response?.data) || stripHtml(response?.raw);
+    if (message) return message;
+  }
+  return "لم يرجع المزود بيانات قابلة للقراءة";
 }
 
 // Strip HTML tags from strings
@@ -389,56 +470,25 @@ router.post("/test-connection", async (req, res) => {
 
     const apiRes = await makeProviderApiCall(apiUrl, username, apiKey, "accountinfo");
 
-    if (!apiRes.ok || (apiRes.data && apiRes.data.SUCCESS === false) || apiRes.data?.ERROR) {
-      let errMsg = "فشل الاتصال أو خطأ غير معروف";
-      if (apiRes.data?.ERROR) {
-        if (Array.isArray(apiRes.data.ERROR) && apiRes.data.ERROR[0]?.MESSAGE) {
-          errMsg = apiRes.data.ERROR[0].MESSAGE;
-        } else if (typeof apiRes.data.ERROR === "string") {
-          errMsg = apiRes.data.ERROR;
-        } else if (apiRes.data.ERROR.message || apiRes.data.ERROR.MESSAGE) {
-          errMsg = apiRes.data.ERROR.message || apiRes.data.ERROR.MESSAGE;
-        } else {
-          errMsg = JSON.stringify(apiRes.data.ERROR);
-        }
-      } else if (apiRes.data?.error) {
-        errMsg = typeof apiRes.data.error === "string" ? apiRes.data.error : JSON.stringify(apiRes.data.error);
-      } else if (apiRes.raw) {
-        errMsg = apiRes.raw;
-      }
+    if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
+      const errMsg = getProviderApiErrorMessage(apiRes.data) || stripHtml(apiRes.raw) || "فشل الاتصال أو خطأ غير معروف";
       return res.status(400).json({
         error: `خطأ من مزود الـ API: ${errMsg}`
       });
     }
 
-    let liveCredit = 0;
-    let currency = "USD";
-
-    if (apiRes.data) {
-      if (Array.isArray(apiRes.data.SUCCESS) && apiRes.data.SUCCESS[0]) {
-        const row = apiRes.data.SUCCESS[0];
-        liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
-        if (row.AccountInfo?.currency || row.currency) {
-          currency = row.AccountInfo?.currency || row.currency;
-        }
-      } else if (apiRes.data.SUCCESS && typeof apiRes.data.SUCCESS === 'object' && !Array.isArray(apiRes.data.SUCCESS)) {
-        const row = apiRes.data.SUCCESS;
-        liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
-        if (row.AccountInfo?.currency || row.currency) {
-          currency = row.AccountInfo?.currency || row.currency;
-        }
-      } else if (apiRes.data.credit !== undefined) {
-        liveCredit = parseFloat(apiRes.data.credit) || 0;
-      } else if (apiRes.data.balance !== undefined) {
-        liveCredit = parseFloat(apiRes.data.balance) || 0;
-      }
+    const accountInfo = extractProviderAccountInfo(apiRes.data);
+    if (!accountInfo) {
+      return res.status(400).json({
+        error: "المزود اتصل بنجاح لكن لم يرجع قيمة رصيد واضحة يمكن قراءتها"
+      });
     }
 
     return res.json({
       success: true,
-      balance: liveCredit,
-      currency,
-      message: `الاتصال بالسيرفر ناجح! الرصيد المتاح: ${liveCredit.toFixed(2)} ${currency}`
+      balance: accountInfo.balance,
+      currency: accountInfo.currency,
+      message: `الاتصال بالسيرفر ناجح! الرصيد المتاح: ${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`
     });
   } catch (error: any) {
     console.error("Test connection error:", error);
@@ -461,35 +511,28 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "اسم المزود، رابط الـ API، ومفتاح API كلها حقول مطلوبة" });
     }
 
-    let initialBalance = 0.0;
-    let initialCurrency = "USD";
-    try {
-      const balRes = await makeProviderApiCall(apiUrl, username, apiKey, "accountinfo");
-      if (balRes.data && Array.isArray(balRes.data.SUCCESS) && balRes.data.SUCCESS[0]) {
-        const row = balRes.data.SUCCESS[0];
-        initialBalance = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
-        if (row.AccountInfo?.currency || row.currency) {
-          initialCurrency = row.AccountInfo?.currency || row.currency;
-        }
-      } else if (balRes.data && balRes.data.SUCCESS && typeof balRes.data.SUCCESS === 'object' && !Array.isArray(balRes.data.SUCCESS)) {
-        const row = balRes.data.SUCCESS;
-        initialBalance = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
-        if (row.AccountInfo?.currency || row.currency) {
-          initialCurrency = row.AccountInfo?.currency || row.currency;
-        }
-      }
-    } catch (e) {}
+    const normalizedApiUrl = normalizeApiUrl(apiUrl);
+    const balRes = await makeProviderApiCall(normalizedApiUrl, username, apiKey, "accountinfo");
+    if (!balRes.ok || !isProviderApiSuccess(balRes.data)) {
+      const errMsg = getProviderApiErrorMessage(balRes.data) || stripHtml(balRes.raw) || "فشل التحقق من بيانات المزود";
+      return res.status(400).json({ error: "فشل التحقق من الرصيد عند إضافة المزود: " + errMsg });
+    }
+
+    const accountInfo = extractProviderAccountInfo(balRes.data);
+    if (!accountInfo) {
+      return res.status(400).json({ error: "تم الاتصال بالمزود لكن لم يتم العثور على رصيد واضح في الرد" });
+    }
 
     const newProvider = await prisma.apiProvider.create({
       data: {
         name,
-        apiUrl,
+        apiUrl: normalizedApiUrl,
         username,
         apiKey,
         type,
         isActive,
-        balance: initialBalance,
-        currency: initialCurrency,
+        balance: accountInfo.balance,
+        currency: accountInfo.currency,
         mappingRules: mappingRules ? (typeof mappingRules === "string" ? mappingRules : JSON.stringify(mappingRules)) : null
       }
     });
@@ -515,7 +558,7 @@ router.put("/:id", async (req, res) => {
     }
 
     const name = req.body.name !== undefined ? req.body.name.trim() : existing.name;
-    const apiUrl = (req.body.apiUrl || req.body.api_url) !== undefined ? (req.body.apiUrl || req.body.api_url).trim() : existing.apiUrl;
+    const apiUrl = (req.body.apiUrl || req.body.api_url) !== undefined ? normalizeApiUrl((req.body.apiUrl || req.body.api_url).trim()) : existing.apiUrl;
     const username = req.body.username !== undefined ? (req.body.username ? req.body.username.trim() : null) : existing.username;
     const apiKey = (req.body.apiKey || req.body.api_key) !== undefined ? (req.body.apiKey || req.body.api_key).trim() : existing.apiKey;
     const type = (req.body.type || req.body.provider_type) !== undefined ? (req.body.type || req.body.provider_type) : existing.type;
@@ -585,66 +628,35 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
 
     const apiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "accountinfo");
 
-    if (!apiRes.ok || (apiRes.data && apiRes.data.SUCCESS === false) || apiRes.data?.ERROR) {
-      let errMsg = "فشل الاتصال أو خطأ غير معروف";
-      if (apiRes.data?.ERROR) {
-        if (Array.isArray(apiRes.data.ERROR) && apiRes.data.ERROR[0]?.MESSAGE) {
-          errMsg = apiRes.data.ERROR[0].MESSAGE;
-        } else if (typeof apiRes.data.ERROR === "string") {
-          errMsg = apiRes.data.ERROR;
-        } else if (apiRes.data.ERROR.message || apiRes.data.ERROR.MESSAGE) {
-          errMsg = apiRes.data.ERROR.message || apiRes.data.ERROR.MESSAGE;
-        } else {
-          errMsg = JSON.stringify(apiRes.data.ERROR);
-        }
-      } else if (apiRes.data?.error) {
-        errMsg = typeof apiRes.data.error === "string" ? apiRes.data.error : JSON.stringify(apiRes.data.error);
-      } else if (apiRes.raw) {
-        errMsg = apiRes.raw;
-      }
+    if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
+      const errMsg = getProviderApiErrorMessage(apiRes.data) || stripHtml(apiRes.raw) || "فشل الاتصال أو خطأ غير معروف";
       return res.status(400).json({
         error: `خطأ من مزود الـ API: ${errMsg}`
       });
     }
 
-    let liveCredit = 0;
-    let currency = "USD";
-
-    if (apiRes.data) {
-      if (Array.isArray(apiRes.data.SUCCESS) && apiRes.data.SUCCESS[0]) {
-        const row = apiRes.data.SUCCESS[0];
-        liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
-        if (row.AccountInfo?.currency || row.currency) {
-          currency = row.AccountInfo?.currency || row.currency;
-        }
-      } else if (apiRes.data.SUCCESS && typeof apiRes.data.SUCCESS === 'object' && !Array.isArray(apiRes.data.SUCCESS)) {
-        const row = apiRes.data.SUCCESS;
-        liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
-        if (row.AccountInfo?.currency || row.currency) {
-          currency = row.AccountInfo?.currency || row.currency;
-        }
-      } else if (apiRes.data.credit !== undefined) {
-        liveCredit = parseFloat(apiRes.data.credit) || 0;
-      } else if (apiRes.data.balance !== undefined) {
-        liveCredit = parseFloat(apiRes.data.balance) || 0;
-      }
+    const accountInfo = extractProviderAccountInfo(apiRes.data);
+    if (!accountInfo) {
+      return res.status(400).json({
+        error: "المزود اتصل بنجاح لكن لم يرجع قيمة رصيد واضحة يمكن قراءتها"
+      });
     }
 
     const updated = await prisma.apiProvider.update({
       where: { id },
       data: {
-        balance: liveCredit,
-        currency
+        balance: accountInfo.balance,
+        currency: accountInfo.currency
       }
     });
 
     return res.json({
       success: true,
-      balance: liveCredit,
-      credit: `${liveCredit.toFixed(2)} ${currency}`,
-      currency,
+      balance: accountInfo.balance,
+      credit: `${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`,
+      currency: accountInfo.currency,
       provider: updated,
-      message: `تم تحديث الرصيد للمزود (${provider.name}): ${liveCredit.toFixed(2)} ${currency}`
+      message: `تم تحديث الرصيد للمزود (${provider.name}): ${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`
     });
   } catch (error: any) {
     console.error("Check balance error:", error);
@@ -737,7 +749,20 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
     ]);
 
+    const responses = [imeiRes, serverRes, remoteRes];
+    if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
+      return res.status(400).json({
+        error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`
+      });
+    }
+
     const services = parseAllProviderServices(imeiRes, serverRes, remoteRes);
+
+    if (services.length === 0) {
+      return res.status(400).json({
+        error: "اتصلنا بالمزود لكن لم يتم العثور على خدمات قابلة للقراءة في الرد"
+      });
+    }
 
     return res.json({
       success: true,
@@ -768,6 +793,13 @@ router.post("/:id/sync", async (req, res) => {
       makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
       makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
     ]);
+
+    const responses = [imeiRes, serverRes, remoteRes];
+    if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
+      return res.status(400).json({
+        error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`
+      });
+    }
 
     const allServices = parseAllProviderServices(imeiRes, serverRes, remoteRes);
 

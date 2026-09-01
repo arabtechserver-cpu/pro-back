@@ -3,14 +3,15 @@ import { prisma } from '../server';
 import { getImeiOrder, getServerOrder } from '../utils/dhru-api';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 
+// Maximum number of failed API checks before marking order as failed
+const MAX_RETRY_ERRORS = 10;
+
 // Run every 1 minute
 export function initOrderSyncCron() {
   console.log('[CRON] Initializing Order Sync Cron Job (runs every 1 minute)');
 
   cron.schedule('* * * * *', async () => {
     try {
-      console.log('[CRON] Running order sync...');
-
       // Find orders that are processing and have an API Order ID
       const pendingOrders = await prisma.order.findMany({
         where: {
@@ -32,7 +33,7 @@ export function initOrderSyncCron() {
         try {
           // Check if it's an IMEI service or Server service
           const dhruService = await prisma.dhruService.findFirst({
-            where: { 
+            where: {
               OR: [
                 { id: String(order.serviceId) },
                 { dhruId: String(order.serviceId) }
@@ -56,8 +57,58 @@ export function initOrderSyncCron() {
             response = await getServerOrder(order.apiOrderId, providerConfig);
           }
 
+          // Handle "Order not found" from API — increment retry counter
           if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
-            console.error(`[CRON] Error checking order ${order.id}:`, response?.Error || response?.ERROR || "Unknown Error");
+            const errorMsg = response?.Error || response?.ERROR || "Unknown Error";
+
+            // Parse existing notes for retry count
+            let retryCount = 0;
+            if (order.notes) {
+              const match = order.notes.match(/retry:(\d+)/);
+              if (match) retryCount = parseInt(match[1], 10);
+            }
+            retryCount++;
+
+            console.warn(`[CRON] Order ${order.id} API error (attempt ${retryCount}/${MAX_RETRY_ERRORS}): ${errorMsg}`);
+
+            if (retryCount >= MAX_RETRY_ERRORS) {
+              // Mark as failed after too many consecutive "not found" responses
+              await prisma.order.update({
+                where: { id: order.id },
+                data: {
+                  status: 'failed',
+                  reply: `فشل: ${errorMsg}`,
+                  notes: `auto-failed after ${MAX_RETRY_ERRORS} retries`
+                }
+              });
+
+              // Refund user if applicable
+              if (order.userId) {
+                await prisma.user.update({
+                  where: { id: order.userId },
+                  data: { balance: { increment: order.price } }
+                });
+                await prisma.transaction.create({
+                  data: {
+                    userId: order.userId,
+                    type: `استرجاع تلقائي (طلب غير موجود): ${order.serviceName.slice(0, 30)}`,
+                    amount: order.price,
+                    method: 'استرجاع تلقائي',
+                    refNo: `REF-#${order.id.slice(-6)}`,
+                    status: 'completed'
+                  }
+                });
+              }
+
+              console.log(`[CRON] Order ${order.id} auto-failed and refunded after ${MAX_RETRY_ERRORS} retries.`);
+            } else {
+              // Update retry counter in notes
+              const updatedNotes = (order.notes || '').replace(/retry:\d+/, '') + ` retry:${retryCount}`;
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { notes: updatedNotes.trim() }
+              });
+            }
             continue;
           }
 
@@ -76,7 +127,8 @@ export function initOrderSyncCron() {
               where: { id: order.id },
               data: {
                 status: 'completed',
-                reply: replyCode
+                reply: replyCode,
+                notes: null
               }
             });
 
@@ -91,7 +143,8 @@ export function initOrderSyncCron() {
               where: { id: order.id },
               data: {
                 status: 'failed',
-                reply: 'مرفوض من المزود'
+                reply: 'مرفوض من المزود',
+                notes: null
               }
             });
 
@@ -118,6 +171,15 @@ export function initOrderSyncCron() {
             const msg = `❌ تم رفض طلبك وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
             sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
             console.log(`[CRON] Order ${order.id} marked as REJECTED and refunded.`);
+          }
+          else {
+            // Still processing (status 0 or 1) - reset retry counter if it was set
+            if (order.notes?.includes('retry:')) {
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { notes: null }
+              });
+            }
           }
 
         } catch (err) {

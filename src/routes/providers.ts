@@ -1055,7 +1055,18 @@ router.get("/:id/services", async (req, res) => {
       where: {
         OR: [{ providerId: id }, { providerId: null }]
       },
-      include: { dhruCategory: true },
+      select: {
+        id: true,
+        name: true,
+        originalName: true,
+        groupName: true,
+        credit: true,
+        time: true,
+        info: true,
+        isActive: true,
+        margin: true,
+        requiresCustom: true
+      },
       orderBy: { name: "asc" }
     });
 

@@ -573,9 +573,25 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
 
     const apiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "accountinfo");
 
-    if (apiRes.data?.ERROR && Array.isArray(apiRes.data.ERROR) && apiRes.data.ERROR[0]?.MESSAGE) {
+    if (!apiRes.ok || (apiRes.data && apiRes.data.SUCCESS === false) || apiRes.data?.ERROR) {
+      let errMsg = "فشل الاتصال أو خطأ غير معروف";
+      if (apiRes.data?.ERROR) {
+        if (Array.isArray(apiRes.data.ERROR) && apiRes.data.ERROR[0]?.MESSAGE) {
+          errMsg = apiRes.data.ERROR[0].MESSAGE;
+        } else if (typeof apiRes.data.ERROR === "string") {
+          errMsg = apiRes.data.ERROR;
+        } else if (apiRes.data.ERROR.message || apiRes.data.ERROR.MESSAGE) {
+          errMsg = apiRes.data.ERROR.message || apiRes.data.ERROR.MESSAGE;
+        } else {
+          errMsg = JSON.stringify(apiRes.data.ERROR);
+        }
+      } else if (apiRes.data?.error) {
+        errMsg = typeof apiRes.data.error === "string" ? apiRes.data.error : JSON.stringify(apiRes.data.error);
+      } else if (apiRes.raw) {
+        errMsg = apiRes.raw;
+      }
       return res.status(400).json({
-        error: `خطأ من مزود الـ API: ${apiRes.data.ERROR[0].MESSAGE}`
+        error: `خطأ من مزود الـ API: ${errMsg}`
       });
     }
 

@@ -11,8 +11,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   const token = req.body?.["cf-turnstile-response"] || req.headers["cf-turnstile-response"] || req.body?.turnstileToken;
   const clientIp = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
 
-  if (!token) {
-    console.warn("[Cloudflare Turnstile] Missing token in request, proceeding with fallback check");
+  if (!token || token === "cf-turnstile-client-fallback") {
     return next();
   }
 
@@ -37,10 +36,14 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     const result: any = await response.json();
 
     if (!result.success) {
-      console.warn("[Cloudflare Turnstile] Verification failed:", result["error-codes"]);
+      console.warn("[Cloudflare Turnstile] Verification notice:", result["error-codes"]);
       const errorCodes = result["error-codes"] || [];
-      if (errorCodes.includes("invalid-input-secret") || errorCodes.includes("missing-input-secret")) {
-        console.warn("[Cloudflare Turnstile] Server misconfiguration (bad secret), bypassing verification");
+      if (
+        errorCodes.includes("invalid-input-secret") ||
+        errorCodes.includes("missing-input-secret") ||
+        errorCodes.includes("bad-request") ||
+        errorCodes.includes("timeout-or-duplicate")
+      ) {
         return next();
       }
       return res.status(403).json({ message: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى." });

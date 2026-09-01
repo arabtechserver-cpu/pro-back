@@ -53,35 +53,22 @@ export async function bootstrapDatabase() {
       // Ignore if column exists or unsupported syntax
     }
 
-    // 2. Check & Ensure Newsletter Tables Exist
+    // 2. Ensure columns exist via auto-migration helpers
+    // Newsletter tables (Subscriber, NewsletterBroadcast) are managed by prisma db push.
+    // Add any missing columns that may not be covered by db push due to data-loss protection:
     try {
-      await prisma.$executeRawUnsafe(`
-        CREATE TABLE IF NOT EXISTS "Subscriber" (
-          "id" TEXT NOT NULL PRIMARY KEY,
-          "email" TEXT NOT NULL UNIQUE,
-          "name" TEXT,
-          "isActive" BOOLEAN NOT NULL DEFAULT true,
-          "source" TEXT NOT NULL DEFAULT 'homepage',
-          "subscribedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          "lastNotifiedAt" TIMESTAMP(3)
-        );
-      `);
-      await prisma.$executeRawUnsafe(`
-        CREATE TABLE IF NOT EXISTS "NewsletterBroadcast" (
-          "id" TEXT NOT NULL PRIMARY KEY,
-          "subject" TEXT NOT NULL,
-          "title" TEXT NOT NULL,
-          "message" TEXT NOT NULL,
-          "category" TEXT NOT NULL DEFAULT 'General',
-          "actionUrl" TEXT,
-          "actionText" TEXT,
-          "sentCount" INTEGER NOT NULL DEFAULT 0,
-          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-    } catch (tblErr) {
-      console.warn('[Bootstrap] Note on newsletter tables check:', tblErr);
-    }
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "membershipTierId" TEXT;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "customDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0;`);
+    } catch (_) { /* already exists */ }
+    console.log('[Bootstrap] Column migration helpers completed.');
 
     // 3. Check & Sync Services if a Provider is configured
     const serviceCount = await prisma.dhruService.count();

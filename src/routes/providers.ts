@@ -421,6 +421,12 @@ router.post("/test-connection", async (req, res) => {
         if (row.AccountInfo?.currency || row.currency) {
           currency = row.AccountInfo?.currency || row.currency;
         }
+      } else if (apiRes.data.SUCCESS && typeof apiRes.data.SUCCESS === 'object' && !Array.isArray(apiRes.data.SUCCESS)) {
+        const row = apiRes.data.SUCCESS;
+        liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
+        if (row.AccountInfo?.currency || row.currency) {
+          currency = row.AccountInfo?.currency || row.currency;
+        }
       } else if (apiRes.data.credit !== undefined) {
         liveCredit = parseFloat(apiRes.data.credit) || 0;
       } else if (apiRes.data.balance !== undefined) {
@@ -461,6 +467,12 @@ router.post("/", async (req, res) => {
       const balRes = await makeProviderApiCall(apiUrl, username, apiKey, "accountinfo");
       if (balRes.data && Array.isArray(balRes.data.SUCCESS) && balRes.data.SUCCESS[0]) {
         const row = balRes.data.SUCCESS[0];
+        initialBalance = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
+        if (row.AccountInfo?.currency || row.currency) {
+          initialCurrency = row.AccountInfo?.currency || row.currency;
+        }
+      } else if (balRes.data && balRes.data.SUCCESS && typeof balRes.data.SUCCESS === 'object' && !Array.isArray(balRes.data.SUCCESS)) {
+        const row = balRes.data.SUCCESS;
         initialBalance = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
         if (row.AccountInfo?.currency || row.currency) {
           initialCurrency = row.AccountInfo?.currency || row.currency;
@@ -601,6 +613,12 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
     if (apiRes.data) {
       if (Array.isArray(apiRes.data.SUCCESS) && apiRes.data.SUCCESS[0]) {
         const row = apiRes.data.SUCCESS[0];
+        liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
+        if (row.AccountInfo?.currency || row.currency) {
+          currency = row.AccountInfo?.currency || row.currency;
+        }
+      } else if (apiRes.data.SUCCESS && typeof apiRes.data.SUCCESS === 'object' && !Array.isArray(apiRes.data.SUCCESS)) {
+        const row = apiRes.data.SUCCESS;
         liveCredit = parseFloat(row.AccountInfo?.credit || row.credit || row.balance || "0") || 0;
         if (row.AccountInfo?.currency || row.currency) {
           currency = row.AccountInfo?.currency || row.currency;

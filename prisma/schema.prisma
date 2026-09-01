@@ -28,7 +28,7 @@ model BlogPost {
   imageUrl  String
   category  String
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model DhruCategory {
@@ -53,7 +53,7 @@ model DhruService {
   providerId     String?
   requiresCustom String?
   createdAt      DateTime      @default(now())
-  updatedAt      DateTime      @updatedAt
+  updatedAt      DateTime      @default(now()) @updatedAt
   dhruCategory   DhruCategory? @relation(fields: [categoryId], references: [id])
   apiProvider    ApiProvider?  @relation(fields: [providerId], references: [id], onDelete: SetNull)
 }
@@ -71,7 +71,7 @@ model ApiProvider {
   servicesCount Int           @default(0)
   mappingRules  String?
   createdAt     DateTime      @default(now())
-  updatedAt     DateTime      @updatedAt
+  updatedAt     DateTime      @default(now()) @updatedAt
   services      DhruService[]
 }
 
@@ -90,7 +90,7 @@ model Subscriber {
   name      String?
   isActive  Boolean  @default(true)
   createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  updatedAt DateTime @default(now()) @updatedAt
 }
 
 model NewsletterBroadcast {
@@ -118,7 +118,7 @@ model Order {
   reply       String?
   notes       String?
   createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  updatedAt   DateTime @default(now()) @updatedAt
   user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -132,7 +132,7 @@ model Transaction {
   refNo        String
   receiptImage String?
   createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  updatedAt    DateTime @default(now()) @updatedAt
   user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 }
 
@@ -150,7 +150,7 @@ model User {
   membershipTierId String?
   customDiscount   Float           @default(0.0)
   createdAt        DateTime        @default(now())
-  updatedAt        DateTime        @updatedAt
+  updatedAt        DateTime        @default(now()) @updatedAt
   orders           Order[]
   transactions     Transaction[]
   membershipTier   MembershipTier? @relation(fields: [membershipTierId], references: [id])
@@ -166,7 +166,7 @@ model MembershipTier {
   description        String?
   isDefault          Boolean  @default(false)
   createdAt          DateTime @default(now())
-  updatedAt          DateTime @updatedAt
+  updatedAt          DateTime @default(now()) @updatedAt
   users              User[]
 }
 
@@ -180,7 +180,7 @@ model VideoSeries {
   isSubscriptionRequired Boolean         @default(false)
   price                  Float?
   createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
+  updatedAt              DateTime        @default(now()) @updatedAt
   videoTutorials         VideoTutorial[]
 }
 

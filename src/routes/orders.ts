@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../server';
 import { placeImeiOrder, placeServerOrder, getImeiOrder, getServerOrder, normalizeProviderCustomFields } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
-import { buildOrderFieldDetails, getOrderServiceType, parseOrderMetadata } from '../utils/order-response';
+import { buildOrderFieldDetails, resolveOrderServiceType, parseOrderMetadata } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
@@ -73,7 +73,7 @@ async function enrichOrdersWithProviderData(orders: any[]) {
       serviceDhruId: srv?.dhruId || null,
       providerServiceId: srv?.dhruId ? getProviderRemoteServiceId(srv.dhruId) : null,
       serviceCategory: srv?.dhruCategory?.name || null,
-      serviceType: getOrderServiceType(srv?.dhruCategory?.name),
+      serviceType: resolveOrderServiceType(srv?.apiServiceType, srv?.dhruCategory?.name, srv?.groupName),
       groupName: srv?.groupName || null,
       fieldDetails: buildOrderFieldDetails(srv?.requiresCustom, metadata.customFields),
       cost,
@@ -373,7 +373,12 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
     let apiOrderId: string | null = null;
     const providerCustomFields = normalizeProviderCustomFields(customFields, dhruService.requiresCustom);
 
-    if (dhruService.dhruCategory?.name === 'IMEI Service' || dhruService.groupName?.toLowerCase().includes('imei')) {
+    const serviceType = resolveOrderServiceType(
+      dhruService.apiServiceType,
+      dhruService.dhruCategory?.name,
+      dhruService.groupName
+    );
+    if (serviceType === 'imei') {
       const imeiToSend = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
       dhruResponse = await placeImeiOrder(getProviderRemoteServiceId(dhruService.dhruId), imeiToSend, providerCustomFields, providerConfig);
     } else {
@@ -655,7 +660,10 @@ router.post('/check-status', isAdmin, async (req, res) => {
       : undefined;
 
     let response: any = null;
-    if (dhruService && (dhruService.dhruCategory?.name === 'IMEI Service' || dhruService.groupName?.toLowerCase().includes('imei'))) {
+    const serviceType = dhruService
+      ? resolveOrderServiceType(dhruService.apiServiceType, dhruService.dhruCategory?.name, dhruService.groupName)
+      : 'unknown';
+    if (dhruService && serviceType === 'imei') {
       response = await getImeiOrder(order.apiOrderId, providerConfig);
     } else {
       response = await getServerOrder(order.apiOrderId, providerConfig);

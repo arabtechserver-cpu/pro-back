@@ -42,6 +42,29 @@ function run() {
     ]
   );
 
+  const normalizeProviderApiServiceType =
+    providers.normalizeProviderApiServiceType || (() => "unknown");
+  assert.equal(normalizeProviderApiServiceType("SERVER SERVICE", "imei"), "server");
+  assert.equal(normalizeProviderApiServiceType(undefined, "remote"), "remote");
+
+  const explicitTypeServices = providers.parseAllProviderServices(
+    {
+      data: {
+        SUCCESS: [{
+          LIST: {
+            test: {
+              GROUPNAME: "Mixed Provider Group",
+              SERVICES: [{ SERVICEID: "type-1", SERVICENAME: "Provider Typed", SERVICETYPE: "SERVER" }]
+            }
+          }
+        }]
+      }
+    },
+    undefined
+  );
+  assert.equal(explicitTypeServices[0].service_type, "server");
+  assert.equal(explicitTypeServices[0].api_service_type, "server");
+
   assert.deepEqual(
     providers.extractProviderAccountInfo({
       SUCCESS: [{ AccountInfo: { credit: "57.84", currency: "USD" } }]
@@ -81,6 +104,9 @@ function run() {
   assert.equal(serviceWithEmail.group_name, "Haafedk Tool iCloud");
   assert.equal(serviceWithEmail.customFields[0].name, "custom_Email");
   assert.equal(serviceWithEmail.customFields[0].required, true);
+
+  const prismaSchema = fs.readFileSync(path.join(__dirname, "prisma", "schema.prisma"), "utf8");
+  assert.match(prismaSchema, /apiServiceType\s+String\?\s+@map\("api_service_type"\)/);
 
   console.log("providers regression tests passed");
 }

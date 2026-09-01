@@ -2,6 +2,7 @@ import cron from 'node-cron';
 import { prisma } from '../server';
 import { getImeiOrder, getServerOrder } from '../utils/dhru-api';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
+import { resolveOrderServiceType } from '../utils/order-response';
 
 // Maximum number of failed API checks before marking order as failed
 const MAX_RETRY_ERRORS = 10;
@@ -51,7 +52,11 @@ export function initOrderSyncCron() {
             : undefined;
 
           let response: any = null;
-          if (dhruService && dhruService.dhruCategory?.name === "IMEI Service") {
+          if (dhruService && resolveOrderServiceType(
+            dhruService.apiServiceType,
+            dhruService.dhruCategory?.name,
+            dhruService.groupName
+          ) === "imei") {
             response = await getImeiOrder(order.apiOrderId, providerConfig);
           } else {
             response = await getServerOrder(order.apiOrderId, providerConfig);

@@ -69,4 +69,10 @@ assert.equal(getOrderServiceType("IMEI Service"), "imei");
 assert.equal(getOrderServiceType("Server Service"), "server");
 assert.equal(getOrderServiceType("Remote Service"), "remote");
 
+const resolveOrderServiceType =
+  orderResponse.resolveOrderServiceType || (() => "unknown");
+assert.equal(resolveOrderServiceType("server", "IMEI Service", "IMEI Group"), "server");
+assert.equal(resolveOrderServiceType(null, "Remote Service", "General"), "remote");
+assert.equal(resolveOrderServiceType(null, null, "IMEI Tools"), "imei");
+
 console.log("order dispatch field tests passed");

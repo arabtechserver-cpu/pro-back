@@ -691,6 +691,17 @@ export function getProviderServiceType(categoryName: unknown): ProviderServiceTy
   return "unknown";
 }
 
+export function normalizeProviderApiServiceType(
+  explicitType: unknown,
+  endpointType?: ProviderServiceType
+): ProviderServiceType | "unknown" {
+  const normalized = String(explicitType || "").trim().toLowerCase();
+  if (normalized.includes("remote")) return "remote";
+  if (normalized.includes("server")) return "server";
+  if (normalized.includes("imei")) return "imei";
+  return endpointType || "unknown";
+}
+
 export function getProviderServiceApiActions(types: ProviderServiceType[]) {
   const actions = {
     imei: "imeiservicelist",
@@ -736,6 +747,10 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
         const sCredit = parseFloat(s.CREDIT || s.credit || s.PRICE || s.price || "0") || 0;
         const sTime = String(s.TIME || s.time || "1-24 Hours");
         const sInfo = String(s.INFO || s.info || "");
+        const apiServiceType = normalizeProviderApiServiceType(
+          s.SERVICETYPE ?? s.SERVICE_TYPE ?? s.serviceType ?? s.service_type,
+          type
+        );
 
         extractedServices.push({
           id: sId,
@@ -744,8 +759,9 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           service_name: sName,
           group_name: groupName,
           groupName,
-          category_name: type === "imei" ? "IMEI Service" : (type === "remote" ? "Remote Service" : "Server Service"),
-          service_type: type,
+          category_name: apiServiceType === "imei" ? "IMEI Service" : (apiServiceType === "remote" ? "Remote Service" : "Server Service"),
+          service_type: apiServiceType,
+          api_service_type: apiServiceType,
           credit: sCredit,
           price: sCredit,
           time: sTime,
@@ -820,12 +836,7 @@ router.post("/:id/sync", async (req, res) => {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
-    const requestedServiceTypes = normalizeRequestedServiceTypes(
-      req.body.serviceTypes ?? req.body.service_types
-    );
-    if (requestedServiceTypes.length === 0) {
-      return res.status(400).json({ error: "يرجى اختيار قسم واحد على الأقل: IMEI أو Server أو Remote" });
-    }
+    const requestedServiceTypes = [...PROVIDER_SERVICE_TYPES];
 
     const fetchedResponses = await Promise.all(
       getProviderServiceApiActions(requestedServiceTypes).map(async ({ type, action }) => ({
@@ -893,13 +904,10 @@ router.post("/:id/sync", async (req, res) => {
       const time = s.time || "";
       const info = s.info || "";
       const requiresCustomStr = s.requiresCustom || null;
-
-      let categoryName = s.category_name || "Server Service";
-      if (`${groupName} ${serviceName}`.match(/remote|rent|teamviewer|anydesk|usb|flexi/i)) {
-        categoryName = "Remote Service";
-      } else if (s.service_type === "imei") {
-        categoryName = "IMEI Service";
-      }
+      const apiServiceType = normalizeProviderApiServiceType(s.api_service_type ?? s.service_type);
+      const categoryName = apiServiceType === "imei"
+        ? "IMEI Service"
+        : (apiServiceType === "remote" ? "Remote Service" : "Server Service");
       const categoryId = categoryMap.get(categoryName)!;
       const cleanName = cleanServiceName(serviceName, info, groupName);
 
@@ -920,6 +928,7 @@ router.post("/:id/sync", async (req, res) => {
             info,
             categoryId,
             providerId: provider.id,
+            apiServiceType,
             requiresCustom: requiresCustomStr,
             isActive: existing.isActive,
             margin: computedMargin
@@ -937,6 +946,7 @@ router.post("/:id/sync", async (req, res) => {
           info,
           categoryId,
           providerId: provider.id,
+          apiServiceType,
           requiresCustom: requiresCustomStr,
           isActive: !isNotice,
           margin: computedMargin
@@ -981,7 +991,7 @@ router.post("/:id/sync", async (req, res) => {
       count: allServices.length,
       totalCount: totalSynced,
       serviceTypes: requestedServiceTypes,
-      message: `تمت المزامنة بنجاح! تم جلب وتحديث ${allServices.length} خدمة من الأقسام المحددة. إجمالي خدمات المزود: ${totalSynced}.`
+      message: `تمت المزامنة بنجاح! تم جلب قوائم IMEI وServer وRemote وتصنيف ${allServices.length} خدمة تلقائياً. إجمالي خدمات المزود: ${totalSynced}.`
     });
   } catch (error: any) {
     console.error("Provider sync error:", error);
@@ -1028,12 +1038,10 @@ router.post("/:id/import-services", async (req, res) => {
       const margin = markup > 0 ? Number(((credit * markup) / 100).toFixed(2)) : 0;
       const cleanName = cleanServiceName(serviceName, s.info || "", groupName);
       
-      let categoryName = s.category_name || "Server Service";
-      if (`${groupName} ${serviceName}`.match(/remote|rent|teamviewer|anydesk|usb|flexi/i)) {
-        categoryName = "Remote Service";
-      } else if (s.service_type === "imei") {
-        categoryName = "IMEI Service";
-      }
+      const apiServiceType = normalizeProviderApiServiceType(s.api_service_type ?? s.service_type);
+      const categoryName = apiServiceType === "imei"
+        ? "IMEI Service"
+        : (apiServiceType === "remote" ? "Remote Service" : "Server Service");
       const categoryId = categoryMap.get(categoryName)!;
 
       const requiresCustomStr = s.customFields && Array.isArray(s.customFields)
@@ -1052,6 +1060,7 @@ router.post("/:id/import-services", async (req, res) => {
           info: s.info || "",
           categoryId,
           providerId: provider.id,
+          apiServiceType,
           requiresCustom: requiresCustomStr,
           isActive: true,
           margin
@@ -1065,6 +1074,7 @@ router.post("/:id/import-services", async (req, res) => {
           info: s.info || "",
           categoryId,
           providerId: provider.id,
+          apiServiceType,
           requiresCustom: requiresCustomStr,
           isActive: true,
           margin
@@ -1110,6 +1120,7 @@ router.get("/:id/services", async (req, res) => {
         isActive: true,
         margin: true,
         requiresCustom: true,
+        apiServiceType: true,
         dhruCategory: {
           select: { name: true }
         }
@@ -1122,7 +1133,8 @@ router.get("/:id/services", async (req, res) => {
       services: services.map((service) => ({
         ...service,
         category_name: service.dhruCategory?.name || null,
-        service_type: getProviderServiceType(service.dhruCategory?.name)
+        service_type: service.apiServiceType || getProviderServiceType(service.dhruCategory?.name),
+        api_service_type: service.apiServiceType || null
       }))
     });
   } catch (error: any) {

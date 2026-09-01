@@ -51,6 +51,7 @@ model DhruService {
   margin         Float         @default(0)
   categoryId     String?
   providerId     String?
+  apiServiceType String?       @map("api_service_type")
   requiresCustom String?
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @default(now()) @updatedAt

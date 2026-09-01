@@ -8,6 +8,7 @@ import { placeImeiOrder, placeServerOrder } from './dhru-api';
 import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailService';
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
 import { normalizeTelegramAdminChatIds } from './telegram-config';
+import { resolveOrderServiceType } from './order-response';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
@@ -220,7 +221,11 @@ async function handleIncomingTelegramUpdate(update: any) {
         }
 
         let dhruResponse: any = null;
-        if (dhruService.dhruCategory?.name === 'IMEI Service') {
+        if (resolveOrderServiceType(
+          dhruService.apiServiceType,
+          dhruService.dhruCategory?.name,
+          dhruService.groupName
+        ) === 'imei') {
           dhruResponse = await placeImeiOrder(dhruService.dhruId, order.targetInput, {});
         } else {
           dhruResponse = await placeServerOrder(dhruService.dhruId, order.quantity, {}, order.targetInput);

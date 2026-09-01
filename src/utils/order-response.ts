@@ -42,6 +42,19 @@ export function getOrderServiceType(categoryName: unknown): "imei" | "server" | 
   return "unknown";
 }
 
+export function resolveOrderServiceType(
+  apiServiceType: unknown,
+  categoryName?: unknown,
+  groupName?: unknown
+): "imei" | "server" | "remote" | "unknown" {
+  const storedType = getOrderServiceType(apiServiceType);
+  if (storedType !== "unknown") return storedType;
+
+  const categoryType = getOrderServiceType(categoryName);
+  if (categoryType !== "unknown") return categoryType;
+  return getOrderServiceType(groupName);
+}
+
 export function buildOrderFieldDetails(
   requiredFields: unknown,
   submittedFields: Record<string, string> | null = null

@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../server";
 import bcrypt from "bcryptjs";
 import { isAdmin, authenticateToken } from "../middleware/auth";
+import { checkAndAutoUpgradeMembership } from "../utils/membershipUpgrade";
 
 const router = Router();
 
@@ -54,20 +55,31 @@ router.get("/", isAdmin, async (req, res) => {
 router.get("/profile", authenticateToken, async (req: any, res) => {
   try {
     const { email, userId } = req.query;
-    let u = null;
+    let u: any = null;
     if (userId) {
-      u = await prisma.user.findUnique({ where: { id: String(userId) } });
+      u = await prisma.user.findUnique({ where: { id: String(userId) }, include: { membershipTier: true } });
     } else if (email) {
-      u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() } });
+      u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() }, include: { membershipTier: true } });
     } else if (req.user?.id) {
-      u = await prisma.user.findUnique({ where: { id: req.user.id } });
+      u = await prisma.user.findUnique({ where: { id: req.user.id }, include: { membershipTier: true } });
     } else if (req.user) {
-      u = req.user;
+      u = await prisma.user.findUnique({ where: { id: req.user.id }, include: { membershipTier: true } }) || req.user;
     }
 
     if (!u) {
       return res.status(404).json({ success: false, error: "User not found" });
     }
+
+    // Auto-check for VIP upgrade
+    const autoUpgraded = await checkAndAutoUpgradeMembership(u.id);
+    if (autoUpgraded) {
+      u = autoUpgraded;
+    }
+
+    const effectiveDiscount = Math.max(
+      u.customDiscount || 0,
+      u.membershipTier?.discountPercentage || 0
+    );
 
     return res.json({
       success: true,
@@ -80,7 +92,11 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
         country: u.country,
         balance: u.balance,
         role: u.role,
-        status: u.status
+        status: u.status,
+        membershipTierId: u.membershipTierId,
+        membershipTier: u.membershipTier,
+        customDiscount: u.customDiscount || 0,
+        effectiveDiscount: effectiveDiscount
       }
     });
   } catch (error: any) {
@@ -305,12 +321,14 @@ router.post("/update-balance", isAdmin, async (req, res) => {
       data: { balance: updatedBalance }
     });
 
+    const upgraded = await checkAndAutoUpgradeMembership(userId, amount ? parseFloat(amount) : undefined);
+
     console.log(`[Admin Manual Balance Edit] User ${updatedUser.username} (${updatedUser.email}) -> New Balance: $${updatedUser.balance}`);
 
     return res.json({
       success: true,
       message: `تم تعديل رصيد المستخدم (${updatedUser.fullName}) بنجاح إلى $${updatedUser.balance.toFixed(2)} USD!`,
-      user: updatedUser
+      user: upgraded || updatedUser
     });
   } catch (error: any) {
     console.error("Error updating balance:", error);

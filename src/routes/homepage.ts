@@ -13,7 +13,7 @@ const defaultConfig = {
     text2Ar: "دفع آمن 100% + شحن فوري للمحفظة مع ضمان استرجاع الرصيد",
     whatsapp: "+16728972935",
     telegram: "@ARABTECHSUPPURT2",
-    email: "eslamgsm1774@gmail.com"
+    email: "arabtechserver@gmail.com"
   },
   heroSection: {
     liveTagEn: "Live service portal",
@@ -92,25 +92,28 @@ const defaultConfig = {
     feat3DescEn: "Live chat and Telegram admin with priority lanes for resellers.",
     feat3DescAr: "فريق دعم بشري متواجد على التيليجرام والواتساب لمساعدتك."
   },
-  campaigns: {
-    promo1TagEn: "Hot Offer",
-    promo1TagAr: "عرض خاص",
-    promo1TitleEn: "Samsung FRP Remove",
-    promo1TitleAr: "حذف حساب جوجل لسامسونج",
-    promo1DescEn: "Instant via IMEI. Support all models.",
-    promo1DescAr: "فك فوري لجميع موديلات سامسونج.",
-    promo1Image: "/images/promo_samsung.png",
-    promo1Url: "/pricing",
-    
-    promo2TagEn: "Official Reseller",
-    promo2TagAr: "ترخيص رسمي",
-    promo2TitleEn: "Chimera Tool",
-    promo2TitleAr: "أداة شيميراChimera",
-    promo2DescEn: "Activations and credits available instantly.",
-    promo2DescAr: "تراخيص وأرصدة سريعة ومتاحة فوراً.",
-    promo2Image: "/images/promo_chimera.png",
-    promo2Url: "/pricing"
-  }
+  campaigns: [
+    {
+      tagEn: "Hot Offer",
+      tagAr: "عرض خاص",
+      titleEn: "Samsung FRP Remove",
+      titleAr: "حذف حساب جوجل لسامسونج",
+      descEn: "Instant via IMEI. Support all models.",
+      descAr: "فك فوري لجميع موديلات سامسونج.",
+      image: "/images/promo_samsung.png",
+      url: "/pricing"
+    },
+    {
+      tagEn: "Official Reseller",
+      tagAr: "ترخيص رسمي",
+      titleEn: "Chimera Tool",
+      titleAr: "أداة شيميراChimera",
+      descEn: "Activations and credits available instantly.",
+      descAr: "تراخيص وأرصدة سريعة ومتاحة فوراً.",
+      image: "/images/promo_chimera.png",
+      url: "/pricing"
+    }
+  ]
 };
 
 function ensureDirectoryExistence(filePath: string) {

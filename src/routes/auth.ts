@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../server';
 import { generateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
+import { sendTelegramMessage } from '../utils/telegramService';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
 
@@ -57,6 +58,20 @@ router.post('/register', async (req, res) => {
     });
 
     addContactToLoops(cleanEmail, fullName.trim()).catch(() => {});
+
+    // Notify Telegram Admins of new user registration
+    const newRegMsg = `
+👤 <b>عميل جديد انضم للموقع! (New Registration)</b>
+
+✨ <b>الاسم:</b> ${newUser.fullName}
+📧 <b>الإيميل:</b> <code>${newUser.email}</code>
+🏷️ <b>اسم المستخدم:</b> @${newUser.username}
+📱 <b>الهاتف:</b> <code>${newUser.phone || 'غير مسجل'}</code>
+🌍 <b>الدولة:</b> ${newUser.country}
+📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
+    `.trim();
+
+    sendTelegramMessage('7053196033', newRegMsg).catch(() => {});
 
     const token = generateToken({ id: newUser.id, email: newUser.email, role: newUser.role });
 
@@ -175,6 +190,9 @@ router.post('/login', async (req, res) => {
           { email: inputStr },
           { username: inputStr }
         ]
+      },
+      include: {
+        membershipTier: true
       }
     });
 
@@ -193,6 +211,11 @@ router.post('/login', async (req, res) => {
 
     const token = generateToken({ id: dbUser.id, email: dbUser.email, role: dbUser.role });
 
+    const effectiveDiscount = Math.max(
+      dbUser.customDiscount || 0,
+      dbUser.membershipTier?.discountPercentage || 0
+    );
+
     return res.json({
       success: true,
       token,
@@ -205,7 +228,11 @@ router.post('/login', async (req, res) => {
         country: dbUser.country,
         status: dbUser.status,
         balance: dbUser.balance,
-        role: dbUser.role
+        role: dbUser.role,
+        membershipTierId: dbUser.membershipTierId,
+        membershipTier: dbUser.membershipTier,
+        customDiscount: dbUser.customDiscount || 0,
+        effectiveDiscount: effectiveDiscount
       }
     });
   } catch (error: any) {

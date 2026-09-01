@@ -21,7 +21,7 @@ async function testFullFlow() {
 
     // 3. Get a service (let's use an IMEI service if possible)
     const dhruService = await prisma.dhruService.findFirst({
-        where: { category: { name: "IMEI Service" } }
+        where: { dhruCategory: { name: "IMEI Service" } }
     });
     
     if (!dhruService) {

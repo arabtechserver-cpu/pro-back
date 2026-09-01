@@ -32,15 +32,28 @@ export function initOrderSyncCron() {
         try {
           // Check if it's an IMEI service or Server service
           const dhruService = await prisma.dhruService.findFirst({
-            where: { dhruId: String(order.serviceId) },
-            include: { category: true }
+            where: { 
+              OR: [
+                { id: String(order.serviceId) },
+                { dhruId: String(order.serviceId) }
+              ]
+            },
+            include: { dhruCategory: true, apiProvider: true }
           });
 
+          const providerConfig = dhruService?.apiProvider
+            ? {
+                apiUrl: dhruService.apiProvider.apiUrl,
+                username: dhruService.apiProvider.username,
+                apiKey: dhruService.apiProvider.apiKey
+              }
+            : undefined;
+
           let response: any = null;
-          if (dhruService && dhruService.category?.name === "IMEI Service") {
-            response = await getImeiOrder(order.apiOrderId);
+          if (dhruService && dhruService.dhruCategory?.name === "IMEI Service") {
+            response = await getImeiOrder(order.apiOrderId, providerConfig);
           } else {
-            response = await getServerOrder(order.apiOrderId);
+            response = await getServerOrder(order.apiOrderId, providerConfig);
           }
 
           if (!response || response.SUCCESS === false || response.ERROR || response.Error) {

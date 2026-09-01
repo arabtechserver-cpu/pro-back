@@ -1,28 +1,20 @@
-datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
-}
-
 generator client {
   provider      = "prisma-client-js"
   binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl"]
 }
 
-model Order {
-  id           String   @id @default(uuid())
-  userId       String?
-  user         User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  serviceName  String
-  serviceId    String
-  targetInput  String   // IMEI, Serial, Player ID, SN, etc.
-  quantity     Int      @default(1)
-  price        Float
-  status       String   @default("pending") // "pending" | "processing" | "completed" | "failed"
-  apiOrderId   String?  // ID returned from Dhru API
-  reply        String?  // Unlock code / response returned from API or Admin
-  notes        String?
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model AnalyticsEvent {
+  id        String   @id @default(uuid())
+  eventName String
+  sessionId String?
+  path      String?
+  metadata  String?
+  createdAt DateTime @default(now())
 }
 
 model BlogPost {
@@ -39,147 +31,31 @@ model BlogPost {
   updatedAt DateTime @updatedAt
 }
 
-model VideoSeries {
-  id                     String          @id @default(uuid())
-  titleEn                String
-  titleAr                String
-  descriptionEn          String?
-  descriptionAr          String?
-  thumbnail              String?
-  isSubscriptionRequired Boolean         @default(false)
-  price                  Float?          
-  videos                 VideoTutorial[]
-  createdAt              DateTime        @default(now())
-  updatedAt              DateTime        @updatedAt
-}
-
-model VideoTutorial {
-  id            String       @id @default(uuid())
-  titleEn       String
-  titleAr       String
-  descriptionEn String?
-  descriptionAr String?
-  videoUrl      String       
-  thumbnail     String?
-  category      String?
-  
-  seriesId      String?
-  series        VideoSeries? @relation(fields: [seriesId], references: [id])
-  orderIndex    Int          @default(0) 
-  
-  isFreePreview Boolean      @default(true) 
-
-  createdAt     DateTime     @default(now())
-}
-
-model WalletTransaction {
-  id        String   @id @default(uuid())
-  userId    String   // Identifier for the user
-  amount    Float
-  type      String   // "deposit" or "withdrawal" or "payment"
-  status    String   @default("completed")
-  createdAt DateTime @default(now())
-}
-
 model DhruCategory {
-  id        String        @id @default(uuid())
-  name      String        
-  services  DhruService[]
-  createdAt DateTime      @default(now())
+  id           String        @id @default(uuid())
+  name         String
+  createdAt    DateTime      @default(now())
+  dhruServices DhruService[]
 }
 
 model DhruService {
-  id           String        @id @default(uuid())
-  dhruId       String        @unique 
-  name         String
-  originalName String        
-  groupName    String        
-  credit       Float
-  time         String
-  info         String?
-  isActive     Boolean       @default(true) 
-  margin       Float         @default(0) 
-  
-  categoryId   String?
-  category     DhruCategory? @relation(fields: [categoryId], references: [id])
+  id             String        @id @default(uuid())
+  dhruId         String        @unique
+  name           String
+  originalName   String
+  groupName      String
+  credit         Float
+  time           String
+  info           String?
+  isActive       Boolean       @default(true)
+  margin         Float         @default(0)
+  categoryId     String?
+  providerId     String?
   requiresCustom String?
-  
-  providerId   String?
-  provider     ApiProvider?  @relation(fields: [providerId], references: [id], onDelete: Cascade)
-  
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-}
-
-model User {
-  id           String        @id @default(uuid())
-  fullName     String
-  email        String        @unique
-  username     String        @unique
-  password     String
-  phone        String?
-  country      String        @default("EG")
-  role         String        @default("user")
-  status       String        @default("active") // "active" or "suspended"
-  balance      Float         @default(0.0)
-  transactions Transaction[]
-  orders       Order[]
-  createdAt    DateTime      @default(now())
-  updatedAt    DateTime      @updatedAt
-}
-
-model Transaction {
-  id           String   @id @default(uuid())
-  userId       String
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  type         String   // "شحن محفظة" or "خصم خدمة"
-  amount       Float
-  method       String   // e.g. "فودافون كاش Vodafone Cash"
-  status       String   @default("pending") // "pending" | "completed" | "failed"
-  refNo        String
-  receiptImage String?  // Base64 or URL of receipt image
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
-}
-
-model AnalyticsEvent {
-  id           String   @id @default(uuid())
-  eventName    String
-  sessionId    String?
-  path         String?
-  metadata     String?  // JSON stringified metadata
-  createdAt    DateTime @default(now())
-}
-
-model StoredImage {
-  id        String   @id @default(uuid())
-  filename  String
-  mimeType  String   @default("image/jpeg")
-  data      String   // Base64 image content stored directly in Postgres
-  size      Int      @default(0)
-  createdAt DateTime @default(now())
-}
-
-model Subscriber {
-  id             String    @id @default(uuid())
-  email          String    @unique
-  name           String?
-  isActive       Boolean   @default(true)
-  source         String    @default("homepage")
-  subscribedAt   DateTime  @default(now())
-  lastNotifiedAt DateTime?
-}
-
-model NewsletterBroadcast {
-  id          String   @id @default(uuid())
-  subject     String
-  title       String
-  message     String
-  category    String   @default("General") // "Service Update" | "Tool Offer" | "Announcement" | "Blog"
-  actionUrl   String?
-  actionText  String?
-  sentCount   Int      @default(0)
-  createdAt   DateTime @default(now())
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
+  dhruCategory   DhruCategory? @relation(fields: [categoryId], references: [id])
+  apiProvider    ApiProvider?  @relation(fields: [providerId], references: [id], onDelete: SetNull)
 }
 
 model ApiProvider {
@@ -188,14 +64,147 @@ model ApiProvider {
   apiUrl        String
   username      String?
   apiKey        String
-  type          String        @default("dhru") // "dhru" | "perfectpanel" | "gsm" | "dynamic"
+  type          String        @default("dhru")
   isActive      Boolean       @default(true)
   balance       Float         @default(0.0)
   currency      String        @default("USD")
-  lastSyncAt    DateTime?
   servicesCount Int           @default(0)
-  services      DhruService[]
+  mappingRules  String?
   createdAt     DateTime      @default(now())
   updatedAt     DateTime      @updatedAt
+  services      DhruService[]
 }
 
+model StoredImage {
+  id        String   @id @default(uuid())
+  filename  String
+  mimeType  String   @default("image/jpeg")
+  data      String
+  size      Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model Subscriber {
+  id        String   @id @default(uuid())
+  email     String   @unique
+  name      String?
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+}
+
+model NewsletterBroadcast {
+  id         String   @id @default(uuid())
+  subject    String
+  title      String
+  message    String
+  category   String?
+  actionUrl  String?
+  actionText String?
+  sentCount  Int      @default(0)
+  createdAt  DateTime @default(now())
+}
+
+model Order {
+  id          String   @id @default(uuid())
+  userId      String?
+  serviceName String
+  serviceId   String
+  targetInput String
+  quantity    Int      @default(1)
+  price       Float
+  status      String   @default("pending")
+  apiOrderId  String?
+  reply       String?
+  notes       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model Transaction {
+  id           String   @id @default(uuid())
+  userId       String
+  type         String
+  amount       Float
+  method       String
+  status       String   @default("pending")
+  refNo        String
+  receiptImage String?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
+model User {
+  id               String          @id @default(uuid())
+  fullName         String
+  email            String          @unique
+  username         String          @unique
+  password         String
+  phone            String?
+  country          String          @default("EG")
+  role             String          @default("user")
+  status           String          @default("active")
+  balance          Float           @default(0.0)
+  membershipTierId String?
+  customDiscount   Float           @default(0.0)
+  createdAt        DateTime        @default(now())
+  updatedAt        DateTime        @updatedAt
+  orders           Order[]
+  transactions     Transaction[]
+  membershipTier   MembershipTier? @relation(fields: [membershipTierId], references: [id])
+}
+
+model MembershipTier {
+  id                 String   @id @default(uuid())
+  name               String
+  nameAr             String?
+  minDeposit         Float    @default(0.0)
+  discountPercentage Float    @default(0.0)
+  badgeColor         String?  @default("#2dd4bf")
+  description        String?
+  isDefault          Boolean  @default(false)
+  createdAt          DateTime @default(now())
+  updatedAt          DateTime @updatedAt
+  users              User[]
+}
+
+model VideoSeries {
+  id                     String          @id @default(uuid())
+  titleEn                String
+  titleAr                String
+  descriptionEn          String?
+  descriptionAr          String?
+  thumbnail              String?
+  isSubscriptionRequired Boolean         @default(false)
+  price                  Float?
+  createdAt              DateTime        @default(now())
+  updatedAt              DateTime        @updatedAt
+  videoTutorials         VideoTutorial[]
+}
+
+model VideoTutorial {
+  id            String       @id @default(uuid())
+  titleEn       String
+  titleAr       String
+  descriptionEn String?
+  descriptionAr String?
+  videoUrl      String
+  thumbnail     String?
+  category      String?
+  seriesId      String?
+  orderIndex    Int          @default(0)
+  isFreePreview Boolean      @default(true)
+  createdAt     DateTime     @default(now())
+  videoSeries   VideoSeries? @relation(fields: [seriesId], references: [id])
+}
+
+model WalletTransaction {
+  id        String   @id @default(uuid())
+  userId    String
+  amount    Float
+  type      String
+  status    String   @default("completed")
+  createdAt DateTime @default(now())
+}

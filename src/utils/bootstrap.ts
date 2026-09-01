@@ -83,14 +83,15 @@ export async function bootstrapDatabase() {
       console.warn('[Bootstrap] Note on newsletter tables check:', tblErr);
     }
 
-    // 3. Check & Sync Dhru Services
+    // 3. Check & Sync Services if a Provider is configured
     const serviceCount = await prisma.dhruService.count();
-    if (serviceCount === 0) {
-      console.log('[Bootstrap] No Dhru services found in DB. Starting automatic services sync...');
+    const activeProvider = await prisma.apiProvider.findFirst({ where: { isActive: true } });
+    if (serviceCount === 0 && (activeProvider || (process.env.DHRU_API_URL && process.env.DHRU_API_KEY))) {
+      console.log('[Bootstrap] Active provider detected. Starting automatic services sync...');
       await syncDhruServices();
       console.log('[Bootstrap] Automatic services sync finished successfully!');
     } else {
-      console.log(`[Bootstrap] Found ${serviceCount} existing Dhru services.`);
+      console.log(`[Bootstrap] Found ${serviceCount} existing services. Awaiting custom provider addition.`);
     }
 
     // 4. Check, Deduplicate & Synchronize the 10 Professional GSM Blog Articles

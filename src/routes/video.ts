@@ -9,7 +9,7 @@ router.get('/series', async (req, res) => {
   try {
     const series = await prisma.videoSeries.findMany({
       include: {
-        videos: {
+        videoTutorials: {
           orderBy: {
             orderIndex: 'asc'
           }
@@ -31,7 +31,7 @@ router.get('/series/:id', async (req, res) => {
     const series = await prisma.videoSeries.findUnique({
       where: { id: req.params.id },
       include: {
-        videos: {
+        videoTutorials: {
           orderBy: {
             orderIndex: 'asc'
           }
@@ -129,7 +129,7 @@ router.get('/tutorials', async (req, res) => {
     const tutorials = await prisma.videoTutorial.findMany({
       where: whereClause,
       include: {
-        series: true
+        videoSeries: true
       },
       orderBy: [
         { seriesId: 'asc' },
@@ -149,9 +149,9 @@ router.get('/tutorials/:id', async (req, res) => {
     const tutorial = await prisma.videoTutorial.findUnique({
       where: { id: req.params.id },
       include: {
-        series: {
+        videoSeries: {
           include: {
-            videos: {
+            videoTutorials: {
               orderBy: {
                 orderIndex: 'asc'
               }

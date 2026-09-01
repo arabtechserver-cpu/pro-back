@@ -21,16 +21,16 @@ router.get('/services', async (req, res) => {
     const { all } = req.query;
     const categories = await prisma.dhruCategory.findMany({
       include: {
-        services: {
+        dhruServices: {
           where: all === 'true' ? {} : { isActive: true }, // Only return active services to customers unless all=true
           orderBy: { name: 'asc' }
         }
       }
     });
 
-    const cleanedCategories = categories.map((cat) => ({
+    const cleanedCategories = categories.map((cat: any) => ({
       ...cat,
-      services: cat.services.map((srv) => {
+      services: (cat.dhruServices || cat.services || []).map((srv: any) => {
         const credit = typeof srv.credit === 'number' ? srv.credit : parseFloat(srv.credit as any) || 0;
         const margin = typeof srv.margin === 'number' ? srv.margin : parseFloat(srv.margin as any) || 0;
         const finalPrice = Number((credit + margin).toFixed(2));
@@ -155,7 +155,7 @@ router.get('/services/:id', async (req, res) => {
         ]
       },
       include: {
-        category: true
+        dhruCategory: true
       }
     });
 

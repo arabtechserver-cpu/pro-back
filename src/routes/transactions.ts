@@ -8,6 +8,8 @@ import {
   escapeHtml
 } from '../utils/telegramService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
+import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
+import { sendDepositApprovalEmail } from '../utils/emailService';
 
 const router = Router();
 
@@ -124,9 +126,19 @@ router.post('/', authenticateToken, async (req, res) => {
 ⏳ <b>الحالة:</b> قيد المراجعة - يُرجى فتح لوحة التحكم واعتماد الإيداع.
     `.trim();
 
+    const replyMarkup = {
+      inline_keyboard: [
+        [
+          { text: "✅ موافقة وشحن الرصيد", callback_data: `approve_tx_${newTransaction.id}` },
+          { text: "❌ رفض الإيداع", callback_data: `reject_tx_${newTransaction.id}` }
+        ]
+      ]
+    };
+
     sendTelegramPhotoNotification({
       imageSource: receiptImage,
-      caption
+      caption,
+      replyMarkup
     }).catch((err) => console.error('[Telegram Async Error]:', err));
 
     return res.json({
@@ -167,15 +179,29 @@ router.post('/approve', isAdmin, async (req, res) => {
       data: { status: 'completed' }
     });
 
+    // Automatically check and upgrade user VIP membership tier
+    const upgradedUser = await checkAndAutoUpgradeMembership(tx.userId, tx.amount);
+
     const caption = `
 🟢 <b>تمت الموافقة وإضافة الرصيد بنجاح!</b>
 
 👤 <b>العميل:</b> ${updatedUser.fullName} (@${updatedUser.username})
 💰 <b>المبلغ المضاف:</b> <code>+$${tx.amount.toFixed(2)} USD</code>
 🏦 <b>رصيد الحساب الجديد:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
+${upgradedUser?.membershipTier ? `🎖️ <b>العضوية الحالية:</b> ${upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name} (${upgradedUser.membershipTier.discountPercentage}% خصم)` : ''}
     `.trim();
 
     sendTelegramPhotoNotification({ caption }).catch(() => {});
+
+    // Send confirmation email to customer
+    if (updatedUser.email) {
+      sendDepositApprovalEmail(updatedUser.email, {
+        amount: tx.amount,
+        newBalance: updatedUser.balance,
+        username: updatedUser.fullName,
+        tierName: upgradedUser?.membershipTier ? (upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name) : undefined
+      }).catch((err) => console.error('[Deposit Email Error]:', err));
+    }
 
     return res.json({
       success: true,

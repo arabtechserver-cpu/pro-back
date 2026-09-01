@@ -181,7 +181,7 @@ router.get("/subscribers", isAdmin, async (req, res) => {
     const [subscribers, total, active] = await Promise.all([
       prisma.subscriber.findMany({
         where: whereClause,
-        orderBy: { subscribedAt: "desc" }
+        orderBy: { createdAt: "desc" }
       }),
       prisma.subscriber.count(),
       prisma.subscriber.count({ where: { isActive: true } })

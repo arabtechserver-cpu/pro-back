@@ -56,7 +56,7 @@ router.post('/', async (req, res) => {
       // Non-fatal if container disk is read-only
     }
 
-    const imageUrl = `https://api.arabtechproserver.tech/api/upload/${storedRecord.id}`;
+    const imageUrl = `/api/upload/${storedRecord.id}`;
     return res.json({ 
       success: true, 
       id: storedRecord.id,

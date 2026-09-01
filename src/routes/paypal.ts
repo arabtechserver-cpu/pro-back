@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../server';
 import { createPayPalOrder, capturePayPalOrder } from '../services/paypalService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
+import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 
 const router = Router();
 
@@ -128,6 +129,9 @@ router.post('/capture-order', async (req, res) => {
         data: { balance: { increment: capturedAmount } }
       })
     ]);
+
+    // 6.5 Automatically check and upgrade user VIP membership tier
+    const upgradedUser = await checkAndAutoUpgradeMembership(targetUser.id, capturedAmount);
 
     console.log(`[PayPal Live REAL Credit] User: ${updatedUser.username} | Amount: +$${capturedAmount.toFixed(2)} USD | New Balance: $${updatedUser.balance.toFixed(2)} USD | Ref: ${cleanOrderId}`);
 

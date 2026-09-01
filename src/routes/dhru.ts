@@ -15,37 +15,36 @@ router.get('/account', async (req, res) => {
 import { prisma } from '../server';
 
 import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices';
+import { serializeAdminServiceCategories } from "../utils/admin-service-response";
 
 router.get('/services', async (req, res) => {
   try {
     const { all } = req.query;
     const categories = await prisma.dhruCategory.findMany({
-      include: {
+      select: {
+        id: true,
+        name: true,
         dhruServices: {
-          where: all === 'true' ? {} : { isActive: true }, // Only return active services to customers unless all=true
-          orderBy: { name: 'asc' }
+          where: all === 'true' ? {} : { isActive: true },
+          orderBy: { name: 'asc' },
+          select: {
+            id: true,
+            dhruId: true,
+            name: true,
+            originalName: true,
+            groupName: true,
+            credit: true,
+            time: true,
+            info: true,
+            isActive: true,
+            margin: true,
+            requiresCustom: true
+          }
         }
-      }
+      },
     });
 
-    const cleanedCategories = categories.map((cat: any) => ({
-      ...cat,
-      services: (cat.dhruServices || cat.services || []).map((srv: any) => {
-        const credit = typeof srv.credit === 'number' ? srv.credit : parseFloat(srv.credit as any) || 0;
-        const margin = typeof srv.margin === 'number' ? srv.margin : parseFloat(srv.margin as any) || 0;
-        const finalPrice = Number((credit + margin).toFixed(2));
-
-        return {
-          ...srv,
-          credit,
-          margin,
-          price: finalPrice,
-          finalPrice,
-          sellingPrice: finalPrice,
-          name: cleanServiceName(srv.name, srv.info || '', srv.groupName || ''),
-        };
-      }),
-    }));
+    const cleanedCategories = serializeAdminServiceCategories(categories, cleanServiceName);
 
     res.json(cleanedCategories);
   } catch (error) {

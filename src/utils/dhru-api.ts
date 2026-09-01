@@ -1,3 +1,6 @@
+import https from "https";
+import http from "http";
+
 export const DHRU_API_URL = process.env.DHRU_API_URL || "";
 export const DHRU_USERNAME = process.env.DHRU_USERNAME || "";
 export const DHRU_API_KEY = process.env.DHRU_API_KEY || "";
@@ -33,56 +36,84 @@ export function normalizeTargetApiUrl(rawUrl?: string): string {
   return url;
 }
 
-export async function dhruApiRequest(
+export function dhruApiRequest(
   action: DhruAction,
   parameters: Record<string, string> = {},
   provider?: ProviderConfig
-) {
-  const targetUrl = normalizeTargetApiUrl(provider?.apiUrl);
-  const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
-  const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
+): Promise<any> {
+  return new Promise((resolve) => {
+    const targetUrl = normalizeTargetApiUrl(provider?.apiUrl);
+    const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
+    const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
 
-  const data = new URLSearchParams();
-  if (username) data.append("username", username.trim());
-  data.append("key", apiKey);
-  data.append("apiaccesskey", apiKey);
-  data.append("action", action);
-  data.append("requestformat", "JSON");
+    const data = new URLSearchParams();
+    if (username) data.append("username", username.trim());
+    data.append("key", apiKey);
+    data.append("apiaccesskey", apiKey);
+    data.append("action", action);
+    data.append("requestformat", "JSON");
 
-  // Format parameters
-  Object.entries(parameters).forEach(([key, value]) => {
-    data.append(`parameters[${key}]`, value);
-  });
-
-  try {
-    const response = await fetch(targetUrl, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        Accept: "application/json, text/plain, */*"
-      },
-      body: data.toString(),
-      cache: "no-store"
+    // Format parameters
+    Object.entries(parameters).forEach(([key, value]) => {
+      data.append(`parameters[${key}]`, value);
     });
 
-    const rawText = await response.text();
-    let result: any;
     try {
-      result = JSON.parse(rawText);
-    } catch {
-      result = { error: rawText };
-    }
+      const postData = data.toString();
+      const urlObj = new URL(targetUrl);
+      
+      const options = {
+        hostname: urlObj.hostname,
+        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        path: urlObj.pathname + urlObj.search,
+        method: "POST",
+        family: 4, // Enforce IPv4 lookup
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+          "Content-Length": Buffer.byteLength(postData),
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          Accept: "application/json, text/plain, */*"
+        },
+        timeout: 60000
+      };
 
-    if (!response.ok || (result && result.SUCCESS === false)) {
-      console.error(`[Dhru API Error] URL: ${targetUrl} | Status: ${response.status} | Response:`, rawText);
-    }
+      const client = urlObj.protocol === "https:" ? https : http;
 
-    return result;
-  } catch (error) {
-    console.error(`[Dhru API Request Failed] URL: ${targetUrl}:`, error);
-    return { error: true, message: (error as Error).message };
-  }
+      const req = client.request(options, (res) => {
+        let rawText = "";
+        res.on("data", (chunk) => { rawText += chunk; });
+        res.on("end", () => {
+          let result: any;
+          try {
+            result = JSON.parse(rawText);
+          } catch {
+            result = { error: rawText };
+          }
+          if ((res.statusCode || 200) >= 400 || (result && result.SUCCESS === false)) {
+            console.error(`[Dhru API Error] URL: ${targetUrl} | Status: ${res.statusCode} | Response:`, rawText);
+          }
+          resolve(result);
+        });
+      });
+
+      req.on("error", (error: any) => {
+        console.error(`[Dhru API Request Failed] URL: ${targetUrl}:`, error);
+        resolve({ error: true, message: (error as Error).message });
+      });
+
+      req.on("timeout", () => {
+        req.destroy();
+        console.error(`[Dhru API Timeout] URL: ${targetUrl}`);
+        resolve({ error: true, message: "API request timed out" });
+      });
+
+      req.write(postData);
+      req.end();
+    } catch (error: any) {
+      console.error(`[Dhru API Sync Error] URL: ${targetUrl}:`, error);
+      resolve({ error: true, message: (error as Error).message });
+    }
+  });
 }
 
 export async function getAccountInfo(provider?: ProviderConfig) {

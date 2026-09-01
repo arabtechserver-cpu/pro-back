@@ -208,24 +208,11 @@ export async function sendLoopsTransactionalEmail(
 }
 
 /**
- * Send Transactional OTP Email (Loops Primary with Fallback)
+ * Send Transactional OTP Email via Resend
  */
-export const sendOtpEmailViaLoops = async (email: string, payload: OtpPayload): Promise<boolean> => {
+export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
   const username = payload.username || "عزيزنا العميل";
-
-  if (LOOPS_API_KEY) {
-    const loopsSent = await sendLoopsTransactionalEmail(cleanEmail, LOOPS_TRANSACTIONAL_ID_OTP, {
-      code: payload.code,
-      otpCode: payload.code,
-      otp: payload.code,
-      username,
-      actionLabel: payload.actionLabel || "كود التحقق",
-      siteName: "عرب تك برو سيرفر"
-    });
-    if (loopsSent) return true;
-  }
-
   const title = `كود التحقق الخاص بك: ${payload.code}`;
   const message = `كود التحقق الخاص بك هو: <b>${payload.code}</b>.\nيرجى إدخاله في الموقع لتأكيد العملية.\nهذا الكود صالح لمدة 10 دقائق فقط للحفاظ على أمان حسابك.`;
 
@@ -245,8 +232,7 @@ export const sendOtpEmailViaLoops = async (email: string, payload: OtpPayload): 
   });
 };
 
-// Aliased export for clarity
-export const sendOtpEmail = sendOtpEmailViaLoops;
+export const sendOtpEmailViaLoops = sendOtpEmail;
 
 /**
  * Add a contact dummy helper for backwards compatibility

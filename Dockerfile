@@ -22,6 +22,7 @@ WORKDIR /app
 # Copy package files and install production dependencies
 COPY package*.json ./
 COPY prisma ./prisma/
+COPY telegram_admins.json ./telegram_admins.json
 RUN npm ci --only=production
 RUN npx prisma generate
 

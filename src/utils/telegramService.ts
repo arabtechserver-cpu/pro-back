@@ -7,6 +7,7 @@ import { prisma } from '../server';
 import { placeImeiOrder, placeServerOrder } from './dhru-api';
 import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailService';
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
+import { normalizeTelegramAdminChatIds } from './telegram-config';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
@@ -29,17 +30,12 @@ function getAdminFilePath(): string {
 const ADMIN_FILE_PATH = getAdminFilePath();
 
 // Memory & File Persistence for Telegram Admin Chat IDs
-let adminChatIds: string[] = [DEFAULT_ADMIN_CHAT_ID];
+let adminChatIds: string[] = normalizeTelegramAdminChatIds([], DEFAULT_ADMIN_CHAT_ID);
 let pendingNotificationsQueue: Array<{ imageSource?: string; caption: string; replyMarkup?: any }> = [];
 let isRefreshingAdminChatIds = false;
 
 function normalizeAdminChatIds(ids: unknown): string[] {
-  if (!Array.isArray(ids)) return [DEFAULT_ADMIN_CHAT_ID];
-  const list = [...new Set(ids.map((id) => String(id).trim()).filter(Boolean))];
-  if (!list.includes(DEFAULT_ADMIN_CHAT_ID)) {
-    list.push(DEFAULT_ADMIN_CHAT_ID);
-  }
-  return list;
+  return normalizeTelegramAdminChatIds(ids, DEFAULT_ADMIN_CHAT_ID);
 }
 
 // Load persisted Admin Chat IDs from file
@@ -61,14 +57,7 @@ function loadAdminChatIds(silent = false) {
   }
 
   // Include env variable if set
-  if (process.env.TELEGRAM_ADMIN_CHAT_ID && !adminChatIds.includes(process.env.TELEGRAM_ADMIN_CHAT_ID)) {
-    adminChatIds.push(process.env.TELEGRAM_ADMIN_CHAT_ID);
-  }
-
-  // Always ensure default ID is present
-  if (!adminChatIds.includes(DEFAULT_ADMIN_CHAT_ID)) {
-    adminChatIds.push(DEFAULT_ADMIN_CHAT_ID);
-  }
+  adminChatIds = normalizeAdminChatIds(adminChatIds);
 }
 
 // Save Admin Chat IDs to file
@@ -114,9 +103,7 @@ export function addAdminChatId(chatId: string) {
 }
 
 export function getAdminChatIds(): string[] {
-  if (adminChatIds.length === 0) {
-    adminChatIds = [DEFAULT_ADMIN_CHAT_ID];
-  }
+  adminChatIds = normalizeAdminChatIds(adminChatIds);
   return adminChatIds;
 }
 
@@ -638,6 +625,9 @@ export async function sendTelegramPhotoNotification({
   try {
     await refreshAdminChatIds();
     const targetChatIds = getAdminChatIds();
+    if (targetChatIds.length === 0) {
+      throw new Error('No Telegram admin chat IDs are configured');
+    }
 
     const imageInfo = await resolveImageBuffer(imageSource);
     const trimmedCaption = caption.length > 1000 ? caption.slice(0, 995) + '...' : caption;
@@ -709,15 +699,19 @@ export async function sendTelegramPhotoNotification({
 
       // 3. Fallback to sendMessage (text-only) if photo wasn't delivered or no image attached
       if (!delivered) {
-        await sendTelegramMessage(
+        const messageResult = await sendTelegramMessage(
           chatId,
           caption + (imageInfo ? '\n\n<i>(مرفق مع الطلب صورة إيصال التحويل)</i>' : ''),
           replyMarkup
         );
+        if (!messageResult) {
+          throw new Error(`Telegram message delivery failed for chat ${chatId}`);
+        }
       }
     }
   } catch (error: any) {
     console.error('[Telegram Photo Delivery Fatal Error]:', error?.message);
+    throw error;
   }
 }
 

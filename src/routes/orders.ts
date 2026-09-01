@@ -285,7 +285,11 @@ router.post('/', authenticateToken, async (req, res) => {
 ⏳ <b>الحالة:</b> في انتظار الإرسال للمزود أو التنفيذ اليدوي
     `.trim();
 
-    sendTelegramPhotoNotification({ caption }).catch(() => {});
+    try {
+      await sendTelegramPhotoNotification({ caption });
+    } catch (telegramError: any) {
+      console.error('[Order Telegram Notification Error]:', telegramError?.message || telegramError);
+    }
 
     // 5. Send Order Confirmation Email to Customer
     if (dbUser.email) {

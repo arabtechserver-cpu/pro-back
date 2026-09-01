@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { prisma } from '../server';
-import { placeImeiOrder, placeServerOrder, getImeiOrder, getServerOrder } from '../utils/dhru-api';
+import { placeImeiOrder, placeServerOrder, getImeiOrder, getServerOrder, normalizeProviderCustomFields } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
+import { parseOrderMetadata } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
@@ -52,19 +53,7 @@ async function enrichOrdersWithProviderData(orders: any[]) {
 
   return orders.map((order) => {
     const srv = serviceMap.get(String(order.serviceId));
-    let parsedNotes: any = null;
-    let customFields: any = null;
-    let events: any[] = [];
-
-    try {
-      if (order.notes && (order.notes.startsWith('{') || order.notes.startsWith('['))) {
-        parsedNotes = JSON.parse(order.notes);
-        if (parsedNotes && typeof parsedNotes === 'object') {
-          customFields = parsedNotes.customFields || null;
-          events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
-        }
-      }
-    } catch {}
+    const metadata = parseOrderMetadata(order.notes);
 
     const cost = srv?.credit || 0;
     const price = order.price || 0;
@@ -72,6 +61,7 @@ async function enrichOrdersWithProviderData(orders: any[]) {
 
     return {
       ...order,
+      notes: metadata.visibleNote,
       provider: srv?.apiProvider
         ? {
             id: srv.apiProvider.id,
@@ -85,9 +75,9 @@ async function enrichOrdersWithProviderData(orders: any[]) {
       groupName: srv?.groupName || null,
       cost,
       profit,
-      customFields,
-      events,
-      rawNotes: parsedNotes?.userNote || (typeof parsedNotes === 'string' ? parsedNotes : order.notes)
+      customFields: metadata.customFields,
+      events: metadata.events,
+      rawNotes: metadata.visibleNote
     };
   });
 }
@@ -374,13 +364,14 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
 
     let dhruResponse: any = null;
     let apiOrderId: string | null = null;
+    const providerCustomFields = normalizeProviderCustomFields(customFields, dhruService.requiresCustom);
 
     if (dhruService.dhruCategory?.name === 'IMEI Service' || dhruService.groupName?.toLowerCase().includes('imei')) {
       const imeiToSend = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
-      dhruResponse = await placeImeiOrder(getProviderRemoteServiceId(dhruService.dhruId), imeiToSend, customFields, providerConfig);
+      dhruResponse = await placeImeiOrder(getProviderRemoteServiceId(dhruService.dhruId), imeiToSend, providerCustomFields, providerConfig);
     } else {
       const inputToSend = String(order.targetInput).trim();
-      dhruResponse = await placeServerOrder(getProviderRemoteServiceId(dhruService.dhruId), order.quantity, customFields, inputToSend, providerConfig);
+      dhruResponse = await placeServerOrder(getProviderRemoteServiceId(dhruService.dhruId), order.quantity, providerCustomFields, inputToSend, providerConfig);
     }
 
     if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {

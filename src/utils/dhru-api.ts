@@ -135,6 +135,56 @@ export async function getServerServiceList(provider?: ProviderConfig) {
   return dhruApiRequest("serverservicelist", {}, provider);
 }
 
+export function normalizeProviderCustomFields(
+  customFields: Record<string, string> = {},
+  requiredFields: unknown = null
+): Record<string, string> {
+  let parsedFields: any = requiredFields;
+  if (typeof parsedFields === "string") {
+    try {
+      parsedFields = JSON.parse(parsedFields);
+    } catch {
+      parsedFields = null;
+    }
+  }
+
+  const definitions = Array.isArray(parsedFields)
+    ? parsedFields
+    : parsedFields && typeof parsedFields === "object"
+      ? Object.entries(parsedFields).map(([key, value]) => ({
+          ...(value && typeof value === "object" ? value : {}),
+          field_id: (value as any)?.field_id || (value as any)?.reqid || key
+        }))
+      : [];
+
+  const normalized: Record<string, string> = {};
+  for (const [inputKey, value] of Object.entries(customFields || {})) {
+    const matchingField = definitions.find((field: any) => {
+      const aliases = [
+        field?.id,
+        field?.field_id,
+        field?.reqid,
+        field?.REQID,
+        field?.api_name,
+        field?.name,
+        field?.label
+      ]
+        .filter(Boolean)
+        .map((alias) => String(alias).toLowerCase());
+      return aliases.includes(String(inputKey).toLowerCase());
+    });
+
+    const providerKey = matchingField?.field_id
+      || matchingField?.reqid
+      || matchingField?.REQID
+      || matchingField?.api_name
+      || inputKey;
+    normalized[String(providerKey)] = String(value);
+  }
+
+  return normalized;
+}
+
 export async function placeImeiOrder(
   serviceId: string,
   imei: string,

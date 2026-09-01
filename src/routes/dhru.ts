@@ -15,11 +15,12 @@ router.get('/account', async (req, res) => {
 import { prisma } from '../server';
 
 import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices';
-import { serializeAdminServiceCategories } from "../utils/admin-service-response";
+import { serializeAdminServiceCategories, serializePricingServiceCategories } from "../utils/admin-service-response";
 
 router.get('/services', async (req, res) => {
   try {
     const { all } = req.query;
+    const isPricingView = req.query.view === "pricing";
     const categories = await prisma.dhruCategory.findMany({
       select: {
         id: true,
@@ -44,7 +45,9 @@ router.get('/services', async (req, res) => {
       },
     });
 
-    const cleanedCategories = serializeAdminServiceCategories(categories, cleanServiceName);
+    const cleanedCategories = isPricingView
+      ? serializePricingServiceCategories(categories, cleanServiceName)
+      : serializeAdminServiceCategories(categories, cleanServiceName);
 
     res.json(cleanedCategories);
   } catch (error) {

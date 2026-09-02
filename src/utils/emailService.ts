@@ -309,7 +309,7 @@ export const sendOrderConfirmationEmail = async (
 ): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
   const username = payload.username || "عزيزنا العميل";
-  const message = `تم استلام وتنفيذ طلبك رقم <b>#${payload.orderId}</b> بنجاح!\n\n📱 <b>الخدمة:</b> ${payload.serviceName}\n🔢 <b>المُدخل (IMEI / ID):</b> ${payload.targetInput}\n💰 <b>المبلغ المخصوم:</b> $${payload.price.toFixed(2)} USD\n🏦 <b>رصيد محفظتك المتبقي:</b> $${payload.remainingBalance.toFixed(2)} USD.`;
+  const message = `تم استلام وتنفيذ طلبك رقم <b>#${payload.orderId}</b> بنجاح!\n\n📱 <b>الخدمة:</b> ${payload.serviceName}\n🔢 <b>المُدخل (IMEI / ID):</b> ${payload.targetInput}\n💰 <b>المبلغ المخصوم:</b> $${payload.price.toFixed(2)} USD.`;
 
   const html = generateLuxuryEmailHtml({
     title: `تم تأكيد طلبك رقم #${payload.orderId}`,
@@ -341,7 +341,7 @@ export const sendDepositApprovalEmail = async (
 ): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
   const username = payload.username || "عزيزنا العميل";
-  const message = `تهانينا! تمت الموافقة على طلب إيداعك وإضافة <b>+$${payload.amount.toFixed(2)} USD</b> إلى رصيدك بنجاح.\n\n🏦 <b>إجمالي رصيد محفظتك الحالي:</b> $${payload.newBalance.toFixed(2)} USD.${payload.tierName ? `\n🎖️ <b>مستوى عضويتك الحالي:</b> ${payload.tierName}` : ''}`;
+  const message = `تهانينا! تمت الموافقة على طلب إيداعك وإضافة <b>+$${payload.amount.toFixed(2)} USD</b> إلى رصيدك بنجاح.${payload.tierName ? `\n🎖️ <b>مستوى عضويتك الحالي:</b> ${payload.tierName}` : ''}`;
 
   const html = generateLuxuryEmailHtml({
     title: `تم اعتماد إيداع رصيدك: +$${payload.amount.toFixed(2)}`,
@@ -358,3 +358,35 @@ export const sendDepositApprovalEmail = async (
     html
   });
 };
+
+/**
+ * Send Deposit Pending Email to Customer
+ */
+export const sendDepositPendingEmail = async (
+  email: string,
+  payload: {
+    amount: number;
+    method: string;
+    username?: string;
+  }
+): Promise<boolean> => {
+  const cleanEmail = email.trim().toLowerCase();
+  const username = payload.username || "عزيزنا العميل";
+  const message = `تم استلام طلب شحن محفظتك بقيمة <b>$${payload.amount.toFixed(2)} USD</b> بنجاح عبر <b>${payload.method}</b>.\n\nالطلب الآن قيد المراجعة من قبل الإدارة. سيتم إرسال إشعار لك فور اعتماد الرصيد في حسابك.`;
+
+  const html = generateLuxuryEmailHtml({
+    title: `طلب شحن محفظتك قيد المراجعة`,
+    username,
+    message,
+    badgeText: `قيد المراجعة`,
+    actionText: "متابعة حالة الطلب في الموقع",
+    actionUrl: "https://arabtechproserver.tech/dashboard/wallet"
+  });
+
+  return sendEmail({
+    to: cleanEmail,
+    subject: `عرب تك برو سيرفر | طلب إيداعك قيد المراجعة ($${payload.amount.toFixed(2)} USD)`,
+    html
+  });
+};
+

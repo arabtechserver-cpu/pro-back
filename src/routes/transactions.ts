@@ -9,7 +9,7 @@ import {
 } from '../utils/telegramService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
-import { sendDepositApprovalEmail } from '../utils/emailService';
+import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emailService';
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
 
 const router = Router();
@@ -191,6 +191,14 @@ router.post('/', authenticateToken, async (req, res) => {
       replyMarkup
     }).catch((err) => console.error('[Telegram Async Error]:', err));
 
+    if (userObj?.email) {
+      sendDepositPendingEmail(userObj.email, {
+        amount: parseFloat(amount),
+        method: method.trim(),
+        username: userObj.fullName
+      }).catch((err) => console.error('[Deposit Pending Email Error]:', err));
+    }
+
     return res.json({
       success: true,
       message: 'تم تسجيل طلب الشحن بنجاح! سينتقل لطلب المراجعة وسيتم إضافة الرصيد لحسابك فور موافقة الأدمن.',
@@ -233,6 +241,7 @@ router.post('/approve', isAdmin, async (req, res) => {
     const upgradedUser = await checkAndAutoUpgradeMembership(tx.userId, tx.amount);
 
     const caption = `
+[إشعار إداري] 🛡️
 🟢 <b>تمت الموافقة وإضافة الرصيد بنجاح!</b>
 
 👤 <b>العميل:</b> ${updatedUser.fullName} (@${updatedUser.username})

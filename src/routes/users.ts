@@ -24,7 +24,6 @@ router.get("/", isAdmin, async (req, res) => {
       whereClause.AND.push({
         OR: [
           { apiEnabled: true },
-          { apiSiteName: { not: null } },
           { apiKey: { not: null } }
         ]
       });

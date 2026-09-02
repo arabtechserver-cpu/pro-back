@@ -22,10 +22,7 @@ router.get("/", isAdmin, async (req, res) => {
     }
     if (apiOnly === 'true') {
       whereClause.AND.push({
-        OR: [
-          { apiEnabled: true },
-          { apiKey: { not: null } }
-        ]
+        apiEnabled: true
       });
     }
     if (q) {

@@ -127,8 +127,7 @@ router.post('/send-otp', async (req, res) => {
 
     return res.json({
       success: true,
-      message: `تم إرسال كود التحقق بنجاح إلى: ${cleanEmail}`,
-      devOtp: otpCode
+      message: `تم إرسال كود التحقق بنجاح إلى: ${cleanEmail}`
     });
   } catch (error: any) {
     return res.status(200).json({ success: false, error: 'حدث خطأ أثناء إرسال كود التحقق' });

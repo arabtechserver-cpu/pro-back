@@ -3,16 +3,18 @@ import jwt from 'jsonwebtoken';
 import { prisma } from "../utils/prisma";
 import { sendTelegramPhotoNotification, sendTelegramAlert } from '../utils/telegramService';
 
+const JWT_SECRET = process.env.JWT_SECRET;
+
 const router = Router();
 
 // Optional Customer Auth Middleware for AI chat
 const optionalAuth = async (req: any, res: any, next: any) => {
   try {
     const authHeader = req.headers['authorization'];
-    if (authHeader) {
+    if (authHeader && JWT_SECRET) {
       const token = authHeader.split(' ')[1];
       if (token) {
-        const decoded: any = jwt.verify(token, process.env.JWT_SECRET || 'your_super_strong_secret_key_here');
+        const decoded: any = jwt.verify(token, JWT_SECRET);
         if (decoded && decoded.id) {
           req.user = decoded;
         }

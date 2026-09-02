@@ -80,8 +80,7 @@ router.get('/:id', async (req, res) => {
   try {
     const id = String(req.params.id);
 
-    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
 
     // Check if ID matches database record or filename
     let stored = await prisma.storedImage.findFirst({
@@ -98,8 +97,7 @@ router.get('/:id', async (req, res) => {
       res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
       res.setHeader('Content-Length', imgBuffer.length);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
       return res.end(imgBuffer);
     }
 
@@ -109,8 +107,7 @@ router.get('/:id', async (req, res) => {
       const ext = path.extname(localFilePath).replace('.', '') || 'jpeg';
       res.setHeader('Content-Type', `image/${ext}`);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
       return fs.createReadStream(localFilePath).pipe(res);
     }
 

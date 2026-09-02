@@ -3,13 +3,14 @@ import { prisma } from "../utils/prisma";
 import { createPayPalOrder, capturePayPalOrder } from '../services/paypalService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
+import { authenticateToken } from '../middleware/auth';
 
 const router = Router();
 
 // POST /api/wallet/paypal/create-order
-router.post('/create-order', async (req, res) => {
+router.post('/create-order', authenticateToken, async (req: any, res) => {
   try {
-    const { amount, userId, email } = req.body;
+    const { amount } = req.body;
 
     const numAmount = parseFloat(amount);
     if (isNaN(numAmount) || numAmount < 1.0) {
@@ -41,9 +42,9 @@ router.post('/create-order', async (req, res) => {
 });
 
 // POST /api/wallet/paypal/capture-order (Strict Real-Money Verification)
-router.post('/capture-order', async (req, res) => {
+router.post('/capture-order', authenticateToken, async (req: any, res) => {
   try {
-    const { orderId, userId, email } = req.body;
+    const { orderId } = req.body;
 
     if (!orderId || typeof orderId !== 'string' || orderId.trim() === '') {
       return res.status(400).json({ error: 'رقم طلب PayPal (orderId) مطلوب للتحقق والتأكيد' });
@@ -52,12 +53,9 @@ router.post('/capture-order', async (req, res) => {
     const cleanOrderId = orderId.trim();
 
     // 1. Identify Target User
-    let targetUser: any = null;
-    if (userId) {
-      targetUser = await prisma.user.findUnique({ where: { id: userId } });
-    } else if (email) {
-      targetUser = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() } });
-    }
+    const targetUser = req.user?.id
+      ? await prisma.user.findUnique({ where: { id: req.user.id } })
+      : null;
 
     if (!targetUser) {
       return res.status(401).json({ error: 'تعذر تحديد حساب المستخدم. يرجى تسجيل الدخول أولاً.' });

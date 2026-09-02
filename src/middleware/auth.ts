@@ -6,7 +6,11 @@ export interface AuthRequest extends Request {
   user?: any;
 }
 
-const JWT_SECRET = process.env.JWT_SECRET || 'your_super_strong_secret_key_here';
+const JWT_SECRET = process.env.JWT_SECRET;
+
+if (!JWT_SECRET || JWT_SECRET.length < 32) {
+  throw new Error('JWT_SECRET must be configured with at least 32 characters');
+}
 
 function extractCandidateTokens(req: Request): string[] {
   const tokens: string[] = [];
@@ -22,19 +26,7 @@ function extractCandidateTokens(req: Request): string[] {
     }
   }
 
-  // 2. Custom headers
-  const customHeaderKeys = ['x-user-token', 'x-admin-token', 'x-token'];
-  for (const h of customHeaderKeys) {
-    const val = req.headers[h];
-    if (val && typeof val === 'string') {
-      const clean = val.replace(/^["']|["']$/g, '').trim();
-      if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && !tokens.includes(clean)) {
-        tokens.push(clean);
-      }
-    }
-  }
-
-  // 3. Cookies
+  // 2. Cookies
   if (req.headers.cookie) {
     const cookies = req.headers.cookie.split(';');
     for (const cookie of cookies) {
@@ -54,11 +46,6 @@ function extractCandidateTokens(req: Request): string[] {
         }
       }
     }
-  }
-
-  // 4. Query param token (useful for direct file downloads)
-  if (req.query && typeof req.query.token === 'string') {
-    tokens.push(req.query.token);
   }
 
   return tokens;
@@ -92,16 +79,11 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
   }
 
-  // If request is a safe GET request with userId or email, allow through
-  if (req.method === 'GET') {
-    return next();
-  }
-
   return res.status(401).json({ error: 'Access denied: Authentication token required' });
 };
 
 export const generateToken = (payload: any) => {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '365d' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
 };
 
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {

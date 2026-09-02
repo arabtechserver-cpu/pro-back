@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { prisma } from "../utils/prisma";
-import { authenticateToken } from '../middleware/auth';
+import { isAdmin } from '../middleware/auth';
 import { processBase64Images } from '../utils/imageHandler';
 
 const router = Router();
@@ -114,7 +114,7 @@ router.get('/tutorials/:id', async (req, res) => {
 import { broadcastNewItemToSubscribers } from './newsletter';
 
 // POST new blog
-router.post('/post', authenticateToken, async (req, res) => {
+router.post('/post', isAdmin, async (req, res) => {
   try {
     const data = req.body;
     
@@ -174,7 +174,7 @@ router.post('/post', authenticateToken, async (req, res) => {
 });
 
 // POST new tutorial
-router.post('/tutorial', authenticateToken, async (req, res) => {
+router.post('/tutorial', isAdmin, async (req, res) => {
   try {
     const data = req.body;
     const tutorial = await prisma.videoTutorial.create({
@@ -202,7 +202,7 @@ router.post('/tutorial', authenticateToken, async (req, res) => {
 });
 
 // PUT /api/blog/posts/:id - Update blog post
-router.put('/posts/:id', authenticateToken, async (req, res) => {
+router.put('/posts/:id', isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     const data = req.body;
@@ -251,7 +251,7 @@ router.put('/posts/:id', authenticateToken, async (req, res) => {
 });
 
 // DELETE /api/blog/posts/:id - Delete blog post
-router.delete('/posts/:id', authenticateToken, async (req, res) => {
+router.delete('/posts/:id', isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
     await prisma.blogPost.delete({ where: { id: String(id) } });
@@ -263,7 +263,7 @@ router.delete('/posts/:id', authenticateToken, async (req, res) => {
 });
 
 // POST /api/blog/seed-defaults - Admin 1-click seed or reset the 10 professional GSM articles
-router.post('/seed-defaults', authenticateToken, async (req, res) => {
+router.post('/seed-defaults', isAdmin, async (req, res) => {
   try {
     const { tenArticles } = require('../scripts/seed10Articles');
     

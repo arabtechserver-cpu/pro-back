@@ -1,9 +1,10 @@
 import { Router } from 'express';
 import { getAccountInfo, getImeiServiceList } from '../utils/dhru-api';
+import { isAdmin } from '../middleware/auth';
 
 const router = Router();
 
-router.get('/account', async (req, res) => {
+router.get('/account', isAdmin, async (req, res) => {
   try {
     const info = await getAccountInfo();
     res.json(info);
@@ -17,7 +18,10 @@ import { prisma } from "../utils/prisma";
 import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices';
 import { serializeAdminServiceCategories, serializePricingServiceCategories } from "../utils/admin-service-response";
 
-router.get('/services', async (req, res) => {
+router.get('/services', (req, res, next) => {
+  if (req.query.all === 'true') return isAdmin(req, res, next);
+  return next();
+}, async (req, res) => {
   try {
     const { all } = req.query;
     const isPricingView = req.query.view === "pricing";
@@ -56,7 +60,7 @@ router.get('/services', async (req, res) => {
 });
 
 // POST /api/dhru/services/toggle - Toggle single service visibility
-router.post('/services/toggle', async (req, res) => {
+router.post('/services/toggle', isAdmin, async (req, res) => {
   try {
     const { serviceId, isActive } = req.body;
     if (!serviceId) {
@@ -82,7 +86,7 @@ router.post('/services/toggle', async (req, res) => {
 });
 
 // POST /api/dhru/services/toggle-group - Toggle or hide/show entire package group
-router.post('/services/toggle-group', async (req, res) => {
+router.post('/services/toggle-group', isAdmin, async (req, res) => {
   try {
     const { groupName, categoryId, isActive } = req.body;
     if (!groupName) {
@@ -113,7 +117,7 @@ router.post('/services/toggle-group', async (req, res) => {
 });
 
 // POST /api/dhru/services/update - Edit service custom name, base credit, and profit margin
-router.post('/services/update', async (req, res) => {
+router.post('/services/update', isAdmin, async (req, res) => {
   try {
     const { serviceId, name, margin, credit, isActive } = req.body;
     if (!serviceId) {
@@ -185,7 +189,7 @@ router.get('/services/:id', async (req, res) => {
   }
 });
 
-router.post('/sync', async (req, res) => {
+router.post('/sync', isAdmin, async (req, res) => {
   try {
     const result = await syncDhruServices();
     res.json(result);
@@ -201,7 +205,7 @@ router.post('/sync', async (req, res) => {
 import { broadcastNewItemToSubscribers } from './newsletter';
 
 // POST /api/dhru/services/notify - Admin notify subscribers about a specific service or tool
-router.post('/services/notify', async (req, res) => {
+router.post('/services/notify', isAdmin, async (req, res) => {
   try {
     const { serviceId, customMessage } = req.body;
     if (!serviceId) {
@@ -245,7 +249,7 @@ router.post('/services/notify', async (req, res) => {
 });
 
 // POST /api/dhru/services/delete-all - Delete all services & categories
-router.post('/services/delete-all', async (req, res) => {
+router.post('/services/delete-all', isAdmin, async (req, res) => {
   try {
     const deletedServices = await prisma.dhruService.deleteMany({});
     const deletedCategories = await prisma.dhruCategory.deleteMany({});
@@ -263,7 +267,7 @@ router.post('/services/delete-all', async (req, res) => {
 });
 
 // POST /api/dhru/services/bulk-margin - Bulk apply profit margin to all services
-router.post('/services/bulk-margin', async (req, res) => {
+router.post('/services/bulk-margin', isAdmin, async (req, res) => {
   try {
     const { type, value, applyTo, categoryId } = req.body;
     const numVal = parseFloat(value);

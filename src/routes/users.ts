@@ -13,10 +13,14 @@ router.get("/", isAdmin, async (req, res) => {
     const { q, status, apiOnly } = req.query;
 
     const whereClause: any = {
-      role: { not: 'admin' },
       AND: []
     };
     
+    // Exclude admins only for the regular users list, not for API users
+    if (apiOnly !== 'true') {
+      whereClause.role = { not: 'admin' };
+    }
+
     if (status && status !== "all") {
       whereClause.status = String(status);
     }

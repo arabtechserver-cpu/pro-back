@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
+import { isAdmin } from '../middleware/auth';
 
 const router = Router();
 const CONFIG_FILE = path.join(__dirname, '../../data/homepage_config.json');
@@ -149,7 +150,7 @@ router.get('/', (req, res) => {
 });
 
 // POST update homepage config
-router.post('/', (req, res) => {
+router.post('/', isAdmin, (req, res) => {
   try {
     const updatedConfig = req.body;
     saveConfig(updatedConfig);

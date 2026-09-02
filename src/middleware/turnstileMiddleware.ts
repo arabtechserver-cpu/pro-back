@@ -3,8 +3,11 @@ import { Request, Response, NextFunction } from "express";
 export async function turnstileMiddleware(req: Request, res: Response, next: NextFunction) {
   const secret = process.env.TURNSTILE_SECRET;
 
-  // If Turnstile is not configured or in test mode on server, skip verification safely
+  // Local development can opt out, but production never silently disables bot protection.
   if (!secret || secret.trim() === "" || secret === "dummy") {
+    if (process.env.NODE_ENV === "production") {
+      return res.status(503).json({ message: "خدمة التحقق الأمني غير مهيأة حالياً." });
+    }
     return next();
   }
 
@@ -12,7 +15,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   const clientIp = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
 
   if (!token || token === "cf-turnstile-client-fallback") {
-    return next();
+    return res.status(403).json({ message: "يرجى إكمال التحقق الأمني قبل المتابعة." });
   }
 
   try {
@@ -29,8 +32,8 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     });
 
     if (!response.ok) {
-      console.warn(`[Cloudflare Turnstile] Verification endpoint returned status ${response.status}, allowing user request`);
-      return next();
+      console.warn(`[Cloudflare Turnstile] Verification endpoint returned status ${response.status}`);
+      return res.status(503).json({ message: "تعذر التحقق الأمني مؤقتاً. يرجى المحاولة لاحقاً." });
     }
 
     const result: any = await response.json();
@@ -38,20 +41,12 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     if (!result.success) {
       console.warn("[Cloudflare Turnstile] Verification notice:", result["error-codes"]);
       const errorCodes = result["error-codes"] || [];
-      if (
-        errorCodes.includes("invalid-input-secret") ||
-        errorCodes.includes("missing-input-secret") ||
-        errorCodes.includes("bad-request") ||
-        errorCodes.includes("timeout-or-duplicate")
-      ) {
-        return next();
-      }
       return res.status(403).json({ message: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى." });
     }
 
     next();
   } catch (err: any) {
-    console.warn("[Cloudflare Turnstile] Verification error (bypassing):", err?.message);
-    return next();
+    console.warn("[Cloudflare Turnstile] Verification error:", err?.message);
+    return res.status(503).json({ message: "تعذر التحقق الأمني مؤقتاً. يرجى المحاولة لاحقاً." });
   }
 }

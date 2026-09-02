@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { prisma } from "../utils/prisma";
+import { isAdmin } from '../middleware/auth';
 
 const router = Router();
 const UPLOAD_DIR = path.join(__dirname, '../../public/uploads');
@@ -13,7 +14,7 @@ function ensureUploadDirExists() {
 }
 
 // POST /api/upload - Upload Image to PostgreSQL DB & Disk
-router.post('/', async (req, res) => {
+router.post('/', isAdmin, async (req, res) => {
   try {
     const { image, filename } = req.body;
     if (!image) {
@@ -24,19 +25,24 @@ router.post('/', async (req, res) => {
 
     // Extract mime type and clean Base64 data
     const matches = image.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    let base64Data = image;
-    let mimeType = 'image/jpeg';
-    let ext = 'jpg';
-
-    if (matches && matches.length === 3) {
-      mimeType = matches[1];
-      ext = mimeType.split('/')[1] || 'jpg';
-      base64Data = matches[2];
+    if (!matches || matches.length !== 3) {
+      return res.status(400).json({ success: false, error: 'يجب رفع صورة بصيغة Base64 صالحة' });
     }
+
+    const mimeType = matches[1].toLowerCase();
+    const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
+    if (!allowedMimeTypes.has(mimeType)) {
+      return res.status(400).json({ success: false, error: 'نوع الصورة غير مسموح' });
+    }
+
+    const base64Data = matches[2];
 
     const cleanFilename = (filename || 'uploaded_image').replace(/[^a-zA-Z0-9_.-]/g, '_');
     const uniqueFilename = `${Date.now()}_${cleanFilename}`;
     const buffer = Buffer.from(base64Data, 'base64');
+    if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
+      return res.status(413).json({ success: false, error: 'حجم الصورة يجب ألا يتجاوز 5 ميجابايت' });
+    }
 
     // 1. Save directly into PostgreSQL database for permanent persistence
     const storedRecord = await prisma.storedImage.create({
@@ -72,7 +78,7 @@ router.post('/', async (req, res) => {
 // GET /api/upload/:id - Stream Image Directly from Database or Disk
 router.get('/:id', async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
 
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -116,7 +122,7 @@ router.get('/:id', async (req, res) => {
 });
 
 // GET /api/upload - List Stored Images (Metadata only)
-router.get('/', async (req, res) => {
+router.get('/', isAdmin, async (req, res) => {
   try {
     const images = await prisma.storedImage.findMany({
       select: {
@@ -137,9 +143,9 @@ router.get('/', async (req, res) => {
 });
 
 // DELETE /api/upload/:id - Delete Image from Database
-router.delete('/:id', async (req, res) => {
+router.delete('/:id', isAdmin, async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = String(req.params.id);
     await prisma.storedImage.deleteMany({
       where: {
         OR: [

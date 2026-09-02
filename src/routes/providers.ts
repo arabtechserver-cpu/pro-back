@@ -4,8 +4,11 @@ import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
 import https from "https";
 import http from "http";
+import { isAdmin } from '../middleware/auth';
 
 const router = Router();
+
+router.use(isAdmin);
 
 // Helper to format API url
 export function normalizeApiUrl(rawUrl: string): string {

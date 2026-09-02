@@ -90,15 +90,10 @@ router.get('/', authenticateToken, async (req, res) => {
   try {
     const { userId, email } = req.query;
 
-    let targetUserId = userId as string;
+    const authenticatedUser = (req as any).user;
+    let targetUserId: string | undefined;
 
-    if (!targetUserId && email) {
-      const u = await prisma.user.findUnique({ where: { email: (email as string).trim().toLowerCase() } });
-      if (u) targetUserId = u.id;
-    }
-
-    if (!targetUserId && (req as any).user) {
-      if ((req as any).user.role === 'admin' || (req as any).user.role === 'super_admin') {
+    if (authenticatedUser?.role === 'admin' || authenticatedUser?.role === 'super_admin') {
         // Admin request - fetch all orders
         const allOrders = await prisma.order.findMany({
           take: 200,
@@ -112,13 +107,8 @@ router.get('/', authenticateToken, async (req, res) => {
 
         const enriched = await enrichOrdersWithProviderData(allOrders);
         return res.json({ success: true, orders: enriched });
-      } else {
-        targetUserId = (req as any).user.id;
-      }
-    }
-
-    if (!targetUserId) {
-      return res.json({ success: true, orders: [] });
+    } else {
+      targetUserId = authenticatedUser?.id;
     }
 
     // Customer request - fetch user's orders
@@ -143,60 +133,22 @@ router.get('/', authenticateToken, async (req, res) => {
 // POST /api/orders - Create & Save New Order (Saved as PENDING - waiting for admin approval)
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const { userId, email, serviceId, serviceName, targetInput, rawImei, quantity, price, notes, customFields } = req.body;
+    const { serviceId, serviceName, targetInput, rawImei, quantity, notes, customFields } = req.body;
 
     if (!serviceId || !serviceName || !targetInput) {
       return res.status(400).json({ error: 'يرجى تعبئة جميع بيانات الطلب (الخدمة والرقم المطلوب)' });
     }
 
-    let targetUserId = userId;
-    let dbUser: any = null;
-
-    if (userId) {
-      dbUser = await prisma.user.findUnique({ where: { id: userId }, include: { membershipTier: true } });
-    } else if (email) {
-      dbUser = await prisma.user.findUnique({ where: { email: email.trim().toLowerCase() }, include: { membershipTier: true } });
-      if (dbUser) targetUserId = dbUser.id;
-    }
-
-    if (!targetUserId && (req as any).user) {
-      targetUserId = (req as any).user.id;
-      dbUser = await prisma.user.findUnique({ where: { id: targetUserId }, include: { membershipTier: true } });
-    }
-
-    if (!targetUserId || !dbUser) {
-      const firstUser = await prisma.user.findFirst({ include: { membershipTier: true } });
-      if (firstUser) {
-        targetUserId = firstUser.id;
-        dbUser = firstUser;
-      }
-    }
+    const targetUserId = (req as any).user?.id;
+    const dbUser = targetUserId
+      ? await prisma.user.findUnique({ where: { id: targetUserId }, include: { membershipTier: true } })
+      : null;
 
     if (!targetUserId || !dbUser) {
       return res.status(400).json({ error: 'الرجاء تسجيل الدخول أولاً لإرسال الطلب' });
     }
 
     const qty = Math.max(1, parseInt(quantity || 1));
-    let unitPrice = parseFloat(price || 0);
-
-    // Calculate membership / custom discount
-    const discountPercent = Math.max(
-      dbUser.customDiscount || 0,
-      dbUser.membershipTier?.discountPercentage || 0
-    );
-    if (discountPercent > 0 && unitPrice > 0) {
-      unitPrice = Number((unitPrice * (1 - discountPercent / 100)).toFixed(2));
-    }
-
-    const totalPrice = Number((unitPrice * qty).toFixed(2));
-
-    // Check balance sufficiency
-    if (dbUser.balance < totalPrice) {
-      return res.status(400).json({
-        error: `رصيد محفظتك غير كافٍ! التكلفة الإجمالية: $${totalPrice.toFixed(2)} USD ورصيدك الحالي: $${dbUser.balance.toFixed(2)} USD. يرجى شحن المحفظة أولاً.`
-      });
-    }
-
     // Look up Dhru service and provider
     const dhruService = await prisma.dhruService.findFirst({
       where: {
@@ -204,6 +156,27 @@ router.post('/', authenticateToken, async (req, res) => {
       },
       include: { dhruCategory: true, apiProvider: true }
     });
+
+    if (!dhruService || !dhruService.isActive) {
+      return res.status(404).json({ error: 'الخدمة المطلوبة غير متاحة حالياً' });
+    }
+
+    // Prices are always calculated from the server-side service record.
+    let unitPrice = Number((dhruService.credit + dhruService.margin).toFixed(2));
+    const discountPercent = Math.max(
+      dbUser.customDiscount || 0,
+      dbUser.membershipTier?.discountPercentage || 0
+    );
+    if (discountPercent > 0) {
+      unitPrice = Number((unitPrice * (1 - discountPercent / 100)).toFixed(2));
+    }
+    const totalPrice = Number((unitPrice * qty).toFixed(2));
+
+    if (dbUser.balance < totalPrice) {
+      return res.status(400).json({
+        error: `رصيد محفظتك غير كافٍ! التكلفة الإجمالية: $${totalPrice.toFixed(2)} USD ورصيدك الحالي: $${dbUser.balance.toFixed(2)} USD. يرجى شحن المحفظة أولاً.`
+      });
+    }
 
     const now = new Date();
     const timelineEvents = [

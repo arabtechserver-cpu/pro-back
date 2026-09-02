@@ -42,6 +42,7 @@ import providersRoutes from './routes/providers';
 import membershipsRoutes from './routes/memberships';
 import aiRoutes from './routes/ai';
 import currenciesRoutes from './routes/currencies';
+import externalApiRoutes from './routes/externalApi';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/ai', aiRoutes);
@@ -66,6 +67,7 @@ app.use('/api/telemetry', analyticsRoutes);
 app.use('/api/app-events', analyticsRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/newsletter', newsletterRoutes);
+app.use('/api/provider', externalApiRoutes); // Dhru compatible API endpoint
 
 // Health check
 app.get('/api/health', (req, res) => {

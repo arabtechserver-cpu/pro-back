@@ -96,7 +96,11 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
         membershipTierId: u.membershipTierId,
         membershipTier: u.membershipTier,
         customDiscount: u.customDiscount || 0,
-        effectiveDiscount: effectiveDiscount
+        effectiveDiscount: effectiveDiscount,
+        apiEnabled: u.apiEnabled,
+        apiKey: u.apiKey,
+        apiSiteName: u.apiSiteName,
+        apiSiteUrl: u.apiSiteUrl
       }
     });
   } catch (error: any) {
@@ -333,6 +337,130 @@ router.post("/update-balance", isAdmin, async (req, res) => {
   } catch (error: any) {
     console.error("Error updating balance:", error);
     return res.status(500).json({ error: "حدث خطأ أثناء تعديل رصيد المستخدم" });
+  }
+});
+
+// POST /api/users/update-api-settings - Admin update user API settings
+router.post("/update-api-settings", isAdmin, async (req, res) => {
+  try {
+    const { userId, apiEnabled, apiSiteName, apiSiteUrl, apiMargin } = req.body;
+    if (!userId) return res.status(400).json({ error: "معرف المستخدم مطلوب" });
+
+    // Generate API key if enabling for the first time
+    let apiKey = req.body.apiKey;
+    if (apiEnabled && !apiKey) {
+      apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        apiEnabled: Boolean(apiEnabled),
+        apiSiteName: apiSiteName || null,
+        apiSiteUrl: apiSiteUrl || null,
+        apiMargin: parseFloat(apiMargin) || 0.0,
+        ...(apiKey && { apiKey })
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: "تم تحديث إعدادات الـ API بنجاح",
+      user: updatedUser
+    });
+  } catch (error: any) {
+    console.error("Error updating API settings:", error);
+    return res.status(500).json({ error: "حدث خطأ أثناء تحديث إعدادات API" });
+  }
+});
+
+// POST /api/users/request-api - Client request API access
+router.post("/request-api", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
+
+    const { apiSiteName, apiSiteUrl } = req.body;
+    if (!apiSiteName || !apiSiteUrl) {
+      return res.status(400).json({ error: "الرجاء إدخال اسم الموقع ورابط الموقع" });
+    }
+
+    const apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        apiSiteName,
+        apiSiteUrl,
+        apiKey,
+        apiEnabled: false // Admin must approve it by enabling it
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: "تم إرسال طلب الربط بنجاح بانتظار موافقة الإدارة",
+      user: updatedUser
+    });
+  } catch (error: any) {
+    console.error("Error requesting API:", error);
+    return res.status(500).json({ error: "حدث خطأ أثناء تقديم الطلب" });
+  }
+});
+
+// POST /api/users/update-api-settings - Admin update user API settings
+router.post("/update-api-settings", authenticateToken, isAdmin, async (req: any, res) => {
+  try {
+    const { userId, apiEnabled, apiMargin } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ error: "User ID is required" });
+    }
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        apiEnabled: Boolean(apiEnabled),
+        apiMargin: parseFloat(apiMargin) || 0
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: "تم تحديث إعدادات API بنجاح",
+      user: {
+        apiEnabled: updatedUser.apiEnabled,
+        apiMargin: updatedUser.apiMargin,
+        apiKey: updatedUser.apiKey
+      }
+    });
+  } catch (error: any) {
+    console.error("Error updating API settings:", error);
+    return res.status(500).json({ error: "حدث خطأ أثناء تحديث إعدادات API" });
+  }
+});
+
+// POST /api/users/regenerate-api-key - Client regenerate API key
+router.post("/regenerate-api-key", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
+
+    const apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: { apiKey }
+    });
+
+    return res.json({
+      success: true,
+      message: "تم توليد مفتاح API جديد بنجاح",
+      apiKey
+    });
+  } catch (error: any) {
+    console.error("Error regenerating API key:", error);
+    return res.status(500).json({ error: "حدث خطأ أثناء توليد المفتاح" });
   }
 });
 

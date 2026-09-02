@@ -118,9 +118,11 @@ model Order {
   apiOrderId  String?
   reply       String?
   notes       String?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @default(now()) @updatedAt
-  user        User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @default(now()) @updatedAt
+  user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  source           String   @default("web")
+  apiClientOrderId String?
 }
 
 model Transaction {
@@ -155,6 +157,11 @@ model User {
   orders           Order[]
   transactions     Transaction[]
   membershipTier   MembershipTier? @relation(fields: [membershipTierId], references: [id])
+  apiEnabled       Boolean         @default(false)
+  apiKey           String?         @unique
+  apiSiteName      String?
+  apiSiteUrl       String?
+  apiMargin        Float           @default(0.0)
 }
 
 model MembershipTier {

@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import bcrypt from "bcryptjs";
 import { isAdmin, authenticateToken } from "../middleware/auth";
 import { checkAndAutoUpgradeMembership } from "../utils/membershipUpgrade";
+import { prepareApiActivation } from "../utils/api-activation";
 
 const router = Router();
 
@@ -374,37 +375,48 @@ router.post("/update-api-settings", isAdmin, async (req, res) => {
   }
 });
 
-// POST /api/users/request-api - Client request API access
+// POST /api/users/request-api - Client confirms and activates API access immediately
 router.post("/request-api", authenticateToken, async (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
 
-    const { apiSiteName, apiSiteUrl } = req.body;
-    if (!apiSiteName || !apiSiteUrl) {
-      return res.status(400).json({ error: "الرجاء إدخال اسم الموقع ورابط الموقع" });
-    }
+    const currentUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { apiKey: true }
+    });
+    if (!currentUser) return res.status(404).json({ error: "المستخدم غير موجود" });
 
-    const apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
+    let activationData;
+    try {
+      activationData = prepareApiActivation(
+        req.body,
+        currentUser.apiKey,
+        () => "ATS-" + require('crypto').randomBytes(16).toString('hex')
+      );
+    } catch (validationError: any) {
+      return res.status(400).json({ error: validationError.message || "بيانات تفعيل API غير صحيحة" });
+    }
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: {
-        apiSiteName,
-        apiSiteUrl,
-        apiKey,
-        apiEnabled: false // Admin must approve it by enabling it
+      data: activationData,
+      select: {
+        apiEnabled: true,
+        apiKey: true,
+        apiSiteName: true,
+        apiSiteUrl: true
       }
     });
 
     return res.json({
       success: true,
-      message: "تم إرسال طلب الربط بنجاح بانتظار موافقة الإدارة",
+      message: "تم تأكيد وتفعيل API فوراً بنجاح",
       user: updatedUser
     });
   } catch (error: any) {
-    console.error("Error requesting API:", error);
-    return res.status(500).json({ error: "حدث خطأ أثناء تقديم الطلب" });
+    console.error("Error activating API:", error);
+    return res.status(500).json({ error: "حدث خطأ أثناء تفعيل API" });
   }
 });
 

@@ -10,6 +10,7 @@ import {
 import { isAdmin, authenticateToken } from '../middleware/auth';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { sendDepositApprovalEmail } from '../utils/emailService';
+import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
 
 const router = Router();
 
@@ -27,21 +28,52 @@ router.get('/', authenticateToken, async (req, res) => {
 
     if (!targetUserId && (req as any).user) {
       if ((req as any).user.role === 'admin' || (req as any).user.role === 'super_admin') {
-        const allTx = await prisma.transaction.findMany({
-          orderBy: { createdAt: 'desc' },
-          include: {
-            user: {
-              select: {
-                fullName: true,
-                email: true,
-                username: true,
-                phone: true,
-                balance: true
-              }
-            }
+        const listQuery = normalizeTransactionListQuery(req.query as Record<string, unknown>);
+        const pageQuery = buildAdminTransactionPageQuery(listQuery);
+
+        const [rows, filteredTotal, statusCounts] = await Promise.all([
+          prisma.transaction.findMany(pageQuery),
+          prisma.transaction.count({ where: pageQuery.where }),
+          prisma.transaction.groupBy({ by: ['status'], _count: { _all: true } })
+        ]);
+
+        const hasMore = rows.length > listQuery.limit;
+        const pageRows = hasMore ? rows.slice(0, listQuery.limit) : rows;
+        const receiptRows = pageRows.length > 0
+          ? await prisma.transaction.findMany({
+              where: {
+                id: { in: pageRows.map((transaction) => transaction.id) },
+                receiptImage: { not: null }
+              },
+              select: { id: true }
+            })
+          : [];
+        const receiptIds = new Set(receiptRows.map((transaction) => transaction.id));
+        const summary = statusCounts.reduce(
+          (acc, item) => {
+            const count = item._count._all;
+            acc.total += count;
+            if (item.status === 'pending') acc.pending = count;
+            if (item.status === 'completed') acc.completed = count;
+            return acc;
+          },
+          { total: 0, pending: 0, completed: 0 }
+        );
+
+        return res.json({
+          success: true,
+          transactions: pageRows.map((transaction) => ({
+            ...transaction,
+            hasReceipt: receiptIds.has(transaction.id)
+          })),
+          summary,
+          pagination: {
+            limit: listQuery.limit,
+            filteredTotal,
+            hasMore,
+            nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id || null : null
           }
         });
-        return res.json({ success: true, transactions: allTx });
       } else {
         targetUserId = (req as any).user.id;
       }
@@ -60,6 +92,24 @@ router.get('/', authenticateToken, async (req, res) => {
   } catch (error: any) {
     console.error('Error fetching transactions:', error);
     return res.status(500).json({ error: 'حدث خطأ أثناء جلب سجل المعاملات' });
+  }
+});
+
+// GET /api/transactions/:transactionId/receipt - Load a large receipt only when opened by an admin
+router.get('/:transactionId/receipt', isAdmin, async (req, res) => {
+  try {
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: String(req.params.transactionId) },
+      select: { receiptImage: true }
+    });
+
+    if (!transaction) return res.status(404).json({ error: 'العملية غير موجودة' });
+    if (!transaction.receiptImage) return res.status(404).json({ error: 'لا توجد صورة إيصال لهذه العملية' });
+
+    return res.json({ success: true, receiptImage: transaction.receiptImage });
+  } catch (error: any) {
+    console.error('Error fetching transaction receipt:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء جلب صورة الإيصال' });
   }
 });
 

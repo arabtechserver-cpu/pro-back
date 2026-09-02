@@ -10,23 +10,40 @@ const router = Router();
 // GET all registered users for Admin Dashboard
 router.get("/", isAdmin, async (req, res) => {
   try {
-    const { q, status } = req.query;
+    const { q, status, apiOnly } = req.query;
 
     const whereClause: any = {
-      role: { not: 'admin' }
+      role: { not: 'admin' },
+      AND: []
     };
+    
     if (status && status !== "all") {
       whereClause.status = String(status);
     }
+    if (apiOnly === 'true') {
+      whereClause.AND.push({
+        OR: [
+          { apiEnabled: true },
+          { apiSiteName: { not: null } },
+          { apiKey: { not: null } }
+        ]
+      });
+    }
     if (q) {
       const searchStr = String(q).trim();
-      whereClause.OR = [
-        { fullName: { contains: searchStr, mode: 'insensitive' } },
-        { email: { contains: searchStr, mode: 'insensitive' } },
-        { username: { contains: searchStr, mode: 'insensitive' } },
-        { phone: { contains: searchStr, mode: 'insensitive' } },
-        { country: { contains: searchStr, mode: 'insensitive' } }
-      ];
+      whereClause.AND.push({
+        OR: [
+          { fullName: { contains: searchStr, mode: 'insensitive' } },
+          { email: { contains: searchStr, mode: 'insensitive' } },
+          { username: { contains: searchStr, mode: 'insensitive' } },
+          { phone: { contains: searchStr, mode: 'insensitive' } },
+          { country: { contains: searchStr, mode: 'insensitive' } }
+        ]
+      });
+    }
+
+    if (whereClause.AND.length === 0) {
+      delete whereClause.AND;
     }
 
     const users = await prisma.user.findMany({

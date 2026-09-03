@@ -3,17 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { prisma } from "../utils/prisma";
 import { isAdmin } from '../middleware/auth';
+import { getUploadDir, ensureUploadDir, saveBufferToUploads, getUploadFilePath } from '../utils/uploads';
 
 const router = Router();
-const UPLOAD_DIR = path.join(__dirname, '../../public/uploads');
 
-function ensureUploadDirExists() {
-  if (!fs.existsSync(UPLOAD_DIR)) {
-    fs.mkdirSync(UPLOAD_DIR, { recursive: true });
-  }
-}
-
-// POST /api/upload - Upload Image to PostgreSQL DB & Disk
+// POST /api/upload - Upload Image to Volume & PostgreSQL DB
 router.post('/', isAdmin, async (req, res) => {
   try {
     const { image, filename } = req.body;
@@ -21,7 +15,7 @@ router.post('/', isAdmin, async (req, res) => {
       return res.status(400).json({ success: false, error: 'لم يتم توفير صورة للرفع' });
     }
 
-    ensureUploadDirExists();
+    ensureUploadDir();
 
     // Extract mime type and clean Base64 data
     const matches = image.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
@@ -40,11 +34,18 @@ router.post('/', isAdmin, async (req, res) => {
     const cleanFilename = (filename || 'uploaded_image').replace(/[^a-zA-Z0-9_.-]/g, '_');
     const uniqueFilename = `${Date.now()}_${cleanFilename}`;
     const buffer = Buffer.from(base64Data, 'base64');
-    if (buffer.length === 0 || buffer.length > 5 * 1024 * 1024) {
-      return res.status(413).json({ success: false, error: 'حجم الصورة يجب ألا يتجاوز 5 ميجابايت' });
+    if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
+      return res.status(413).json({ success: false, error: 'حجم الصورة يجب ألا يتجاوز 10 ميجابايت' });
     }
 
-    // 1. Save directly into PostgreSQL database for permanent persistence
+    // 1. Save directly into persistent volume /app/uploads on disk
+    try {
+      saveBufferToUploads(uniqueFilename, buffer);
+    } catch (fsErr) {
+      console.error('[Uploads] Error saving to volume disk:', fsErr);
+    }
+
+    // 2. Also save into PostgreSQL database as permanent fallback
     const storedRecord = await prisma.storedImage.create({
       data: {
         filename: uniqueFilename,
@@ -54,35 +55,40 @@ router.post('/', isAdmin, async (req, res) => {
       }
     });
 
-    // 2. Also save to disk for fast local static serving if available
-    try {
-      const filePath = path.join(UPLOAD_DIR, uniqueFilename);
-      fs.writeFileSync(filePath, buffer);
-    } catch (fsErr) {
-      // Non-fatal if container disk is read-only
-    }
-
-    const imageUrl = `/api/upload/${storedRecord.id}`;
+    const imageUrl = `/uploads/${uniqueFilename}`;
+    const fallbackApiUrl = `/api/upload/${storedRecord.id}`;
     return res.json({ 
       success: true, 
       id: storedRecord.id,
       url: imageUrl, 
+      fallbackUrl: fallbackApiUrl,
       filename: uniqueFilename 
     });
   } catch (error: any) {
     console.error('Error uploading image:', error);
-    return res.status(500).json({ success: false, error: 'فشل رفع وحفظ الصورة في قاعدة البيانات' });
+    return res.status(500).json({ success: false, error: 'فشل رفع وحفظ الصورة' });
   }
 });
 
-// GET /api/upload/:id - Stream Image Directly from Database or Disk
+// GET /api/upload/:id - Stream Image Directly from Disk Volume or Database
 router.get('/:id', async (req, res) => {
   try {
     const id = String(req.params.id);
 
-    res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
-    // Check if ID matches database record or filename
+    // 1. Check persistent volume on disk first
+    const diskPath = getUploadFilePath(id);
+    if (diskPath && fs.existsSync(diskPath)) {
+      const ext = path.extname(diskPath).replace('.', '').toLowerCase() || 'jpeg';
+      const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
+      res.setHeader('Content-Type', mime);
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      return fs.createReadStream(diskPath).pipe(res);
+    }
+
+    // 2. Check if ID matches database record or filename in DB
     let stored = await prisma.storedImage.findFirst({
       where: {
         OR: [
@@ -97,18 +103,8 @@ router.get('/:id', async (req, res) => {
       res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
       res.setHeader('Content-Length', imgBuffer.length);
       res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
       return res.end(imgBuffer);
-    }
-
-    // Fallback: check local uploads folder
-    const localFilePath = path.join(UPLOAD_DIR, id);
-    if (fs.existsSync(localFilePath)) {
-      const ext = path.extname(localFilePath).replace('.', '') || 'jpeg';
-      res.setHeader('Content-Type', `image/${ext}`);
-      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
-      res.setHeader('Cross-Origin-Resource-Policy', 'same-site');
-      return fs.createReadStream(localFilePath).pipe(res);
     }
 
     return res.status(404).json({ error: 'Image not found' });

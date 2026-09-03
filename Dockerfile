@@ -29,6 +29,9 @@ RUN npx prisma generate
 # Copy built artifacts from builder
 COPY --from=builder /app/dist ./dist
 
+# Create persistent upload directory for volume mount
+RUN mkdir -p /app/uploads
+
 EXPOSE 5000
 
 CMD ["npm", "run", "start"]

@@ -134,11 +134,8 @@ router.post('/post', isAdmin, async (req, res) => {
         const base64Data = imgMatch[2];
         const fs = require('fs');
         const path = require('path');
-        const filename = `thumb_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
-        const uploadDir = path.join(__dirname, '../../public/uploads');
-        if (!fs.existsSync(uploadDir)) {
-          fs.mkdirSync(uploadDir, { recursive: true });
-        }
+        const { ensureUploadDir } = require('../utils/uploads');
+        const uploadDir = ensureUploadDir();
         fs.writeFileSync(path.join(uploadDir, filename), Buffer.from(base64Data, 'base64'));
         processedImageUrl = `${baseUrl}/uploads/${filename}`;
       }
@@ -220,10 +217,8 @@ router.put('/posts/:id', isAdmin, async (req, res) => {
         const fs = require('fs');
         const path = require('path');
         const filename = `thumb_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
-        const uploadDir = path.join(__dirname, '../../public/uploads');
-        if (!fs.existsSync(uploadDir)) {
-          fs.mkdirSync(uploadDir, { recursive: true });
-        }
+        const { ensureUploadDir } = require('../utils/uploads');
+        const uploadDir = ensureUploadDir();
         fs.writeFileSync(path.join(uploadDir, filename), Buffer.from(base64Data, 'base64'));
         processedImageUrl = `${baseUrl}/uploads/${filename}`;
       }

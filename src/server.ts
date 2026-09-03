@@ -28,7 +28,10 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ limit: '10mb', extended: true }));
 
 import path from 'path';
+import { getUploadDir, ensureUploadDir } from './utils/uploads';
+ensureUploadDir();
 app.use(express.static(path.join(__dirname, '../public')));
+app.use('/uploads', express.static(getUploadDir(), { maxAge: '30d', immutable: true }));
 
 // Routes
 import authRoutes from './routes/auth';

@@ -68,6 +68,9 @@ export async function bootstrapDatabase() {
     try {
       await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "customDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0;`);
     } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "originalPrice" DOUBLE PRECISION;`);
+    } catch (_) { /* already exists */ }
     console.log('[Bootstrap] Column migration helpers completed.');
 
     // 3. Check & Sync Services if a Provider is configured

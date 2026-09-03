@@ -844,6 +844,13 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       });
     }
 
+    // Automatically persist all fetched services to PostgreSQL DB!
+    try {
+      await persistProviderServicesList(provider, services);
+    } catch (saveErr) {
+      console.error("Auto persist on fetch services warning:", saveErr);
+    }
+
     return res.json({
       success: true,
       services,
@@ -858,6 +865,133 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
 
 router.get("/:id/fetch-services", fetchRemoteServicesHandler);
 router.post("/:id/fetch-services", fetchRemoteServicesHandler);
+
+// Helper function to persist/upsert any list of provider services into DB
+export async function persistProviderServicesList(
+  provider: { id: string },
+  allServices: any[],
+  markupPercent = 0,
+  exchangeRate = 1
+) {
+  // Ensure standard categories exist
+  const categoryNames = ["IMEI Service", "Server Service", "Remote Service"];
+  const categoryMap = new Map<string, string>();
+
+  for (const name of categoryNames) {
+    let cat = await prisma.dhruCategory.findFirst({ where: { name } });
+    if (!cat) {
+      cat = await prisma.dhruCategory.create({ data: { name } });
+    }
+    categoryMap.set(name, cat.id);
+  }
+
+  const existingServices = await prisma.dhruService.findMany({
+    where: { providerId: provider.id }
+  });
+  const existingMap = new Map<string, any>();
+  for (const s of existingServices) {
+    if (s.dhruId) existingMap.set(s.dhruId, s);
+  }
+
+  const newServicesToInsert: any[] = [];
+  const servicesToUpdate: any[] = [];
+  const seenDhruIds = new Set<string>();
+
+  for (const s of allServices) {
+    const remoteServiceId = String(s.id || s.service_id);
+    if (!remoteServiceId || seenDhruIds.has(remoteServiceId)) continue;
+    seenDhruIds.add(remoteServiceId);
+    const dhruId = buildProviderServiceId(provider.id, remoteServiceId);
+
+    const serviceName = s.name || s.service_name || "";
+    const groupName = s.group_name || s.groupName || "General";
+    let credit = (parseFloat(s.credit || s.price) || 0) * (exchangeRate > 0 ? exchangeRate : 1);
+    const time = s.time || "";
+    const info = s.info || "";
+    const requiresCustomStr = s.customFields && Array.isArray(s.customFields)
+      ? JSON.stringify(s.customFields)
+      : (s.requiresCustom || null);
+    const apiServiceType = normalizeProviderApiServiceType(s.api_service_type ?? s.service_type);
+    const categoryName = apiServiceType === "imei"
+      ? "IMEI Service"
+      : (apiServiceType === "remote" ? "Remote Service" : "Server Service");
+    const categoryId = categoryMap.get(categoryName)!;
+    const cleanName = cleanServiceName(serviceName, info, groupName);
+
+    const existing = existingMap.get(dhruId);
+    const computedMargin = markupPercent > 0 
+      ? Number(((credit * markupPercent) / 100).toFixed(2)) 
+      : (existing ? (existing.margin ?? 0) : 0);
+
+    if (existing) {
+      servicesToUpdate.push({
+        id: existing.id,
+        data: {
+          name: existing.name && existing.name !== existing.originalName ? existing.name : cleanName,
+          originalName: serviceName,
+          groupName,
+          credit: credit === 0 && existing.credit > 0 ? existing.credit : credit,
+          time,
+          info,
+          categoryId,
+          providerId: provider.id,
+          apiServiceType,
+          requiresCustom: requiresCustomStr || existing.requiresCustom,
+          isActive: existing.isActive,
+          margin: computedMargin
+        }
+      });
+    } else {
+      const isNotice = credit === 0 && (serviceName.match(/rules?|refund|notice|تنبيه/i) || groupName.match(/rules?|refund/i));
+      newServicesToInsert.push({
+        dhruId,
+        name: cleanName,
+        originalName: serviceName,
+        groupName,
+        credit,
+        time,
+        info,
+        categoryId,
+        providerId: provider.id,
+        apiServiceType,
+        requiresCustom: requiresCustomStr,
+        isActive: !isNotice,
+        margin: computedMargin
+      });
+    }
+  }
+
+  // Insert new services in batches
+  if (newServicesToInsert.length > 0) {
+    for (let i = 0; i < newServicesToInsert.length; i += 500) {
+      const chunk = newServicesToInsert.slice(i, i + 500);
+      await prisma.dhruService.createMany({ data: chunk, skipDuplicates: true });
+    }
+  }
+
+  // Update existing services in batches
+  if (servicesToUpdate.length > 0) {
+    for (let i = 0; i < servicesToUpdate.length; i += 100) {
+      const chunk = servicesToUpdate.slice(i, i + 100);
+      await prisma.$transaction(
+        chunk.map(item =>
+          prisma.dhruService.update({
+            where: { id: item.id },
+            data: item.data
+          })
+        )
+      );
+    }
+  }
+
+  const totalSynced = await prisma.dhruService.count({ where: { providerId: provider.id } });
+  await prisma.apiProvider.update({
+    where: { id: provider.id },
+    data: { servicesCount: totalSynced }
+  });
+
+  return totalSynced;
+}
 
 // POST /api/providers/:id/sync - Non-destructive sync of all services from provider
 router.post("/:id/sync", async (req, res) => {
@@ -895,128 +1029,10 @@ router.post("/:id/sync", async (req, res) => {
       });
     }
 
-    // Ensure standard categories exist
-    const categoryNames = ["IMEI Service", "Server Service", "Remote Service"];
-    const categoryMap = new Map<string, string>();
-
-    for (const name of categoryNames) {
-      let cat = await prisma.dhruCategory.findFirst({ where: { name } });
-      if (!cat) {
-        cat = await prisma.dhruCategory.create({ data: { name } });
-      }
-      categoryMap.set(name, cat.id);
-    }
-
-    // Services belong to one provider. The same remote service number may
-    // legitimately exist at multiple providers.
-    const existingServices = await prisma.dhruService.findMany({
-      where: { providerId: provider.id }
-    });
-    const existingMap = new Map<string, any>();
-    for (const s of existingServices) {
-      if (s.dhruId) existingMap.set(s.dhruId, s);
-    }
-
-    const newServicesToInsert: any[] = [];
-    const servicesToUpdate: any[] = [];
-    const seenDhruIds = new Set<string>();
-
     const markupPercent = parseFloat(req.body.markupPercent ?? req.body.markup_percent) || 0;
     const exchangeRate = parseFloat(req.body.exchangeRate ?? req.body.exchange_rate) || 1;
 
-    for (const s of allServices) {
-      const remoteServiceId = String(s.id);
-      if (!remoteServiceId || seenDhruIds.has(remoteServiceId)) continue;
-      seenDhruIds.add(remoteServiceId);
-      const dhruId = buildProviderServiceId(provider.id, remoteServiceId);
-
-      const serviceName = s.name || "";
-      const groupName = s.group_name || s.groupName || "General";
-      let credit = (parseFloat(s.credit) || 0) * (exchangeRate > 0 ? exchangeRate : 1);
-      const time = s.time || "";
-      const info = s.info || "";
-      const requiresCustomStr = s.requiresCustom || null;
-      const apiServiceType = normalizeProviderApiServiceType(s.api_service_type ?? s.service_type);
-      const categoryName = apiServiceType === "imei"
-        ? "IMEI Service"
-        : (apiServiceType === "remote" ? "Remote Service" : "Server Service");
-      const categoryId = categoryMap.get(categoryName)!;
-      const cleanName = cleanServiceName(serviceName, info, groupName);
-
-      const existing = existingMap.get(dhruId);
-      const computedMargin = markupPercent > 0 
-        ? Number(((credit * markupPercent) / 100).toFixed(2)) 
-        : (existing ? (existing.margin ?? 0) : 0);
-
-      if (existing) {
-        servicesToUpdate.push({
-          id: existing.id,
-          data: {
-            name: existing.name && existing.name !== existing.originalName ? existing.name : cleanName,
-            originalName: serviceName,
-            groupName,
-            credit: credit === 0 && existing.credit > 0 ? existing.credit : credit,
-            time,
-            info,
-            categoryId,
-            providerId: provider.id,
-            apiServiceType,
-            requiresCustom: requiresCustomStr,
-            isActive: existing.isActive,
-            margin: computedMargin
-          }
-        });
-      } else {
-        const isNotice = credit === 0 && (serviceName.match(/rules?|refund|notice|تنبيه/i) || groupName.match(/rules?|refund/i));
-        newServicesToInsert.push({
-          dhruId,
-          name: cleanName,
-          originalName: serviceName,
-          groupName,
-          credit,
-          time,
-          info,
-          categoryId,
-          providerId: provider.id,
-          apiServiceType,
-          requiresCustom: requiresCustomStr,
-          isActive: !isNotice,
-          margin: computedMargin
-        });
-      }
-    }
-
-    // Insert new services
-    if (newServicesToInsert.length > 0) {
-      for (let i = 0; i < newServicesToInsert.length; i += 500) {
-        const chunk = newServicesToInsert.slice(i, i + 500);
-        await prisma.dhruService.createMany({ data: chunk, skipDuplicates: true });
-      }
-    }
-
-    // Update existing services
-    if (servicesToUpdate.length > 0) {
-      for (let i = 0; i < servicesToUpdate.length; i += 100) {
-        const chunk = servicesToUpdate.slice(i, i + 100);
-        await prisma.$transaction(
-          chunk.map(item =>
-            prisma.dhruService.update({
-              where: { id: item.id },
-              data: item.data
-            })
-          )
-        );
-      }
-    }
-
-    const totalSynced = await prisma.dhruService.count({ where: { providerId: provider.id } });
-
-    await prisma.apiProvider.update({
-      where: { id },
-      data: {
-        servicesCount: totalSynced
-      }
-    });
+    const totalSynced = await persistProviderServicesList(provider, allServices, markupPercent, exchangeRate);
 
     return res.json({
       success: true,

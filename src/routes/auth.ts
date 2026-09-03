@@ -18,7 +18,14 @@ const authLimiter = rateLimit({
 router.use(authLimiter);
 
 // In-memory OTP Store for forgot password flow
+// يتم مسح الأكواد المنتهية تلقائياً كل 15 دقيقة لمنع Memory Leak
 const otpStore = new Map<string, { code: string; expiresAt: number }>();
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of otpStore.entries()) {
+    if (now > val.expiresAt) otpStore.delete(key);
+  }
+}, 15 * 60 * 1000);
 
 // POST /api/auth/register - Direct & Fast Registration with Cloudflare Turnstile Protection
 router.post('/register', turnstileMiddleware, async (req, res) => {
@@ -53,6 +60,7 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
         password: hashedPassword,
         phone: cleanPhone,
         country: country || 'EG',
+        role: 'user',
         status: 'active',
         balance: 0.0
       }
@@ -87,6 +95,7 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
         username: newUser.username,
         phone: newUser.phone,
         country: newUser.country,
+        role: newUser.role,
         status: newUser.status,
         balance: newUser.balance
       }

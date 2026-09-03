@@ -1038,8 +1038,10 @@ router.post("/:id/import-services", async (req, res) => {
     const { services, markup_percent, exchange_rate } = req.body;
 
     if (!Array.isArray(services) || services.length === 0) {
+      console.log("[import-services] No services received. Body:", req.body);
       return res.status(400).json({ error: "يرجى تحديد خدمة واحدة على الأقل للاستيراد" });
     }
+    console.log(`[import-services] Received ${services.length} services to import for provider ${id}`);
 
     const provider = await prisma.apiProvider.findUnique({ where: { id } });
     if (!provider) {

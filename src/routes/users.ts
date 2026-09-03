@@ -73,15 +73,26 @@ router.get("/", isAdmin, async (req, res) => {
 router.get("/profile", authenticateToken, async (req: any, res) => {
   try {
     const { email, userId } = req.query;
+    const requestedId = userId ? String(userId) : null;
+    const requestedEmail = email ? String(email).trim().toLowerCase() : null;
+
+    // المستخدم المصادَق عليه من الـ token
+    const authUser = req.user;
+
     let u: any = null;
-    if (userId) {
-      u = await prisma.user.findUnique({ where: { id: String(userId) }, include: { membershipTier: true } });
-    } else if (email) {
-      u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() }, include: { membershipTier: true } });
-    } else if (req.user?.id) {
-      u = await prisma.user.findUnique({ where: { id: req.user.id }, include: { membershipTier: true } });
-    } else if (req.user) {
-      u = await prisma.user.findUnique({ where: { id: req.user.id }, include: { membershipTier: true } }) || req.user;
+
+    // الأدمن يمكنه الاطلاع على بيانات أي مستخدم
+    if (authUser && ['admin', 'super_admin'].includes(authUser.role)) {
+      if (requestedId) {
+        u = await prisma.user.findUnique({ where: { id: requestedId }, include: { membershipTier: true } });
+      } else if (requestedEmail) {
+        u = await prisma.user.findUnique({ where: { email: requestedEmail }, include: { membershipTier: true } });
+      } else {
+        u = await prisma.user.findUnique({ where: { id: authUser.id }, include: { membershipTier: true } });
+      }
+    } else {
+      // المستخدم العادي يحصل على بياناته فقط — تجاهل أي query param
+      u = await prisma.user.findUnique({ where: { id: authUser.id }, include: { membershipTier: true } });
     }
 
     if (!u) {

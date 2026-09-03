@@ -119,7 +119,7 @@ router.post('/services/toggle-group', isAdmin, async (req, res) => {
 // POST /api/dhru/services/update - Edit service custom name, base credit, and profit margin
 router.post('/services/update', isAdmin, async (req, res) => {
   try {
-    const { serviceId, name, margin, credit, isActive } = req.body;
+    const { serviceId, name, margin, credit, isActive, requiresCustom } = req.body;
     if (!serviceId) {
       return res.status(400).json({ error: 'serviceId is required' });
     }
@@ -136,6 +136,22 @@ router.post('/services/update', isAdmin, async (req, res) => {
     }
     if (isActive !== undefined) {
       updateData.isActive = Boolean(isActive);
+    }
+    // دعم تعديل الحقول المخصصة للخدمة من لوحة الأدمن
+    if (requiresCustom !== undefined) {
+      if (requiresCustom === null || requiresCustom === '') {
+        updateData.requiresCustom = null;
+      } else if (typeof requiresCustom === 'string') {
+        // تحقق من أن الـ JSON صالح قبل الحفظ
+        try {
+          JSON.parse(requiresCustom);
+          updateData.requiresCustom = requiresCustom;
+        } catch {
+          return res.status(400).json({ error: 'requiresCustom must be valid JSON' });
+        }
+      } else if (typeof requiresCustom === 'object') {
+        updateData.requiresCustom = JSON.stringify(requiresCustom);
+      }
     }
 
     const updated = await prisma.dhruService.update({

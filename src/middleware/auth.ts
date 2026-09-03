@@ -83,7 +83,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
 };
 
 export const generateToken = (payload: any) => {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '1h' });
+  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 };
 
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {

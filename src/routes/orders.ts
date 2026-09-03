@@ -636,10 +636,23 @@ router.post('/check-status', isAdmin, async (req, res) => {
     const serviceType = dhruService
       ? resolveOrderServiceType(dhruService.apiServiceType, dhruService.dhruCategory?.name, dhruService.groupName)
       : 'unknown';
+
     if (dhruService && serviceType === 'imei') {
       response = await getImeiOrder(order.apiOrderId, providerConfig);
+      if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
+        const fallback = await getServerOrder(order.apiOrderId, providerConfig);
+        if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
+          response = fallback;
+        }
+      }
     } else {
       response = await getServerOrder(order.apiOrderId, providerConfig);
+      if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
+        const fallback = await getImeiOrder(order.apiOrderId, providerConfig);
+        if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
+          response = fallback;
+        }
+      }
     }
 
     if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
@@ -648,22 +661,42 @@ router.post('/check-status', isAdmin, async (req, res) => {
       });
     }
 
-    const statusData = response.SUCCESS?.[0];
+    const statusData = (Array.isArray(response.SUCCESS) ? response.SUCCESS[0] : null)
+      || response.RESULT
+      || (Array.isArray(response.result) ? response.result[0] : response.result)
+      || response;
+
     if (!statusData) {
       return res.json({ success: true, message: 'لا توجد بيانات محدثة من المزود بعد', raw: response });
     }
 
-    const apiStatus = String(statusData.STATUS);
+    const rawStatus = String(statusData.STATUS ?? statusData.status ?? "").trim();
+    const statusLower = rawStatus.toLowerCase();
+    const statusText = String(statusData.STATUS_TEXT ?? statusData.status_text ?? "").trim().toLowerCase();
+    const replyCode = String(statusData.CODE ?? statusData.code ?? statusData.REPLY ?? statusData.reply ?? "").trim();
+
     let nextStatus = order.status;
     let reply = order.reply;
 
-    if (apiStatus === '4') {
+    const isCompleted = rawStatus === "4" 
+      || statusLower.includes("complet") 
+      || statusLower.includes("success") 
+      || statusText.includes("complet") 
+      || statusText.includes("success");
+
+    const isRejected = rawStatus === "3" 
+      || statusLower.includes("reject") 
+      || statusLower.includes("cancel") 
+      || statusText.includes("reject") 
+      || statusText.includes("cancel");
+
+    if (isCompleted) {
       nextStatus = 'completed';
-      reply = statusData.CODE || 'تم بنجاح من المزود';
-    } else if (apiStatus === '2' || apiStatus === '3') {
+      reply = replyCode || 'تم بنجاح من المزود';
+    } else if (isRejected) {
       nextStatus = 'rejected';
-      reply = statusData.CODE || 'مرفوض من المزود';
-    } else if (apiStatus === '1') {
+      reply = replyCode || statusData.REASON || 'مرفوض من المزود';
+    } else {
       nextStatus = 'processing';
     }
 

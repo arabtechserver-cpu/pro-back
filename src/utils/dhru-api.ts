@@ -236,9 +236,21 @@ export async function placeServerOrder(
 }
 
 export async function getImeiOrder(orderId: string, provider?: ProviderConfig) {
-  return dhruApiRequest("getimeiorder", { ID: orderId }, provider);
+  return dhruApiRequest("getimeiorder", {
+    ID: orderId,
+    id: orderId,
+    REFERENCEID: orderId,
+    referenceid: orderId,
+    orderid: orderId
+  }, provider);
 }
 
 export async function getServerOrder(orderId: string, provider?: ProviderConfig) {
-  return dhruApiRequest("getserverorder", { ID: orderId }, provider);
+  return dhruApiRequest("getserverorder", {
+    ID: orderId,
+    id: orderId,
+    REFERENCEID: orderId,
+    referenceid: orderId,
+    orderid: orderId
+  }, provider);
 }

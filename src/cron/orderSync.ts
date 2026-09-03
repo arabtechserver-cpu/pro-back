@@ -4,14 +4,11 @@ import { getImeiOrder, getServerOrder } from '../utils/dhru-api';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';
 
-// Maximum number of failed API checks before marking order as failed
-const MAX_RETRY_ERRORS = 10;
-
-// Run every 1 minute
+// Run every 3 minutes to avoid flooding provider APIs and triggering rate-limits
 export function initOrderSyncCron() {
-  console.log('[CRON] Initializing Order Sync Cron Job (runs every 1 minute)');
+  console.log('[CRON] Initializing Order Sync Cron Job (runs every 3 minutes)');
 
-  cron.schedule('* * * * *', async () => {
+  cron.schedule('*/3 * * * *', async () => {
     try {
       // Find orders that are processing and have an API Order ID
       const pendingOrders = await prisma.order.findMany({
@@ -26,7 +23,7 @@ export function initOrderSyncCron() {
         return;
       }
 
-      console.log(`[CRON] Found ${pendingOrders.length} pending orders to check.`);
+      console.log(`[CRON] Found ${pendingOrders.length} pending orders to check with providers.`);
 
       for (const order of pendingOrders) {
         if (!order.apiOrderId) continue;
@@ -51,105 +48,99 @@ export function initOrderSyncCron() {
               }
             : undefined;
 
-          let response: any = null;
-          if (dhruService && resolveOrderServiceType(
+          const isImei = dhruService && resolveOrderServiceType(
             dhruService.apiServiceType,
             dhruService.dhruCategory?.name,
             dhruService.groupName
-          ) === "imei") {
+          ) === "imei";
+
+          let response: any = null;
+
+          // Try primary method based on service type
+          if (isImei) {
             response = await getImeiOrder(order.apiOrderId, providerConfig);
+            // Fallback: If IMEI check failed or returned error, try server check
+            if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
+              const fallback = await getServerOrder(order.apiOrderId, providerConfig);
+              if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
+                response = fallback;
+              }
+            }
           } else {
             response = await getServerOrder(order.apiOrderId, providerConfig);
+            // Fallback: If server check failed or returned error, try IMEI check
+            if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
+              const fallback = await getImeiOrder(order.apiOrderId, providerConfig);
+              if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
+                response = fallback;
+              }
+            }
           }
 
-          // Handle "Order not found" from API — increment retry counter
+          // Handle temporary API errors / "Order not found" from provider:
+          // CRITICAL: NEVER auto-cancel or refund the order! The provider may be processing it or undergoing maintenance.
           if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
-            const errorMsg = response?.Error || response?.ERROR || "Unknown Error";
-
-            // Parse existing notes for retry count
-            let retryCount = 0;
-            if (order.notes) {
-              const match = order.notes.match(/retry:(\d+)/);
-              if (match) retryCount = parseInt(match[1], 10);
-            }
-            retryCount++;
-
-            console.warn(`[CRON] Order ${order.id} API error (attempt ${retryCount}/${MAX_RETRY_ERRORS}): ${errorMsg}`);
-
-            if (retryCount >= MAX_RETRY_ERRORS) {
-              // Mark as failed after too many consecutive "not found" responses
-              await prisma.order.update({
-                where: { id: order.id },
-                data: {
-                  status: 'failed',
-                  reply: `فشل: ${errorMsg}`,
-                  notes: `auto-failed after ${MAX_RETRY_ERRORS} retries`
-                }
-              });
-
-              // Refund user if applicable
-              if (order.userId) {
-                await prisma.user.update({
-                  where: { id: order.userId },
-                  data: { balance: { increment: order.price } }
-                });
-                await prisma.transaction.create({
-                  data: {
-                    userId: order.userId,
-                    type: `استرجاع تلقائي (طلب غير موجود): ${order.serviceName.slice(0, 30)}`,
-                    amount: order.price,
-                    method: 'استرجاع تلقائي',
-                    refNo: `REF-#${order.id.slice(-6)}`,
-                    status: 'completed'
-                  }
-                });
-              }
-
-              console.log(`[CRON] Order ${order.id} auto-failed and refunded after ${MAX_RETRY_ERRORS} retries.`);
-            } else {
-              // Update retry counter in notes
-              const updatedNotes = (order.notes || '').replace(/retry:\d+/, '') + ` retry:${retryCount}`;
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { notes: updatedNotes.trim() }
-              });
-            }
+            const errorMsg = response?.Error || response?.ERROR || "API check unavailable";
+            console.warn(`[CRON] Order #${order.id.slice(-6)} (Provider Ref: #${order.apiOrderId}) status check returned: "${errorMsg}". Keeping in processing status.`);
             continue;
           }
 
-          const statusData = response.SUCCESS?.[0];
-          if (!statusData) continue;
+          const statusData = (Array.isArray(response.SUCCESS) ? response.SUCCESS[0] : null)
+            || response.RESULT
+            || (Array.isArray(response.result) ? response.result[0] : response.result)
+            || response;
 
-          // STATUS VALUES in Dhru (commonly):
-          // 0 = Pending, 1 = In Process, 2 = Rejected, 3 = Rejected, 4 = Success
-          const apiStatus = String(statusData.STATUS);
+          if (!statusData) {
+            continue;
+          }
 
-          if (apiStatus === "4") {
+          const rawStatus = String(statusData.STATUS ?? statusData.status ?? "").trim();
+          const statusLower = rawStatus.toLowerCase();
+          const statusText = String(statusData.STATUS_TEXT ?? statusData.status_text ?? "").trim().toLowerCase();
+          const replyCode = String(statusData.CODE ?? statusData.code ?? statusData.REPLY ?? statusData.reply ?? "").trim();
+
+          // STATUS in Dhru Fusion:
+          // 4 = Completed / Success
+          // 3 = Rejected / Canceled
+          // 0, 1, 2 = Pending / In Process / Verification
+          const isCompleted = rawStatus === "4" 
+            || statusLower.includes("complet") 
+            || statusLower.includes("success") 
+            || statusText.includes("complet") 
+            || statusText.includes("success");
+
+          const isRejected = rawStatus === "3" 
+            || statusLower.includes("reject") 
+            || statusLower.includes("cancel") 
+            || statusText.includes("reject") 
+            || statusText.includes("cancel");
+
+          if (isCompleted) {
             // COMPLETED
-            const replyCode = statusData.CODE || "تم بنجاح";
+            const finalReply = replyCode || "تم بنجاح من المزود";
 
             await prisma.order.update({
               where: { id: order.id },
               data: {
                 status: 'completed',
-                reply: replyCode,
-                notes: null
+                reply: finalReply
               }
             });
 
             // Notify User & Admin
-            const msg = `✅ تم اكتمال طلبك!\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/النتيجة: ${replyCode}`;
+            const msg = `✅ تم اكتمال طلبك بنجاح!\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
             sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
-            console.log(`[CRON] Order ${order.id} marked as COMPLETED.`);
+            console.log(`[CRON] Order #${order.id.slice(-6)} marked as COMPLETED.`);
           }
-          else if (apiStatus === "3" || apiStatus === "2") {
-            // REJECTED
+          else if (isRejected) {
+            // REJECTED EXPLICITLY BY PROVIDER
+            const rejectReason = replyCode || statusData.REASON || statusData.reason || 'مرفوض من المزود';
+
             await prisma.order.update({
               where: { id: order.id },
               data: {
                 status: 'failed',
-                reply: 'مرفوض من المزود',
-                notes: null
+                reply: `مرفوض: ${rejectReason}`
               }
             });
 
@@ -163,7 +154,7 @@ export function initOrderSyncCron() {
               await prisma.transaction.create({
                 data: {
                   userId: order.userId,
-                  type: `استرجاع رصيد (طلب مرفوض): ${order.serviceName.slice(0, 30)}`,
+                  type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
                   amount: order.price,
                   method: 'استرجاع تلقائي',
                   refNo: `REF-#${order.id.slice(-6)}`,
@@ -173,19 +164,13 @@ export function initOrderSyncCron() {
             }
 
             // Notify User & Admin
-            const msg = `❌ تم رفض طلبك وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
+            const msg = `❌ تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
             sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
-            console.log(`[CRON] Order ${order.id} marked as REJECTED and refunded.`);
+            console.log(`[CRON] Order #${order.id.slice(-6)} marked as REJECTED and refunded.`);
           }
           else {
-            // Still processing (status 0 or 1) - reset retry counter if it was set
-            console.log(`[CRON] Order ${order.id} is still processing (Status: ${apiStatus}).`);
-            if (order.notes?.includes('retry:')) {
-              await prisma.order.update({
-                where: { id: order.id },
-                data: { notes: null }
-              });
-            }
+            // Still processing (status 0, 1, 2, "In Process", "Pending", etc.)
+            console.log(`[CRON] Order #${order.id.slice(-6)} (Ref: #${order.apiOrderId}) is still in progress (Provider Status: ${rawStatus || 'In Process'}).`);
           }
 
         } catch (err) {

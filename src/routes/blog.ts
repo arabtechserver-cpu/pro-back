@@ -134,6 +134,7 @@ router.post('/post', isAdmin, async (req, res) => {
         const base64Data = imgMatch[2];
         const fs = require('fs');
         const path = require('path');
+        const filename = `thumb_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
         const { ensureUploadDir } = require('../utils/uploads');
         const uploadDir = ensureUploadDir();
         fs.writeFileSync(path.join(uploadDir, filename), Buffer.from(base64Data, 'base64'));

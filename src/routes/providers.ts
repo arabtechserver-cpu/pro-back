@@ -762,7 +762,7 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           });
 
           if (existingImeiIndex !== -1) {
-            normalizedFields[existingImeiIndex].required = true;
+            normalizedFields[existingImeiIndex].required = false;
             if (existingImeiIndex > 0) {
               const [imeiField] = normalizedFields.splice(existingImeiIndex, 1);
               normalizedFields.unshift(imeiField);
@@ -775,9 +775,9 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
               label: "IMEI",
               type: "text",
               fieldtype: "text",
-              required: true,
+              required: false,
               description: "",
-              placeholder: "أدخل IMEI",
+              placeholder: "أدخل IMEI (اختياري)",
               options: [],
               fieldoptions: []
             });

@@ -221,4 +221,103 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
   }
 });
 
+// GET /api/analytics/provider-orders - Detailed provider orders report by period and service
+router.get('/provider-orders', isAdmin, async (req, res) => {
+  try {
+    const { startDate, endDate, status, search, serviceName } = req.query;
+
+    const where: any = {
+      apiOrderId: { not: null }
+    };
+
+    // Date range filter
+    if (startDate || endDate) {
+      where.createdAt = {};
+      if (startDate) {
+        const start = new Date(String(startDate));
+        start.setHours(0, 0, 0, 0);
+        where.createdAt.gte = start;
+      }
+      if (endDate) {
+        const end = new Date(String(endDate));
+        end.setHours(23, 59, 59, 999);
+        where.createdAt.lte = end;
+      }
+    }
+
+    // Status filter
+    if (status && status !== 'all' && status !== 'ALL') {
+      const s = String(status).toLowerCase();
+      if (s === 'success' || s === 'completed') {
+        where.status = 'completed';
+      } else if (s === 'processing' || s === 'in_process') {
+        where.status = 'processing';
+      } else if (s === 'rejected' || s === 'failed') {
+        where.status = { in: ['rejected', 'failed'] };
+      } else {
+        where.status = String(status);
+      }
+    }
+
+    // Service name filter
+    if (serviceName && serviceName !== 'all' && serviceName !== 'ALL') {
+      where.serviceName = String(serviceName);
+    }
+
+    // Search query (id, apiOrderId, targetInput, serviceName)
+    if (search && String(search).trim()) {
+      const q = String(search).trim();
+      where.OR = [
+        { id: { contains: q } },
+        { apiOrderId: { contains: q } },
+        { serviceName: { contains: q } },
+        { targetInput: { contains: q } }
+      ];
+    }
+
+    const [orders, totalCount, servicesList] = await Promise.all([
+      prisma.order.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        take: 300,
+        include: {
+          user: {
+            select: { id: true, fullName: true, email: true, username: true }
+          }
+        }
+      }),
+      prisma.order.count({ where }),
+      prisma.order.findMany({
+        where: { apiOrderId: { not: null } },
+        select: { serviceName: true },
+        distinct: ['serviceName']
+      })
+    ]);
+
+    const completedOrders = orders.filter((o) => o.status === 'completed');
+    const totalVolume = orders.reduce((sum, o) => sum + (o.price || 0), 0);
+    const completedVolume = completedOrders.reduce((sum, o) => sum + (o.price || 0), 0);
+
+    return res.json({
+      success: true,
+      data: {
+        orders,
+        totalCount,
+        servicesList: servicesList.map((s) => s.serviceName).filter(Boolean),
+        summary: {
+          total: totalCount,
+          completedCount: completedOrders.length,
+          processingCount: orders.filter((o) => o.status === 'processing').length,
+          failedCount: orders.filter((o) => o.status === 'failed' || o.status === 'rejected').length,
+          totalVolume,
+          completedVolume
+        }
+      }
+    });
+  } catch (error: any) {
+    console.error('Error fetching provider orders report:', error);
+    return res.status(500).json({ error: 'تعذر جلب تقرير طلبات المزود.' });
+  }
+});
+
 export default router;

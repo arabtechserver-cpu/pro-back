@@ -44,9 +44,9 @@ function generateLuxuryEmailHtml({
       <tr>
         <td style="background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 100%); padding: 30px 20px; text-align: center;">
           <div style="display: inline-block; padding: 6px 16px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 30px; color: #38bdf8; font-size: 12px; font-weight: bold; margin-bottom: 10px; letter-spacing: 1px;">
-            ⚡ AL-WEFAQ SERVER
+            ⚡ ARAB TECH PRO SERVER
           </div>
-          <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 800; letter-spacing: 0.5px;">سيرفر الوفاق</h1>
+          <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 800; letter-spacing: 0.5px;">عرب تك برو سيرفر</h1>
           <p style="margin: 5px 0 0 0; color: #bae6fd; font-size: 13px; font-family: monospace;">arabtechproserver.tech</p>
         </td>
       </tr>
@@ -83,7 +83,7 @@ function generateLuxuryEmailHtml({
       <!-- FOOTER -->
       <tr>
         <td style="background-color: #090d16; padding: 22px 20px; text-align: center; border-top: 1px solid #1e293b;">
-          <p style="margin: 0; color: #64748b; font-size: 12px;">© 2026 <strong>سيرفر الوفاق - AL-WEFAQ SERVER</strong>. جميع الحقوق محفوظة.</p>
+          <p style="margin: 0; color: #64748b; font-size: 12px;">© 2026 <strong>عرب تك برو سيرفر - ARAB TECH PRO</strong>. جميع الحقوق محفوظة.</p>
           <p style="margin: 6px 0 0 0; color: #64748b; font-size: 12px;">الدعم الفني المباشر: <a href="mailto:arabtechserver@gmail.com" style="color: #38bdf8; text-decoration: none;">arabtechserver@gmail.com</a></p>
         </td>
       </tr>
@@ -227,7 +227,7 @@ export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<
 
   return sendEmail({
     to: cleanEmail,
-    subject: `سيرفر الوفاق | ${payload.actionLabel || 'كود التحقق'}: ${payload.code}`,
+    subject: `عرب تك برو سيرفر | ${payload.actionLabel || 'كود التحقق'}: ${payload.code}`,
     html
   });
 };
@@ -247,10 +247,10 @@ export const addContactToLoops = async (email: string, firstName?: string): Prom
 export const sendWelcomeNewsletterEmail = async (email: string, name?: string): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
   const username = name || "عزيزنا العميل";
-  const message = "أهلاً بك في النشرة الإخبارية الرسمية لسيرفر الوفاق! ستصلك أحدث عروض الأدوات وتحديثات السيرفر والخدمات الجديدة فور إضافتها مباشرة على بريدك الإلكتروني.";
+  const message = "أهلاً بك في النشرة الإخبارية الرسمية لعرب تك برو سيرفر! ستصلك أحدث عروض الأدوات وتحديثات السيرفر والخدمات الجديدة فور إضافتها مباشرة على بريدك الإلكتروني.";
 
   const html = generateLuxuryEmailHtml({
-    title: "مرحباً بك في سيرفر الوفاق",
+    title: "مرحباً بك في عرب تك برو سيرفر",
     username,
     message,
     actionText: "زيارة الموقع وتصفح الخدمات",
@@ -259,7 +259,7 @@ export const sendWelcomeNewsletterEmail = async (email: string, name?: string): 
 
   return sendEmail({
     to: cleanEmail,
-    subject: "سيرفر الوفاق | أهلاً بك معنا!",
+    subject: "عرب تك برو سيرفر | أهلاً بك معنا!",
     html
   });
 };
@@ -288,7 +288,7 @@ export const sendNewsletterBroadcastEmail = async (
 
   return sendEmail({
     to: cleanEmail,
-    subject: `سيرفر الوفاق | ${payload.subject}`,
+    subject: `عرب تك برو سيرفر | ${payload.subject}`,
     html
   });
 };
@@ -322,7 +322,7 @@ export const sendOrderConfirmationEmail = async (
 
   return sendEmail({
     to: cleanEmail,
-    subject: `سيرفر الوفاق | تم استلام طلبك #${payload.orderId} بنجاح`,
+    subject: `عرب تك برو سيرفر | تم استلام طلبك #${payload.orderId} بنجاح`,
     html
   });
 };
@@ -354,7 +354,7 @@ export const sendDepositApprovalEmail = async (
 
   return sendEmail({
     to: cleanEmail,
-    subject: `سيرفر الوفاق | تم اعتماد شحن رصيدك (+$${payload.amount.toFixed(2)} USD)`,
+    subject: `عرب تك برو سيرفر | تم اعتماد شحن رصيدك (+$${payload.amount.toFixed(2)} USD)`,
     html
   });
 };
@@ -385,7 +385,7 @@ export const sendDepositPendingEmail = async (
 
   return sendEmail({
     to: cleanEmail,
-    subject: `سيرفر الوفاق | طلب إيداعك قيد المراجعة ($${payload.amount.toFixed(2)} USD)`,
+    subject: `عرب تك برو سيرفر | طلب إيداعك قيد المراجعة ($${payload.amount.toFixed(2)} USD)`,
     html
   });
 };

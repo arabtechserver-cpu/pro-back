@@ -52,11 +52,11 @@ export async function createPayPalOrder(amountUSD: number, returnUrl: string, ca
               currency_code: 'USD',
               value: formattedAmount
             },
-            description: 'شحن رصيد محفظة - سيرفر الوفاق (Al-Wefaq Server)'
+            description: 'شحن رصيد محفظة - سيرفر عرب تك برو (Arab Tech Pro Server)'
           }
         ],
         application_context: {
-          brand_name: 'Al-Wefaq Server',
+          brand_name: 'Arab Tech Pro Server',
           locale: 'ar-EG',
           user_action: 'PAY_NOW',
           return_url: returnUrl,

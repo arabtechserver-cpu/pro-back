@@ -15,18 +15,20 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
 function extractCandidateTokens(req: Request): string[] {
   const tokens: string[] = [];
 
-  // 1. Authorization header: Bearer <token>
   const authHeader = req.headers['authorization'];
+  let headerToken = '';
   if (authHeader && typeof authHeader === 'string') {
     const parts = authHeader.split(' ');
     const rawVal = parts.length > 1 ? parts[1] : parts[0];
     const clean = rawVal ? rawVal.replace(/^["']|["']$/g, '').trim() : '';
     if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && clean !== '[object' && clean !== 'Bearer') {
-      tokens.push(clean);
+      headerToken = clean;
     }
   }
 
-  // 2. Cookies
+  let cookieAdminToken = '';
+  let cookieUserToken = '';
+
   if (req.headers.cookie) {
     const cookies = req.headers.cookie.split(';');
     for (const cookie of cookies) {
@@ -34,14 +36,32 @@ function extractCandidateTokens(req: Request): string[] {
       const name = parts[0]?.trim();
       const val = parts.slice(1).join('=').trim();
       if (name && val) {
-        if (['user_token', 'token', 'session', 'admin_token'].includes(name)) {
-          const clean = val.replace(/^["']|["']$/g, '').trim();
-          if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && !tokens.includes(clean)) {
-            tokens.push(clean);
-          }
+        const clean = val.replace(/^["']|["']$/g, '').trim();
+        if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false') {
+          if (name === 'admin_token') cookieAdminToken = clean;
+          if (['user_token', 'token', 'session'].includes(name)) cookieUserToken = clean;
         }
       }
     }
+  }
+
+  // If request explicitly asks for all orders or admin operations, prioritize admin_token cookie!
+  const isExplicitAdminQuery = req.query.all === 'true' || req.query.all === '1' || (req.originalUrl && req.originalUrl.includes('all=true'));
+
+  if (isExplicitAdminQuery && cookieAdminToken) {
+    tokens.push(cookieAdminToken);
+  }
+
+  if (headerToken && !tokens.includes(headerToken)) {
+    tokens.push(headerToken);
+  }
+
+  if (cookieAdminToken && !tokens.includes(cookieAdminToken)) {
+    tokens.push(cookieAdminToken);
+  }
+
+  if (cookieUserToken && !tokens.includes(cookieUserToken)) {
+    tokens.push(cookieUserToken);
   }
 
   return tokens;

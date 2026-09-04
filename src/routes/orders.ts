@@ -104,7 +104,7 @@ router.get('/', authenticateToken, async (req, res) => {
 
     if (isExplicitAdminAllRequest) {
       const allOrders = await prisma.order.findMany({
-        take: 300,
+        take: 2000,
         orderBy: { createdAt: 'desc' },
         include: {
           user: {

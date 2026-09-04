@@ -73,6 +73,39 @@ export async function bootstrapDatabase() {
     } catch (_) { /* already exists */ }
     console.log('[Bootstrap] Column migration helpers completed.');
 
+    // 2.5 Clean up any residual custom_QNT from DhruService.requiresCustom in database
+    try {
+      const servicesWithCustomQnt = await prisma.dhruService.findMany({
+        where: {
+          requiresCustom: {
+            contains: 'custom_QNT'
+          }
+        },
+        select: { id: true, requiresCustom: true }
+      });
+
+      if (servicesWithCustomQnt.length > 0) {
+        console.log(`[Bootstrap] Cleaning ${servicesWithCustomQnt.length} services with residual custom_QNT...`);
+        for (const s of servicesWithCustomQnt) {
+          try {
+            const parsed = JSON.parse(s.requiresCustom || '[]');
+            if (Array.isArray(parsed)) {
+              const cleaned = parsed.filter((f: any) => f && f.id !== 'custom_QNT' && f.field_id !== 'custom_QNT');
+              await prisma.dhruService.update({
+                where: { id: s.id },
+                data: {
+                  requiresCustom: cleaned.length > 0 ? JSON.stringify(cleaned) : null
+                }
+              });
+            }
+          } catch {}
+        }
+        console.log('[Bootstrap] Finished cleaning residual custom_QNT fields from database.');
+      }
+    } catch (qntErr) {
+      console.error('[Bootstrap] Note on cleaning custom_QNT fields:', qntErr);
+    }
+
     // 3. Check & Sync Services if a Provider is configured
     const serviceCount = await prisma.dhruService.count();
     const activeProvider = await prisma.apiProvider.findFirst({ where: { isActive: true } });

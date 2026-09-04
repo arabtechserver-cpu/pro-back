@@ -21,6 +21,11 @@ export interface ServiceQuantityConfig extends QuantityLimits {
 export function isQuantityField(field?: any, key?: string): boolean {
   if (!field && !key) return false;
 
+  // Ignore artificially injected custom_QNT
+  if (key === "custom_QNT" || field?.id === "custom_QNT" || field?.field_id === "custom_QNT") {
+    return false;
+  }
+
   const candidateStrings: string[] = [];
   if (key) candidateStrings.push(String(key));
   if (field) {
@@ -162,12 +167,16 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
       } else if (parsed && typeof parsed === "object") {
         fieldsList = Object.entries(parsed).map(([key, val]: any) => ({
           ...(val && typeof val === "object" ? val : {}),
+          id: val?.id || key,
           field_id: val?.field_id || val?.reqid || key,
           name: val?.name || val?.fieldname || key
         }));
       }
     } catch {}
   }
+
+  // Filter out any artificial custom_QNT
+  fieldsList = fieldsList.filter((f) => f && f.id !== "custom_QNT" && f.field_id !== "custom_QNT");
 
   let hasExplicitQuantityField = false;
 
@@ -200,7 +209,7 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   if (!hasExplicitQuantityField && typeof s.requiresCustom === "string") {
     try {
       const parsed = JSON.parse(s.requiresCustom);
-      if (Array.isArray(parsed) && parsed.some(f => isQuantityField(f))) {
+      if (Array.isArray(parsed) && parsed.some(f => f && f.id !== "custom_QNT" && f.field_id !== "custom_QNT" && isQuantityField(f))) {
         hasExplicitQuantityField = true;
       }
     } catch {}
@@ -219,14 +228,12 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.qnt ??
     s.REQUIRES_QUANTITY ??
     s.requires_quantity ??
-    s.supports_quantity ??
-    s.supportsQty;
+    s.supports_quantity;
 
   const isExplicitlyDisabled =
     rawQntFlag === false ||
     rawQntFlag === "0" ||
-    rawQntFlag === 0 ||
-    s.supportsQty === false;
+    rawQntFlag === 0;
 
   // 5. Explicit provider quantity attributes
   const hasExplicitProviderQuantityAttr =
@@ -236,9 +243,30 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.REQUIRES_QUANTITY === "1" ||
     s.REQUIRES_QUANTITY === true ||
     s.requires_quantity === true ||
-    s.supports_quantity === true ||
-    s.supportsQty === true ||
-    s.supportsQty === "1";
+    s.requires_quantity === "1";
+
+  // Check if service belongs to IMEI/Device category or requires single-device hardware identifiers
+  const categoryName = String(s.categoryName || s.category?.name || s.dhruCategory?.name || "").toLowerCase();
+  const groupName = String(s.groupName || "").toLowerCase();
+  const sType = String(s.SERVICETYPE || s.servicetype || "").toLowerCase();
+
+  const isImeiOrDeviceService =
+    sType === "imei" ||
+    categoryName.includes("imei") ||
+    groupName.includes("imei") ||
+    fieldsList.some((f) => {
+      const fn = String(f?.field_id || f?.name || f?.customname || f?.fieldname || "").toLowerCase();
+      return fn === "imei" || fn === "ecid" || fn === "sn" || fn === "serial";
+    });
+
+  // IMEI and device bypass/unlock services are strictly single-device (1 unit) unless provider explicitly sets QNT: "1"
+  if (isImeiOrDeviceService && !hasExplicitProviderQuantityAttr && !hasQuantityNamePattern) {
+    return {
+      supportsQty: false,
+      minQty: 1,
+      maxQty: 0
+    };
+  }
 
   // Determine if service truly supports dynamic quantity
   const supportsQty = Boolean(

@@ -32,7 +32,19 @@ export function serializeAdminServiceCategories(
       const credit = Number(service.credit) || 0;
       const margin = Number(service.margin) || 0;
       const finalPrice = Number((credit + margin).toFixed(2));
-      const qtyConfig = getServiceQuantityConfig(service);
+      
+      let sanitizedCustom = service.requiresCustom;
+      if (sanitizedCustom) {
+        try {
+          const parsed = typeof sanitizedCustom === 'string' ? JSON.parse(sanitizedCustom) : sanitizedCustom;
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((f: any) => f && f.id !== 'custom_QNT' && f.field_id !== 'custom_QNT');
+            sanitizedCustom = typeof service.requiresCustom === 'string' ? JSON.stringify(filtered) : filtered;
+          }
+        } catch {}
+      }
+
+      const qtyConfig = getServiceQuantityConfig({ ...service, categoryName: name, requiresCustom: sanitizedCustom });
 
       return {
         id: service.id,
@@ -48,7 +60,7 @@ export function serializeAdminServiceCategories(
         time: service.time,
         info: service.info,
         isActive: service.isActive,
-        requiresCustom: service.requiresCustom,
+        requiresCustom: sanitizedCustom,
         supportsQty: qtyConfig.supportsQty,
         supports_quantity: qtyConfig.supportsQty,
         minQty: qtyConfig.minQty,
@@ -71,7 +83,19 @@ export function serializePricingServiceCategories(
       const credit = Number(service.credit) || 0;
       const margin = Number(service.margin) || 0;
       const finalPrice = Number((credit + margin).toFixed(2));
-      const qtyConfig = getServiceQuantityConfig(service);
+
+      let sanitizedCustom = service.requiresCustom;
+      if (sanitizedCustom) {
+        try {
+          const parsed = typeof sanitizedCustom === 'string' ? JSON.parse(sanitizedCustom) : sanitizedCustom;
+          if (Array.isArray(parsed)) {
+            const filtered = parsed.filter((f: any) => f && f.id !== 'custom_QNT' && f.field_id !== 'custom_QNT');
+            sanitizedCustom = typeof service.requiresCustom === 'string' ? JSON.stringify(filtered) : filtered;
+          }
+        } catch {}
+      }
+
+      const qtyConfig = getServiceQuantityConfig({ ...service, categoryName: name, requiresCustom: sanitizedCustom });
 
       return {
         id: service.id,
@@ -87,7 +111,7 @@ export function serializePricingServiceCategories(
         isActive: service.isActive,
         info: service.info,
         originalName: service.originalName,
-        requiresCustom: service.requiresCustom,
+        requiresCustom: sanitizedCustom,
         supportsQty: qtyConfig.supportsQty,
         supports_quantity: qtyConfig.supportsQty,
         minQty: qtyConfig.minQty,

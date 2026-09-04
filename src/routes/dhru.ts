@@ -247,10 +247,27 @@ router.get('/services/:id', async (req, res) => {
     const credit = typeof service.credit === 'number' ? service.credit : parseFloat(service.credit as any) || 0;
     const margin = typeof service.margin === 'number' ? service.margin : parseFloat(service.margin as any) || 0;
     const finalPrice = Number((credit + margin).toFixed(2));
-    const qtyConfig = getServiceQuantityConfig(service);
+
+    let sanitizedRequiresCustom: string | null = service.requiresCustom;
+    if (sanitizedRequiresCustom) {
+      try {
+        const parsed = typeof sanitizedRequiresCustom === "string" ? JSON.parse(sanitizedRequiresCustom) : sanitizedRequiresCustom;
+        if (Array.isArray(parsed)) {
+          const filtered = parsed.filter((f: any) => f && f.id !== "custom_QNT" && f.field_id !== "custom_QNT");
+          sanitizedRequiresCustom = JSON.stringify(filtered);
+        }
+      } catch {}
+    }
+
+    const qtyConfig = getServiceQuantityConfig({
+      ...service,
+      categoryName: service.dhruCategory?.name,
+      requiresCustom: sanitizedRequiresCustom
+    });
 
     const cleanedService = {
       ...service,
+      requiresCustom: sanitizedRequiresCustom,
       credit,
       margin,
       price: finalPrice,

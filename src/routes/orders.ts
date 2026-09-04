@@ -194,14 +194,20 @@ router.post('/', authenticateToken, async (req, res) => {
     }
 
     // Validate provider quantity limits
-    const qtyConfig = getServiceQuantityConfig(dhruService);
+    const qtyConfig = getServiceQuantityConfig({
+      ...dhruService,
+      categoryName: dhruService.dhruCategory?.name
+    });
+
+    const finalQty = qtyConfig.supportsQty ? qty : 1;
+
     if (qtyConfig.supportsQty) {
-      if (qty < qtyConfig.minQty) {
+      if (finalQty < qtyConfig.minQty) {
         return res.status(400).json({
           error: `عذراً، أقل كمية مسموح بطلبها لهذه الخدمة هي (${qtyConfig.minQty})`
         });
       }
-      if (qtyConfig.maxQty > 0 && qty > qtyConfig.maxQty) {
+      if (qtyConfig.maxQty > 0 && finalQty > qtyConfig.maxQty) {
         return res.status(400).json({
           error: `عذراً، أقصى كمية مسموح بطلبها لهذه الخدمة هي (${qtyConfig.maxQty})`
         });
@@ -217,7 +223,7 @@ router.post('/', authenticateToken, async (req, res) => {
     if (discountPercent > 0) {
       unitPrice = Number((unitPrice * (1 - discountPercent / 100)).toFixed(2));
     }
-    const totalPrice = Number((unitPrice * qty).toFixed(2));
+    const totalPrice = Number((unitPrice * finalQty).toFixed(2));
 
     if (dbUser.balance < totalPrice) {
       return res.status(400).json({
@@ -264,7 +270,7 @@ router.post('/', authenticateToken, async (req, res) => {
         serviceId: String(serviceId),
         serviceName: String(serviceName).trim(),
         targetInput: finalTargetInput,
-        quantity: qty,
+        quantity: finalQty,
         price: totalPrice,
         status: 'pending',
         notes: structuredNotes,

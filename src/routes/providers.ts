@@ -1321,6 +1321,9 @@ export async function persistProviderServicesList(
           providerId: provider.id,
           apiServiceType,
           requiresCustom: requiresCustomStr || existing.requiresCustom,
+          supportsQty: qtyLimits.supportsQty,
+          minQty: qtyLimits.minQty,
+          maxQty: qtyLimits.maxQty,
           isActive: existing.isActive,
           margin: computedMargin
         }
@@ -1339,6 +1342,9 @@ export async function persistProviderServicesList(
         providerId: provider.id,
         apiServiceType,
         requiresCustom: requiresCustomStr,
+        supportsQty: qtyLimits.supportsQty,
+        minQty: qtyLimits.minQty,
+        maxQty: qtyLimits.maxQty,
         isActive: !isNotice,
         margin: computedMargin
       });

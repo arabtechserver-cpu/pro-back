@@ -64,7 +64,11 @@ router.get('/services', (req, res, next) => {
             info: true,
             isActive: true,
             margin: true,
-            requiresCustom: true
+            requiresCustom: true,
+            supportsQty: true,
+            minQty: true,
+            maxQty: true,
+            originalPrice: true
           }
         }
       },
@@ -265,9 +269,26 @@ router.get('/services/:id', async (req, res) => {
       requiresCustom: sanitizedRequiresCustom
     });
 
+    let finalRequiresCustom = sanitizedRequiresCustom;
+    if (qtyConfig.supportsQty) {
+      try {
+        let parsed = typeof sanitizedRequiresCustom === "string" ? JSON.parse(sanitizedRequiresCustom) : (sanitizedRequiresCustom || []);
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          parsed = Object.entries(parsed).map(([key, val]: any) => ({
+            ...(val && typeof val === 'object' ? val : {}),
+            id: val?.id || key,
+            field_id: val?.field_id || val?.reqid || key,
+            name: val?.name || val?.fieldname || key
+          }));
+        }
+        const enriched = enrichCustomFieldsWithQuantity(Array.isArray(parsed) ? parsed : [], qtyConfig);
+        finalRequiresCustom = JSON.stringify(enriched);
+      } catch {}
+    }
+
     const cleanedService = {
       ...service,
-      requiresCustom: sanitizedRequiresCustom,
+      requiresCustom: finalRequiresCustom,
       credit,
       margin,
       price: finalPrice,

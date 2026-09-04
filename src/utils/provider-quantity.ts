@@ -21,11 +21,6 @@ export interface ServiceQuantityConfig extends QuantityLimits {
 export function isQuantityField(field?: any, key?: string): boolean {
   if (!field && !key) return false;
 
-  // Ignore artificially injected custom_QNT
-  if (key === "custom_QNT" || field?.id === "custom_QNT" || field?.field_id === "custom_QNT") {
-    return false;
-  }
-
   const candidateStrings: string[] = [];
   if (key) candidateStrings.push(String(key));
   if (field) {
@@ -38,6 +33,7 @@ export function isQuantityField(field?: any, key?: string): boolean {
       if (field.field_id) candidateStrings.push(String(field.field_id));
       if (field.reqid) candidateStrings.push(String(field.reqid));
       if (field.REQID) candidateStrings.push(String(field.REQID));
+      if (field.id) candidateStrings.push(String(field.id));
       if (field.name) candidateStrings.push(String(field.name));
       if (field.NAME) candidateStrings.push(String(field.NAME));
       if (field.fieldname) candidateStrings.push(String(field.fieldname));
@@ -102,6 +98,22 @@ export function extractLimitsFromText(text: string): { min: number | null; max: 
     sanitized.match(/(?:qnt_max|max_qnt|max\s*qnt|maximum\s*qnt|max\s*quantity|maximum\s*quantity|أقصى\s*كمية|اقصى\s*كمية|الحد\s*الأقصى\s*للكمية|الحد\s*الاقصى\s*للكمية|أعلى\s*كمية)[:\s]*([0-9]+)/i);
   if (maxMatch && maxMatch[1]) {
     max = parseInt(maxMatch[1], 10);
+  }
+
+  // Match Min 50 Pcs / (Min 50 Pcs) / Min 25
+  if (min === null) {
+    const minPcsMatch = sanitized.match(/\b(?:min|minimum|أقل|اقل|أدنى|ادنى)[:\s]*([0-9]+)\s*(?:pcs|pieces|قطع|قطعة|حبة|حبات|credits?|عملات)?\b/i);
+    if (minPcsMatch && minPcsMatch[1]) {
+      min = parseInt(minPcsMatch[1], 10);
+    }
+  }
+
+  // Match Max 1000 Pcs / Max 1000
+  if (max === null) {
+    const maxPcsMatch = sanitized.match(/\b(?:max|maximum|أقصى|اقصى|أعلى|اعلى)[:\s]*([0-9]+)\s*(?:pcs|pieces|قطع|قطعة|حبة|حبات|credits?|عملات)?\b/i);
+    if (maxPcsMatch && maxPcsMatch[1]) {
+      max = parseInt(maxPcsMatch[1], 10);
+    }
   }
 
   // Pattern: (Min: 10 - Max: 1000) or Min 10 Max 1000
@@ -215,31 +227,64 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     } catch {}
   }
 
-  // 4. Check name patterns for dynamic quantity (e.g. "Any Qnt", "Credits Qnt", "Any Quantity")
-  const hasQuantityNamePattern =
-    /\bany\s*qnt\b|\bany\s*quantity\b|\bcustom\s*qnt\b|\bcustom\s*quantity\b|\bcredits?\s*qnt\b/i.test(sName) ||
-    /\bany\s*qnt\b|\bany\s*quantity\b|\bcustom\s*qnt\b|\bcustom\s*quantity\b|\bcredits?\s*qnt\b/i.test(sInfo) ||
-    /بأي\s*كمية|كمية\s*مخصصة/i.test(sName) ||
-    /بأي\s*كمية|كمية\s*مخصصة/i.test(sInfo);
+  // 4. Check name patterns for dynamic quantity (Credits, Any Qnt/Qty, Min Pcs, Social media, E-wallets)
+  const isWithoutCredit = /\b(?:without|no|0)\s*credits?\b|بدون\s*(?:كريدت|رصيد)/i.test(combinedText);
+
+  const hasCreditPattern =
+    !isWithoutCredit &&
+    (
+      /\bcredits?\b/i.test(sName) ||
+      /\bcredits?\b/i.test(sInfo) ||
+      /\bcredit\b/i.test(sName) ||
+      /\bcredits?\s*refill\b/i.test(combinedText) ||
+      /\badd\s*credits?\b/i.test(combinedText) ||
+      /\btransfer\s*credits?\b/i.test(combinedText) ||
+      /\bكريدت\b|\bرصيد\b/i.test(sName) ||
+      /\bكريدت\b|\bرصيد\b/i.test(sInfo)
+    );
+
+  const hasAnyQuantityPattern =
+    /\bany\s*(?:qnt|qty|quantity)\b/i.test(combinedText) ||
+    /\bcustom\s*(?:qnt|qty|quantity)\b/i.test(combinedText) ||
+    /\bcredits?\s*(?:qnt|qty|quantity)\b/i.test(combinedText) ||
+    /\b(?:qnt|qty)\b/i.test(sName) ||
+    /بأي\s*كمية|كمية\s*مخصصة/i.test(combinedText);
+
+  const hasMinPiecesPattern =
+    /\b(?:min|minimum|أقل|اقل|أدنى|ادنى)[:\s]*[0-9]+\s*(?:pcs|pieces|قطع|قطعة|حبة|حبات|credits?|عملات)?\b/i.test(combinedText) ||
+    /\b(?:max|maximum|أقصى|اقصى|أعلى|اعلى)[:\s]*[0-9]+\s*(?:pcs|pieces|قطع|قطعة|حبة|حبات|credits?|عملات)?\b/i.test(combinedText) ||
+    (textLimits.min !== null && textLimits.min > 1) ||
+    (textLimits.max !== null && textLimits.max > 0);
+
+  const hasSocialMediaPattern =
+    /\b(?:followers?|subscribers?|views?|likes?|comments?|shares?|retweets?|members?)\b/i.test(combinedText) ||
+    /متابعين|مشتركين|مشاهدات|لايكات|إعجابات|تعليقات|مشاركات|ريتويت|أعضاء/i.test(combinedText);
+
+  const hasWalletTransferPattern =
+    /vodafone\s*cash|فودافون\s*كاش|instapay|انستاباي|شحن\s*رصيد|تحويل\s*رصيد/i.test(combinedText);
+
+  const hasQuantityNamePattern = Boolean(
+    hasCreditPattern ||
+    hasAnyQuantityPattern ||
+    hasMinPiecesPattern ||
+    hasSocialMediaPattern ||
+    hasWalletTransferPattern
+  );
 
   // Check if provider explicitly declared quantity status
-  const rawQntFlag =
-    s.QNT ??
-    s.qnt ??
-    s.REQUIRES_QUANTITY ??
-    s.requires_quantity ??
-    s.supports_quantity;
-
   const isExplicitlyDisabled =
-    rawQntFlag === false ||
-    rawQntFlag === "0" ||
-    rawQntFlag === 0;
+    s.QNT === "0" ||
+    s.QNT === 0 ||
+    s.REQUIRES_QUANTITY === "0" ||
+    s.REQUIRES_QUANTITY === false;
 
-  // 5. Explicit provider quantity attributes
+  // 5. Explicit provider or DB quantity attributes
   const hasExplicitProviderQuantityAttr =
-    rawQntFlag === "1" ||
-    rawQntFlag === 1 ||
-    rawQntFlag === true ||
+    s.supportsQty === true ||
+    s.supports_quantity === true ||
+    s.QNT === "1" ||
+    s.QNT === 1 ||
+    s.QNT === true ||
     s.REQUIRES_QUANTITY === "1" ||
     s.REQUIRES_QUANTITY === true ||
     s.requires_quantity === true ||
@@ -251,15 +296,14 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   const sType = String(s.SERVICETYPE || s.servicetype || "").toLowerCase();
 
   const isImeiOrDeviceService =
-    sType === "imei" ||
-    categoryName.includes("imei") ||
-    groupName.includes("imei") ||
+    (sType === "imei" || categoryName.includes("imei") || groupName.includes("imei")) &&
+    !hasQuantityNamePattern &&
     fieldsList.some((f) => {
       const fn = String(f?.field_id || f?.name || f?.customname || f?.fieldname || "").toLowerCase();
       return fn === "imei" || fn === "ecid" || fn === "sn" || fn === "serial";
     });
 
-  // IMEI and device bypass/unlock services are strictly single-device (1 unit) unless provider explicitly sets QNT: "1"
+  // IMEI and device bypass/unlock services are strictly single-device (1 unit) unless provider explicitly sets QNT: "1" or name has quantity
   if (isImeiOrDeviceService && !hasExplicitProviderQuantityAttr && !hasQuantityNamePattern) {
     return {
       supportsQty: false,
@@ -303,12 +347,33 @@ export function getServiceQuantityConfig(service: any): ServiceQuantityConfig {
 /**
  * Normalizes custom fields and ensures any quantity field is properly tagged
  * with fieldtype = "quantity" and populated with min/max quantity.
+ * If the service supports quantity but lacks a QNT field, injects one so consumers
+ * can seamlessly recognize and submit quantity.
  */
 export function enrichCustomFieldsWithQuantity(
   customFields: any[],
   quantityLimits: QuantityLimits
 ): any[] {
-  if (!Array.isArray(customFields)) return [];
+  if (!Array.isArray(customFields)) {
+    if (quantityLimits.supportsQty) {
+      return [
+        {
+          id: "custom_QNT",
+          field_id: "QNT",
+          name: "QNT",
+          fieldname: "custom_QNT",
+          label: "الكمية (Quantity)",
+          type: "quantity",
+          fieldtype: "quantity",
+          is_quantity: true,
+          required: false,
+          min_quantity: quantityLimits.minQty,
+          max_quantity: quantityLimits.maxQty
+        }
+      ];
+    }
+    return [];
+  }
 
   // If service does not support quantity, strip any erroneously injected QNT fields
   if (!quantityLimits.supportsQty) {
@@ -318,10 +383,12 @@ export function enrichCustomFieldsWithQuantity(
     });
   }
 
+  let foundQuantity = false;
   const enriched = customFields.map((field) => {
     if (!field || typeof field !== "object") return field;
 
     if (isQuantityField(field)) {
+      foundQuantity = true;
       return {
         ...field,
         type: "quantity",
@@ -336,6 +403,22 @@ export function enrichCustomFieldsWithQuantity(
 
     return field;
   });
+
+  if (!foundQuantity) {
+    enriched.push({
+      id: "custom_QNT",
+      field_id: "QNT",
+      name: "QNT",
+      fieldname: "custom_QNT",
+      label: "الكمية (Quantity)",
+      type: "quantity",
+      fieldtype: "quantity",
+      is_quantity: true,
+      required: false,
+      min_quantity: quantityLimits.minQty,
+      max_quantity: quantityLimits.maxQty
+    });
+  }
 
   return enriched;
 }

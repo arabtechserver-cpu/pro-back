@@ -3,7 +3,7 @@ import { getImeiServiceList, getServerServiceList } from '../utils/dhru-api';
 import { extractCustomFields, normalizeCustomField } from '../routes/providers';
 import { extractQuantityLimits, enrichCustomFieldsWithQuantity } from '../utils/provider-quantity';
 
-const prisma = new PrismaClient();
+import { prisma } from '../utils/prisma';
 
 export function cleanServiceName(serviceName: string, info: string, groupName: string): string {
   let name = (serviceName || '').trim();
@@ -117,11 +117,11 @@ export async function syncDhruServices() {
       let categoryName = defaultCategory;
       if (`${groupName} ${serviceName}`.match(/remote|rent|teamviewer|anydesk|usb|flexi/i)) {
         categoryName = "Remote Service";
-      } else if (`${groupName} ${serviceName}`.match(/tool|activation|credit|account|license|pro|dongle|box|server|log|pack/i)) {
+      } else if (qtyLimits.supportsQty || `${groupName} ${serviceName}`.match(/tool|activation|credit|account|license|pro|dongle|box|server|log|pack|followers|likes|views|cash|كاش|رصيد|كريدت/i)) {
         categoryName = "Server Service";
       }
 
-      if (categoryName === "IMEI Service" || defaultCategory === "IMEI Service") {
+      if (categoryName === "IMEI Service" && !qtyLimits.supportsQty) {
         const existingImeiIndex = normalizedFields.findIndex((f: any) => {
            const lowerName = String(f.name || f.field_id || "").toLowerCase();
            return lowerName === "imei" || lowerName === "custom_imei" || lowerName.includes("imei");
@@ -174,6 +174,9 @@ export async function syncDhruServices() {
             info,
             categoryId,
             requiresCustom: requiresCustomStr,
+            supportsQty: qtyLimits.supportsQty,
+            minQty: qtyLimits.minQty,
+            maxQty: qtyLimits.maxQty,
             isActive: finalActive,
             margin: finalMargin
           }
@@ -194,6 +197,9 @@ export async function syncDhruServices() {
           info,
           categoryId,
           requiresCustom: requiresCustomStr,
+          supportsQty: qtyLimits.supportsQty,
+          minQty: qtyLimits.minQty,
+          maxQty: qtyLimits.maxQty,
           isActive: !isNoticeOrRefund,
           margin: 0
         });

@@ -1,6 +1,7 @@
 import { prisma } from "../utils/prisma";
 import bcrypt from 'bcryptjs';
 import { syncDhruServices } from '../scripts/syncDhruServices';
+import { extractQuantityLimits, enrichCustomFieldsWithQuantity } from './provider-quantity';
 
 export async function bootstrapDatabase() {
   try {
@@ -69,41 +70,85 @@ export async function bootstrapDatabase() {
       await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "customDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0;`);
     } catch (_) { /* already exists */ }
     try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiEnabled" BOOLEAN NOT NULL DEFAULT false;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiKey" TEXT;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiSiteName" TEXT;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiSiteUrl" TEXT;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiMargin" DOUBLE PRECISION NOT NULL DEFAULT 0;`);
+    } catch (_) { /* already exists */ }
+    try {
       await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "originalPrice" DOUBLE PRECISION;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "api_service_type" TEXT;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "supportsQty" BOOLEAN NOT NULL DEFAULT false;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "minQty" INTEGER NOT NULL DEFAULT 1;`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "maxQty" INTEGER NOT NULL DEFAULT 0;`);
     } catch (_) { /* already exists */ }
     console.log('[Bootstrap] Column migration helpers completed.');
 
-    // 2.5 Clean up any residual custom_QNT from DhruService.requiresCustom in database
+    // 2.5 Auto-backfill quantity support & limits for DhruService records
     try {
-      const servicesWithCustomQnt = await prisma.dhruService.findMany({
-        where: {
-          requiresCustom: {
-            contains: 'custom_QNT'
-          }
-        },
-        select: { id: true, requiresCustom: true }
+      const allServices = await prisma.dhruService.findMany({
+        select: {
+          id: true,
+          name: true,
+          originalName: true,
+          groupName: true,
+          info: true,
+          requiresCustom: true,
+          supportsQty: true,
+          minQty: true,
+          maxQty: true
+        }
       });
 
-      if (servicesWithCustomQnt.length > 0) {
-        console.log(`[Bootstrap] Cleaning ${servicesWithCustomQnt.length} services with residual custom_QNT...`);
-        for (const s of servicesWithCustomQnt) {
-          try {
-            const parsed = JSON.parse(s.requiresCustom || '[]');
-            if (Array.isArray(parsed)) {
-              const cleaned = parsed.filter((f: any) => f && f.id !== 'custom_QNT' && f.field_id !== 'custom_QNT');
-              await prisma.dhruService.update({
-                where: { id: s.id },
-                data: {
-                  requiresCustom: cleaned.length > 0 ? JSON.stringify(cleaned) : null
-                }
-              });
+      let updatedCount = 0;
+      for (const s of allServices) {
+        const limits = extractQuantityLimits(s);
+        if (s.supportsQty !== limits.supportsQty || s.minQty !== limits.minQty || s.maxQty !== limits.maxQty) {
+          let enrichedCustom = s.requiresCustom;
+          if (limits.supportsQty && s.requiresCustom) {
+            try {
+              const parsed = JSON.parse(s.requiresCustom);
+              if (Array.isArray(parsed)) {
+                const enriched = enrichCustomFieldsWithQuantity(parsed, limits);
+                enrichedCustom = JSON.stringify(enriched);
+              }
+            } catch {}
+          }
+
+          await prisma.dhruService.update({
+            where: { id: s.id },
+            data: {
+              supportsQty: limits.supportsQty,
+              minQty: limits.minQty,
+              maxQty: limits.maxQty,
+              ...(enrichedCustom !== s.requiresCustom ? { requiresCustom: enrichedCustom } : {})
             }
-          } catch {}
+          });
+          updatedCount++;
         }
-        console.log('[Bootstrap] Finished cleaning residual custom_QNT fields from database.');
+      }
+      if (updatedCount > 0) {
+        console.log(`[Bootstrap] Auto-backfilled quantity configuration for ${updatedCount} services.`);
       }
     } catch (qntErr) {
-      console.error('[Bootstrap] Note on cleaning custom_QNT fields:', qntErr);
+      console.error('[Bootstrap] Note on backfilling service quantity:', qntErr);
     }
 
     // 3. Check & Sync Services if a Provider is configured

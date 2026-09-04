@@ -54,6 +54,9 @@ model DhruService {
   apiServiceType String?       @map("api_service_type")
   requiresCustom String?
   originalPrice  Float?
+  supportsQty    Boolean       @default(false)
+  minQty         Int           @default(1)
+  maxQty         Int           @default(0)
   createdAt      DateTime      @default(now())
   updatedAt      DateTime      @default(now()) @updatedAt
   dhruCategory   DhruCategory? @relation(fields: [categoryId], references: [id])

@@ -1,4 +1,4 @@
-import { getServiceQuantityConfig } from "./provider-quantity";
+import { getServiceQuantityConfig, enrichCustomFieldsWithQuantity } from "./provider-quantity";
 
 type AdminService = {
   id: string;
@@ -46,6 +46,23 @@ export function serializeAdminServiceCategories(
 
       const qtyConfig = getServiceQuantityConfig({ ...service, categoryName: name, requiresCustom: sanitizedCustom });
 
+      let finalCustom = sanitizedCustom;
+      if (qtyConfig.supportsQty) {
+        try {
+          let parsed = typeof sanitizedCustom === 'string' ? JSON.parse(sanitizedCustom) : (sanitizedCustom || []);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            parsed = Object.entries(parsed).map(([key, val]: any) => ({
+              ...(val && typeof val === 'object' ? val : {}),
+              id: val?.id || key,
+              field_id: val?.field_id || val?.reqid || key,
+              name: val?.name || val?.fieldname || key
+            }));
+          }
+          const enriched = enrichCustomFieldsWithQuantity(Array.isArray(parsed) ? parsed : [], qtyConfig);
+          finalCustom = typeof service.requiresCustom === 'string' ? JSON.stringify(enriched) : enriched;
+        } catch {}
+      }
+
       return {
         id: service.id,
         dhruId: service.dhruId,
@@ -60,7 +77,7 @@ export function serializeAdminServiceCategories(
         time: service.time,
         info: service.info,
         isActive: service.isActive,
-        requiresCustom: sanitizedCustom,
+        requiresCustom: finalCustom,
         supportsQty: qtyConfig.supportsQty,
         supports_quantity: qtyConfig.supportsQty,
         minQty: qtyConfig.minQty,
@@ -97,6 +114,23 @@ export function serializePricingServiceCategories(
 
       const qtyConfig = getServiceQuantityConfig({ ...service, categoryName: name, requiresCustom: sanitizedCustom });
 
+      let finalCustom = sanitizedCustom;
+      if (qtyConfig.supportsQty) {
+        try {
+          let parsed = typeof sanitizedCustom === 'string' ? JSON.parse(sanitizedCustom) : (sanitizedCustom || []);
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+            parsed = Object.entries(parsed).map(([key, val]: any) => ({
+              ...(val && typeof val === 'object' ? val : {}),
+              id: val?.id || key,
+              field_id: val?.field_id || val?.reqid || key,
+              name: val?.name || val?.fieldname || key
+            }));
+          }
+          const enriched = enrichCustomFieldsWithQuantity(Array.isArray(parsed) ? parsed : [], qtyConfig);
+          finalCustom = typeof service.requiresCustom === 'string' ? JSON.stringify(enriched) : enriched;
+        } catch {}
+      }
+
       return {
         id: service.id,
         dhruId: service.dhruId,
@@ -111,7 +145,7 @@ export function serializePricingServiceCategories(
         isActive: service.isActive,
         info: service.info,
         originalName: service.originalName,
-        requiresCustom: sanitizedCustom,
+        requiresCustom: finalCustom,
         supportsQty: qtyConfig.supportsQty,
         supports_quantity: qtyConfig.supportsQty,
         minQty: qtyConfig.minQty,

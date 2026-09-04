@@ -7,7 +7,7 @@ import {
   sendTelegramMessage,
   escapeHtml
 } from '../utils/telegramService';
-import { isAdmin, authenticateToken } from '../middleware/auth';
+import { isAdmin, authenticateToken, optionalAuth } from '../middleware/auth';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emailService';
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
@@ -115,7 +115,7 @@ router.get('/:transactionId/receipt', isAdmin, async (req, res) => {
 });
 
 // POST /api/transactions - Submit New Deposit Transaction (SQLite DB & Telegram)
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', optionalAuth, async (req, res) => {
   try {
     const { userId, email, type, amount, method, refNo, receiptImage } = req.body;
 
@@ -128,19 +128,25 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (!targetUserId && userId) {
       const u = await prisma.user.findUnique({ where: { id: String(userId) } });
-      if (u) targetUserId = u.id;
+      if (u) {
+        if (u.status === 'suspended') return res.status(403).json({ error: 'عذراً، هذا الحساب موقوف حالياً' });
+        targetUserId = u.id;
+      }
     }
 
     if (!targetUserId && email) {
       const u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() } });
-      if (u) targetUserId = u.id;
+      if (u) {
+        if (u.status === 'suspended') return res.status(403).json({ error: 'عذراً، هذا الحساب موقوف حالياً' });
+        targetUserId = u.id;
+      }
     }
 
     if (!targetUserId) {
-      return res.status(404).json({ error: 'المستخدم غير موجود. يُرجى الدخول بحساب صحيح' });
+      return res.status(401).json({ error: 'يُرجى تسجيل الدخول بحسابك أولاً لإتمام طلب الشحن' });
     }
 
-    // 2. Handle receipt image: save to persistent volume on disk if base64 to prevent DB bloat
+    // 2. Handle receipt image: save full uncompressed original buffer to persistent volume on disk
     let savedReceiptUrl = receiptImage || null;
     let localDiskPath: string | null = null;
     if (receiptImage && typeof receiptImage === 'string' && receiptImage.startsWith('data:image/')) {
@@ -182,6 +188,10 @@ router.post('/', authenticateToken, async (req, res) => {
     const safeMethod = escapeHtml(method);
     const safeRefNo = escapeHtml(refNo);
 
+    const receiptLink = savedReceiptUrl
+      ? `\n🖼️ <b>صورة الإيصال (الدقة الأصلية):</b> <a href="https://arabtechproserver.tech${savedReceiptUrl}">عرض الصورة كاملة</a>`
+      : '';
+
     const caption = `
 💳 <b>إيداع جديد قيد المراجعة! (New Deposit Pending)</b>
 
@@ -191,18 +201,23 @@ router.post('/', authenticateToken, async (req, res) => {
 🏦 <b>طريقة الدفع:</b> ${safeMethod}
 🔢 <b>رقم المرجع / الإيصال:</b> <code>${safeRefNo}</code>
 📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
+${receiptLink}
 
-⏳ <b>الحالة:</b> قيد المراجعة - يُرجى فتح لوحة التحكم واعتماد الإيداع.
+⏳ <b>الحالة:</b> قيد المراجعة - يُرجى فتح لوحة التحكم أو استخدام الأزرار أدناه.
     `.trim();
 
-    const replyMarkup = {
-      inline_keyboard: [
-        [
-          { text: "✅ موافقة وشحن الرصيد", callback_data: `approve_tx_${newTransaction.id}` },
-          { text: "❌ رفض الإيداع", callback_data: `reject_tx_${newTransaction.id}` }
-        ]
-      ]
-    };
+    const inlineKeyboard: any[][] = [];
+    if (savedReceiptUrl) {
+      inlineKeyboard.push([
+        { text: "🔍 فتح الإيصال بالدقة الكاملة", url: `https://arabtechproserver.tech${savedReceiptUrl}` }
+      ]);
+    }
+    inlineKeyboard.push([
+      { text: "✅ موافقة وشحن الرصيد", callback_data: `approve_tx_${newTransaction.id}` },
+      { text: "❌ رفض الإيداع", callback_data: `reject_tx_${newTransaction.id}` }
+    ]);
+
+    const replyMarkup = { inline_keyboard: inlineKeyboard };
 
     sendTelegramPhotoNotification({
       imageSource: localDiskPath || savedReceiptUrl || receiptImage,

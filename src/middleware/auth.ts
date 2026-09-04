@@ -82,6 +82,38 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
   return res.status(401).json({ error: 'Access denied: Authentication token required' });
 };
 
+export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  const candidateTokens = extractCandidateTokens(req);
+
+  for (const token of candidateTokens) {
+    try {
+      const decoded: any = jwt.verify(token, JWT_SECRET);
+      if (decoded && (decoded.id || decoded.email)) {
+        let user = null;
+        if (decoded.id) {
+          user = await prisma.user.findUnique({ where: { id: decoded.id } });
+        }
+        if (!user && decoded.email) {
+          user = await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
+        }
+
+        if (user) {
+          if (user.status === 'suspended') {
+            return res.status(403).json({ error: 'Account is suspended' });
+          }
+          req.user = user;
+          return next();
+        }
+      }
+    } catch (e) {
+      // Continue to next candidate token
+    }
+  }
+
+  // If token is missing/expired, proceed anyway so endpoint can inspect userId/email
+  return next();
+};
+
 export const generateToken = (payload: any) => {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
 };

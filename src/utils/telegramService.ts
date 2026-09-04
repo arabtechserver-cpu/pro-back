@@ -649,83 +649,85 @@ export async function sendTelegramPhotoNotification({
     for (const chatId of targetChatIds) {
       let delivered = false;
 
-      // 1. Try sendPhoto if image buffer is available
+      // 1. Try sendPhoto or sendDocument if image buffer is available
       if (imageInfo) {
-        try {
-          const form = new FormData();
-          form.append('chat_id', chatId);
-          form.append('caption', trimmedCaption);
-          form.append('parse_mode', 'HTML');
-          if (replyMarkup) {
-            form.append('reply_markup', JSON.stringify(replyMarkup));
-          }
-          form.append('photo', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
+        const isLargeFile = imageInfo.buffer.length > 9.5 * 1024 * 1024;
 
-          await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form, {
-            headers: form.getHeaders(),
-            timeout: 25000
-          });
-          console.log(`🚀 [Telegram Bot] Receipt photo sent successfully to Admin Chat ID: ${chatId}`);
-          delivered = true;
-        } catch (photoErr: any) {
-          const photoDesc = photoErr?.response?.data?.description || photoErr?.message;
-          console.warn(`[Telegram sendPhoto HTML failed for ${chatId}, trying plain text caption]:`, photoDesc);
-
-          // Retry sendPhoto with plain text caption
+        if (!isLargeFile) {
           try {
-            const form2 = new FormData();
-            form2.append('chat_id', chatId);
-            form2.append('caption', stripHtml(trimmedCaption));
+            const form = new FormData();
+            form.append('chat_id', chatId);
+            form.append('caption', trimmedCaption);
+            form.append('parse_mode', 'HTML');
             if (replyMarkup) {
-              form2.append('reply_markup', JSON.stringify(replyMarkup));
+              form.append('reply_markup', JSON.stringify(replyMarkup));
             }
-            form2.append('photo', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
+            form.append('photo', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
 
-            await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form2, {
-              headers: form2.getHeaders(),
-              timeout: 25000
+            await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form, {
+              headers: form.getHeaders(),
+              timeout: 60000
             });
-            console.log(`🚀 [Telegram Bot] Receipt photo (plain) sent successfully to Admin Chat ID: ${chatId}`);
+            console.log(`🚀 [Telegram Bot] Receipt photo sent successfully to Admin Chat ID: ${chatId}`);
             delivered = true;
-          } catch (photoErr2: any) {
-            // 2. Fallback to sendDocument
-            try {
-              const docForm = new FormData();
-              docForm.append('chat_id', chatId);
-              docForm.append('caption', stripHtml(trimmedCaption));
-              if (replyMarkup) {
-                docForm.append('reply_markup', JSON.stringify(replyMarkup));
-              }
-              docForm.append('document', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
+          } catch (photoErr: any) {
+            const photoDesc = photoErr?.response?.data?.description || photoErr?.message;
+            console.warn(`[Telegram sendPhoto HTML failed for ${chatId}, trying plain text caption]:`, photoDesc);
 
-              await axios.post(`${TELEGRAM_API_URL}/sendDocument`, docForm, {
-                headers: docForm.getHeaders(),
-                timeout: 25000
+            // Retry sendPhoto with plain text caption
+            try {
+              const form2 = new FormData();
+              form2.append('chat_id', chatId);
+              form2.append('caption', stripHtml(trimmedCaption));
+              if (replyMarkup) {
+                form2.append('reply_markup', JSON.stringify(replyMarkup));
+              }
+              form2.append('photo', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
+
+              await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form2, {
+                headers: form2.getHeaders(),
+                timeout: 60000
               });
-              console.log(`🚀 [Telegram Bot] Receipt document sent successfully to Admin Chat ID: ${chatId}`);
+              console.log(`🚀 [Telegram Bot] Receipt photo (plain) sent successfully to Admin Chat ID: ${chatId}`);
               delivered = true;
-            } catch (docErr: any) {
-              console.warn(`[Telegram sendDocument fallback failed for ${chatId}]:`, docErr?.response?.data?.description || docErr?.message);
+            } catch (photoErr2: any) {}
+          }
+        }
+
+        // 2. If not delivered yet (or if file is large > 9.5MB), send as Document
+        if (!delivered) {
+          try {
+            const docForm = new FormData();
+            docForm.append('chat_id', chatId);
+            docForm.append('caption', stripHtml(trimmedCaption));
+            if (replyMarkup) {
+              docForm.append('reply_markup', JSON.stringify(replyMarkup));
             }
+            docForm.append('document', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
+
+            await axios.post(`${TELEGRAM_API_URL}/sendDocument`, docForm, {
+              headers: docForm.getHeaders(),
+              timeout: 60000
+            });
+            console.log(`🚀 [Telegram Bot] Receipt document sent successfully to Admin Chat ID: ${chatId}`);
+            delivered = true;
+          } catch (docErr: any) {
+            console.warn(`[Telegram sendDocument failed for ${chatId}]:`, docErr?.response?.data?.description || docErr?.message);
           }
         }
       }
 
       // 3. Fallback to sendMessage (text-only) if photo wasn't delivered or no image attached
       if (!delivered) {
-        const messageResult = await sendTelegramMessage(
+        await sendTelegramMessage(
           chatId,
           caption + (imageInfo ? '\n\n<i>(مرفق مع الطلب صورة إيصال التحويل)</i>' : ''),
           replyMarkup
         );
-        if (!messageResult) {
-          throw new Error(`Telegram message delivery failed for chat ${chatId}`);
-        }
       }
     }
   } catch (error: any) {
-    console.error('[Telegram Photo Delivery Fatal Error]:', error?.message);
-    throw error;
+    console.error('[Telegram Photo Delivery Error]:', error?.message);
   }
 }
 

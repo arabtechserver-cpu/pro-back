@@ -85,18 +85,16 @@ export function extractLimitsFromText(text: string): { min: number | null; max: 
   // Ignore delivery time expressions (e.g. 1-24 Hours, 1-3 Days, 30 mins) to avoid false limit extraction
   const sanitized = text.replace(/\b\d+\s*[-–—]\s*\d+\s*(?:hours?|hrs?|days?|minutes?|mins?|ساعة|ساعات|يوم|أيام|دقيقة|دقائق)\b/gi, "");
 
-  // Match explicit quantity min: qnt_min: 10, min qnt: 10, min quantity: 10, Min: 10, Min 10, أقل كمية: 10
+  // Match explicit quantity min: qnt_min: 10, min qnt: 10, min quantity: 10, أقل كمية: 10
   const minMatch =
-    sanitized.match(/(?:qnt_min|min_qnt|min\s*qnt|minimum\s*qnt|min\s*quantity|minimum\s*quantity|أقل\s*كمية|اقل\s*كمية|الحد\s*الأدنى\s*للكمية|الحد\s*الادنى\s*للكمية|أدنى\s*كمية)[:\s]*([0-9]+)/i) ||
-    sanitized.match(/\bmin[:\s]+([0-9]+)\b/i);
+    sanitized.match(/(?:qnt_min|min_qnt|min\s*qnt|minimum\s*qnt|min\s*quantity|minimum\s*quantity|أقل\s*كمية|اقل\s*كمية|الحد\s*الأدنى\s*للكمية|الحد\s*الادنى\s*للكمية|أدنى\s*كمية)[:\s]*([0-9]+)/i);
   if (minMatch && minMatch[1]) {
     min = parseInt(minMatch[1], 10);
   }
 
-  // Match explicit quantity max: qnt_max: 500, max qnt: 500, max quantity: 500, Max: 500, Max 500, أقصى كمية: 500
+  // Match explicit quantity max: qnt_max: 500, max qnt: 500, max quantity: 500, أقصى كمية: 500
   const maxMatch =
-    sanitized.match(/(?:qnt_max|max_qnt|max\s*qnt|maximum\s*qnt|max\s*quantity|maximum\s*quantity|أقصى\s*كمية|اقصى\s*كمية|الحد\s*الأقصى\s*للكمية|الحد\s*الاقصى\s*للكمية|أعلى\s*كمية)[:\s]*([0-9]+)/i) ||
-    sanitized.match(/\bmax[:\s]+([0-9]+)\b/i);
+    sanitized.match(/(?:qnt_max|max_qnt|max\s*qnt|maximum\s*qnt|max\s*quantity|maximum\s*quantity|أقصى\s*كمية|اقصى\s*كمية|الحد\s*الأقصى\s*للكمية|الحد\s*الاقصى\s*للكمية|أعلى\s*كمية)[:\s]*([0-9]+)/i);
   if (maxMatch && maxMatch[1]) {
     max = parseInt(maxMatch[1], 10);
   }
@@ -240,9 +238,7 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.requires_quantity === true ||
     s.supports_quantity === true ||
     s.supportsQty === true ||
-    s.supportsQty === "1" ||
-    (minQty !== null && minQty > 1) ||
-    (maxQty !== null && maxQty > 1);
+    s.supportsQty === "1";
 
   // Determine if service truly supports dynamic quantity
   const supportsQty = Boolean(
@@ -294,13 +290,10 @@ export function enrichCustomFieldsWithQuantity(
     });
   }
 
-  let foundQuantityField = false;
-
   const enriched = customFields.map((field) => {
     if (!field || typeof field !== "object") return field;
 
     if (isQuantityField(field)) {
-      foundQuantityField = true;
       return {
         ...field,
         type: "quantity",
@@ -315,27 +308,6 @@ export function enrichCustomFieldsWithQuantity(
 
     return field;
   });
-
-  // If the service supports quantity but provider did not define a custom field for QNT,
-  // we add the standardized QNT field definition so provider orders can map it seamlessly
-  if (quantityLimits.supportsQty && !foundQuantityField) {
-    enriched.push({
-      id: "custom_QNT",
-      field_id: "QNT",
-      name: "QNT",
-      label: "الكمية (Quantity)",
-      type: "quantity",
-      fieldtype: "quantity",
-      is_quantity: true,
-      required: false,
-      description: `الحد الأدنى: ${quantityLimits.minQty}${quantityLimits.maxQty > 0 ? ` | الحد الأقصى: ${quantityLimits.maxQty}` : ""}`,
-      placeholder: `أدخل الكمية المطلوبة`,
-      options: [],
-      fieldoptions: [],
-      min_quantity: quantityLimits.minQty,
-      max_quantity: quantityLimits.maxQty
-    });
-  }
 
   return enriched;
 }

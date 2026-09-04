@@ -9,6 +9,7 @@ import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailSer
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
 import { normalizeTelegramAdminChatIds } from './telegram-config';
 import { resolveOrderServiceType } from './order-response';
+import { getUploadDir } from './uploads';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
@@ -581,7 +582,7 @@ async function resolveImageBuffer(imageSource?: string | null): Promise<{ buffer
       };
     }
 
-    // 3. Direct local file path or public uploads path
+    // 3. Direct local file path or persistent uploads volume
     const checkPaths = [
       imageSource,
       path.join(process.cwd(), imageSource),
@@ -589,6 +590,14 @@ async function resolveImageBuffer(imageSource?: string | null): Promise<{ buffer
       path.join(__dirname, '../../public', imageSource),
       path.join(__dirname, '../../../public', imageSource)
     ];
+
+    try {
+      if (imageSource.startsWith('/uploads/')) {
+        checkPaths.push(path.join(getUploadDir(), imageSource.replace('/uploads/', '')));
+      } else {
+        checkPaths.push(path.join(getUploadDir(), imageSource));
+      }
+    } catch {}
 
     for (const p of checkPaths) {
       if (fs.existsSync(p) && fs.statSync(p).isFile()) {

@@ -11,6 +11,7 @@ import { isAdmin, authenticateToken } from '../middleware/auth';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emailService';
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
+import { saveBufferToUploads } from '../utils/uploads';
 
 const router = Router();
 
@@ -122,23 +123,41 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'جميع الحقول مطلوبة (المبلغ، طريقة الدفع، رقم المرجع)' });
     }
 
-    let targetUserId = userId;
+    // 1. Authenticated user from token has highest priority and is guaranteed to exist
+    let targetUserId = (req as any).user?.id;
 
-    if (!targetUserId && email) {
-      const dbUser = await prisma.user.findUnique({
-        where: { email: email.trim().toLowerCase() }
-      });
-      if (dbUser) {
-        targetUserId = dbUser.id;
-      }
+    if (!targetUserId && userId) {
+      const u = await prisma.user.findUnique({ where: { id: String(userId) } });
+      if (u) targetUserId = u.id;
     }
 
-    if (!targetUserId && (req as any).user?.id) {
-      targetUserId = (req as any).user.id;
+    if (!targetUserId && email) {
+      const u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() } });
+      if (u) targetUserId = u.id;
     }
 
     if (!targetUserId) {
       return res.status(404).json({ error: 'المستخدم غير موجود. يُرجى الدخول بحساب صحيح' });
+    }
+
+    // 2. Handle receipt image: save to persistent volume on disk if base64 to prevent DB bloat
+    let savedReceiptUrl = receiptImage || null;
+    let localDiskPath: string | null = null;
+    if (receiptImage && typeof receiptImage === 'string' && receiptImage.startsWith('data:image/')) {
+      try {
+        const match = receiptImage.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s);
+        if (match) {
+          const mimeType = match[1].toLowerCase();
+          const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+          const base64Data = match[2];
+          const filename = `receipt_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
+          const buffer = Buffer.from(base64Data, 'base64');
+          localDiskPath = saveBufferToUploads(filename, buffer);
+          savedReceiptUrl = `/uploads/${filename}`;
+        }
+      } catch (saveErr) {
+        console.error('[Transactions] Error saving receipt image to disk:', saveErr);
+      }
     }
 
     const newTransaction = await prisma.transaction.create({
@@ -148,7 +167,7 @@ router.post('/', authenticateToken, async (req, res) => {
         amount: parseFloat(amount),
         method: method.trim(),
         refNo: refNo.trim(),
-        receiptImage: receiptImage || null, // Stored in DB so admin can view it in dashboard and Telegram
+        receiptImage: savedReceiptUrl,
         status: 'pending'
       }
     });
@@ -186,7 +205,7 @@ router.post('/', authenticateToken, async (req, res) => {
     };
 
     sendTelegramPhotoNotification({
-      imageSource: receiptImage,
+      imageSource: localDiskPath || savedReceiptUrl || receiptImage,
       caption,
       replyMarkup
     }).catch((err) => console.error('[Telegram Async Error]:', err));

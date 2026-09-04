@@ -431,7 +431,7 @@ router.get("/", async (req, res) => {
     // If empty, initialize the default primary provider
     if (providers.length === 0) {
       const realProvider = {
-        name: "سيرفر الوفاق (Dhru Fusion API)",
+        name: "سيرفر عرب تك (Dhru Fusion API)",
         apiUrl: process.env.DHRU_API_URL || "https://arab-tech1.online/api/v1",
         username: process.env.DHRU_USERNAME || "mina15g4y",
         apiKey: process.env.DHRU_API_KEY || "3AE-27F-14D-104-830-375-6D",

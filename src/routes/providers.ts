@@ -5,6 +5,12 @@ import { buildProviderServiceId } from "../utils/provider-service-id";
 import https from "https";
 import http from "http";
 import { isAdmin } from '../middleware/auth';
+import {
+  isQuantityField,
+  extractQuantityLimits,
+  getServiceQuantityConfig,
+  enrichCustomFieldsWithQuantity
+} from "../utils/provider-quantity";
 
 const router = Router();
 
@@ -296,20 +302,24 @@ export function normalizeCustomField(cf: any): any {
   const fieldoptions = normalizeFieldOptions(field.fieldoptions ?? field.FIELDOPTIONS ?? field.options);
   const rawType = field.fieldtype || field.FIELDTYPE || field.type;
   const normalizedType = normalizeFieldType(rawType);
-  const resolvedType = fieldoptions.length > 0 && normalizedType === "text" ? "select" : normalizedType;
+  const isQty = isQuantityField(field, name);
+  const resolvedType = isQty ? "quantity" : (fieldoptions.length > 0 && normalizedType === "text" ? "select" : normalizedType);
 
   return {
     id: `custom_${String(field.field_id || field.reqid || field.REQID || field.id || name).trim()}`,
     field_id: String(field.field_id || field.reqid || field.REQID || field.id || name).trim(),
     name,
-    label: name,
+    label: isQty ? "الكمية (Quantity)" : name,
     type: resolvedType,
     fieldtype: resolvedType,
-    required: isRequiredField(field.required ?? field.REQUIRED),
+    is_quantity: isQty,
+    required: isQty ? true : isRequiredField(field.required ?? field.REQUIRED),
     description,
-    placeholder: description || `أدخل ${name}`,
+    placeholder: description || (isQty ? "أدخل الكمية المطلوبة" : `أدخل ${name}`),
     options: fieldoptions,
-    fieldoptions
+    fieldoptions,
+    min_quantity: field.min_quantity ?? field.minQty ?? field.min ?? undefined,
+    max_quantity: field.max_quantity ?? field.maxQty ?? field.max ?? undefined
   };
 }
 
@@ -784,6 +794,11 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           }
         }
 
+        const qtyLimits = extractQuantityLimits(s, normalizedFields);
+        const enrichedFields = qtyLimits.supportsQty
+          ? enrichCustomFieldsWithQuantity(normalizedFields, qtyLimits)
+          : normalizedFields;
+
         extractedServices.push({
           id: sId,
           service_id: sId,
@@ -798,10 +813,14 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           price: sCredit,
           time: sTime,
           info: sInfo,
-          customFields: normalizedFields,
-          requiresCustom: normalizedFields.length > 0 ? JSON.stringify(normalizedFields) : null,
-          min_quantity: parseInt(s.MIN || s.min || s.QNT_MIN || s.qnt_min || "1") || 1,
-          max_quantity: parseInt(s.MAX || s.max || s.QNT_MAX || s.qnt_max || "0") || 0
+          customFields: enrichedFields,
+          requiresCustom: enrichedFields.length > 0 ? JSON.stringify(enrichedFields) : null,
+          supportsQty: qtyLimits.supportsQty,
+          supports_quantity: qtyLimits.supportsQty,
+          minQty: qtyLimits.minQty,
+          maxQty: qtyLimits.maxQty,
+          min_quantity: qtyLimits.minQty,
+          max_quantity: qtyLimits.maxQty
         });
       }
     }
@@ -908,8 +927,15 @@ export async function persistProviderServicesList(
     let credit = (parseFloat(s.credit || s.price) || 0) * (exchangeRate > 0 ? exchangeRate : 1);
     const time = s.time || "";
     const info = s.info || "";
-    const requiresCustomStr = s.customFields && Array.isArray(s.customFields)
-      ? JSON.stringify(s.customFields)
+    let customFieldsList = s.customFields && Array.isArray(s.customFields)
+      ? s.customFields
+      : (s.requiresCustom ? (() => { try { return JSON.parse(s.requiresCustom); } catch { return []; } })() : []);
+    const qtyLimits = extractQuantityLimits(s, customFieldsList);
+    if (qtyLimits.supportsQty) {
+      customFieldsList = enrichCustomFieldsWithQuantity(customFieldsList, qtyLimits);
+    }
+    const requiresCustomStr = customFieldsList && customFieldsList.length > 0
+      ? JSON.stringify(customFieldsList)
       : (s.requiresCustom || null);
     const apiServiceType = normalizeProviderApiServiceType(s.api_service_type ?? s.service_type);
     const categoryName = apiServiceType === "imei"
@@ -1094,8 +1120,15 @@ router.post("/:id/import-services", async (req, res) => {
         : (apiServiceType === "remote" ? "Remote Service" : "Server Service");
       const categoryId = categoryMap.get(categoryName)!;
 
-      const requiresCustomStr = s.customFields && Array.isArray(s.customFields)
-        ? JSON.stringify(s.customFields.map(normalizeCustomField).filter(Boolean))
+      let customFieldsList = s.customFields && Array.isArray(s.customFields)
+        ? s.customFields.map(normalizeCustomField).filter(Boolean)
+        : (s.requiresCustom ? (() => { try { return JSON.parse(s.requiresCustom); } catch { return []; } })() : []);
+      const qtyLimits = extractQuantityLimits(s, customFieldsList);
+      if (qtyLimits.supportsQty) {
+        customFieldsList = enrichCustomFieldsWithQuantity(customFieldsList, qtyLimits);
+      }
+      const requiresCustomStr = customFieldsList && customFieldsList.length > 0
+        ? JSON.stringify(customFieldsList)
         : (s.requiresCustom || null);
 
       await prisma.dhruService.upsert({
@@ -1180,12 +1213,21 @@ router.get("/:id/services", async (req, res) => {
 
     return res.json({
       success: true,
-      services: services.map((service) => ({
-        ...service,
-        category_name: service.dhruCategory?.name || null,
-        service_type: service.apiServiceType || getProviderServiceType(service.dhruCategory?.name),
-        api_service_type: service.apiServiceType || null
-      }))
+      services: services.map((service) => {
+        const qtyConfig = getServiceQuantityConfig(service);
+        return {
+          ...service,
+          category_name: service.dhruCategory?.name || null,
+          service_type: service.apiServiceType || getProviderServiceType(service.dhruCategory?.name),
+          api_service_type: service.apiServiceType || null,
+          supportsQty: qtyConfig.supportsQty,
+          supports_quantity: qtyConfig.supportsQty,
+          minQty: qtyConfig.minQty,
+          maxQty: qtyConfig.maxQty,
+          min_quantity: qtyConfig.min_quantity,
+          max_quantity: qtyConfig.max_quantity
+        };
+      })
     });
   } catch (error: any) {
     console.error("Fetch provider services error:", error);

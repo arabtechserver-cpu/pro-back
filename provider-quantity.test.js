@@ -1,0 +1,78 @@
+const assert = require("assert");
+const {
+  isQuantityField,
+  extractQuantityLimits,
+  getServiceQuantityConfig,
+  enrichCustomFieldsWithQuantity
+} = require("./dist/utils/provider-quantity.js");
+
+// 1. isQuantityField tests
+assert.equal(isQuantityField(null, "QNT"), true);
+assert.equal(isQuantityField(null, "custom_QNT"), true);
+assert.equal(isQuantityField(null, "quantity"), true);
+assert.equal(isQuantityField(null, "الكمية"), true);
+assert.equal(isQuantityField({ reqid: "QNT" }), true);
+assert.equal(isQuantityField({ field_id: "QNT" }), true);
+assert.equal(isQuantityField({ fieldname: "custom_QNT" }), true);
+assert.equal(isQuantityField({ name: "QNT" }), true);
+assert.equal(isQuantityField({ label: "Quantity" }), true);
+assert.equal(isQuantityField(null, "email"), false);
+assert.equal(isQuantityField({ reqid: "IMEI" }), false);
+
+// 2. extractQuantityLimits tests
+// Case A: Explicit provider fields QNT_MIN / QNT_MAX
+const service1 = {
+  SERVICENAME: "Falcon FRP Tool Credits",
+  QNT_MIN: "5",
+  QNT_MAX: "500"
+};
+const limits1 = extractQuantityLimits(service1);
+assert.equal(limits1.supportsQty, true);
+assert.equal(limits1.minQty, 5);
+assert.equal(limits1.maxQty, 500);
+
+// Case B: Custom field with QNT in requiresCustom
+const service2 = {
+  SERVICENAME: "Cheetah Tool Credit",
+  requiresCustom: JSON.stringify([
+    { field_id: "Username", type: "text" },
+    { field_id: "QNT", description: "Min: 10, Max: 1000", type: "text" }
+  ])
+};
+const limits2 = extractQuantityLimits(service2);
+assert.equal(limits2.supportsQty, true);
+assert.equal(limits2.minQty, 10);
+assert.equal(limits2.maxQty, 1000);
+
+// Case C: Service name with "Credit Any Qnt"
+const service3 = {
+  SERVICENAME: "MAT AUTH TOOL Credit Any Qnt (Min 20)",
+  info: "Instant credit delivery"
+};
+const limits3 = extractQuantityLimits(service3);
+assert.equal(limits3.supportsQty, true);
+assert.equal(limits3.minQty, 20);
+assert.equal(limits3.maxQty, 0); // 0 = unlimited
+
+// Case D: Non-quantity service
+const service4 = {
+  SERVICENAME: "iPhone Carrier Check",
+  requiresCustom: JSON.stringify([{ field_id: "IMEI", type: "text" }])
+};
+const limits4 = extractQuantityLimits(service4);
+assert.equal(limits4.supportsQty, false);
+assert.equal(limits4.minQty, 1);
+assert.equal(limits4.maxQty, 0);
+
+// 3. enrichCustomFieldsWithQuantity tests
+const customFields = [
+  { field_id: "Username", name: "Username", type: "text" },
+  { field_id: "QNT", name: "custom_QNT", type: "text" }
+];
+const enriched = enrichCustomFieldsWithQuantity(customFields, limits2);
+assert.equal(enriched[1].type, "quantity");
+assert.equal(enriched[1].fieldtype, "quantity");
+assert.equal(enriched[1].min_quantity, 10);
+assert.equal(enriched[1].max_quantity, 1000);
+
+console.log("provider quantity tests passed successfully");

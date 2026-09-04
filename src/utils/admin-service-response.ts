@@ -1,3 +1,5 @@
+import { getServiceQuantityConfig } from "./provider-quantity";
+
 type AdminService = {
   id: string;
   dhruId: string;
@@ -9,7 +11,8 @@ type AdminService = {
   time: string;
   info: string | null;
   isActive: boolean;
-  requiresCustom: string | null;
+  requiresCustom: string | null | any[];
+  [key: string]: any;
 };
 
 type AdminCategory = {
@@ -29,6 +32,7 @@ export function serializeAdminServiceCategories(
       const credit = Number(service.credit) || 0;
       const margin = Number(service.margin) || 0;
       const finalPrice = Number((credit + margin).toFixed(2));
+      const qtyConfig = getServiceQuantityConfig(service);
 
       return {
         id: service.id,
@@ -44,7 +48,13 @@ export function serializeAdminServiceCategories(
         time: service.time,
         info: service.info,
         isActive: service.isActive,
-        requiresCustom: service.requiresCustom
+        requiresCustom: service.requiresCustom,
+        supportsQty: qtyConfig.supportsQty,
+        supports_quantity: qtyConfig.supportsQty,
+        minQty: qtyConfig.minQty,
+        maxQty: qtyConfig.maxQty,
+        min_quantity: qtyConfig.min_quantity,
+        max_quantity: qtyConfig.max_quantity
       };
     })
   }));
@@ -61,6 +71,7 @@ export function serializePricingServiceCategories(
       const credit = Number(service.credit) || 0;
       const margin = Number(service.margin) || 0;
       const finalPrice = Number((credit + margin).toFixed(2));
+      const qtyConfig = getServiceQuantityConfig(service);
 
       return {
         id: service.id,
@@ -73,7 +84,16 @@ export function serializePricingServiceCategories(
         finalPrice,
         sellingPrice: finalPrice,
         time: service.time,
-        isActive: service.isActive
+        isActive: service.isActive,
+        info: service.info,
+        originalName: service.originalName,
+        requiresCustom: service.requiresCustom,
+        supportsQty: qtyConfig.supportsQty,
+        supports_quantity: qtyConfig.supportsQty,
+        minQty: qtyConfig.minQty,
+        maxQty: qtyConfig.maxQty,
+        min_quantity: qtyConfig.min_quantity,
+        max_quantity: qtyConfig.max_quantity
       };
     })
   }));

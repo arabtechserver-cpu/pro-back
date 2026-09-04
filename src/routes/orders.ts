@@ -6,6 +6,7 @@ import { buildOrderFieldDetails, resolveOrderServiceType, parseOrderMetadata } f
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
+import { getServiceQuantityConfig } from '../utils/provider-quantity';
 
 const router = Router();
 
@@ -161,6 +162,21 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(404).json({ error: 'الخدمة المطلوبة غير متاحة حالياً' });
     }
 
+    // Validate provider quantity limits
+    const qtyConfig = getServiceQuantityConfig(dhruService);
+    if (qtyConfig.supportsQty) {
+      if (qty < qtyConfig.minQty) {
+        return res.status(400).json({
+          error: `عذراً، أقل كمية مسموح بطلبها لهذه الخدمة هي (${qtyConfig.minQty})`
+        });
+      }
+      if (qtyConfig.maxQty > 0 && qty > qtyConfig.maxQty) {
+        return res.status(400).json({
+          error: `عذراً، أقصى كمية مسموح بطلبها لهذه الخدمة هي (${qtyConfig.maxQty})`
+        });
+      }
+    }
+
     // Prices are always calculated from the server-side service record.
     let unitPrice = Number((dhruService.credit + dhruService.margin).toFixed(2));
     const discountPercent = Math.max(
@@ -197,10 +213,16 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
+    const mergedCustomFields: Record<string, string> = { ...(customFields || {}) };
+    if (qtyConfig.supportsQty) {
+      mergedCustomFields['QNT'] = String(qty);
+      mergedCustomFields['custom_QNT'] = String(qty);
+    }
+
     const structuredNotes = JSON.stringify({
       userNote: notes ? String(notes).trim() : null,
       rawImei: rawImei ? String(rawImei).trim() : null,
-      customFields: customFields || null,
+      customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : null,
       events: timelineEvents
     });
 
@@ -345,6 +367,9 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
     let dhruResponse: any = null;
     let apiOrderId: string | null = null;
     const providerCustomFields = normalizeProviderCustomFields(customFields, dhruService.requiresCustom);
+    if (order.quantity > 0) {
+      providerCustomFields['QNT'] = String(order.quantity);
+    }
 
     const serviceType = resolveOrderServiceType(
       dhruService.apiServiceType,

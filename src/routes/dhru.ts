@@ -17,6 +17,7 @@ import { prisma } from "../utils/prisma";
 
 import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices';
 import { serializeAdminServiceCategories, serializePricingServiceCategories } from "../utils/admin-service-response";
+import { getServiceQuantityConfig, enrichCustomFieldsWithQuantity } from '../utils/provider-quantity';
 
 router.get('/services', (req, res, next) => {
   if (req.query.all === 'true') return isAdmin(req, res, next);
@@ -154,6 +155,30 @@ router.post('/services/update', isAdmin, async (req, res) => {
       }
     }
 
+    if (req.body.supportsQty !== undefined || req.body.minQty !== undefined || req.body.maxQty !== undefined) {
+      let existingFields: any[] = [];
+      const current = updateData.requiresCustom || (await prisma.dhruService.findUnique({ where: { id: serviceId } }))?.requiresCustom;
+      if (current) {
+        try {
+          const parsed = typeof current === 'string' ? JSON.parse(current) : current;
+          existingFields = Array.isArray(parsed) ? parsed : Object.entries(parsed).map(([k, v]: any) => ({ ...v, field_id: k }));
+        } catch {}
+      }
+      const supportsQty = req.body.supportsQty !== undefined ? Boolean(req.body.supportsQty) : undefined;
+      const minQty = req.body.minQty !== undefined ? Math.max(1, parseInt(req.body.minQty) || 1) : undefined;
+      const maxQty = req.body.maxQty !== undefined ? Math.max(0, parseInt(req.body.maxQty) || 0) : undefined;
+      
+      const qtyLimits = {
+        supportsQty: supportsQty ?? (minQty !== undefined || maxQty !== undefined),
+        minQty: minQty ?? 1,
+        maxQty: maxQty ?? 0
+      };
+      if (qtyLimits.supportsQty) {
+        existingFields = enrichCustomFieldsWithQuantity(existingFields, qtyLimits);
+        updateData.requiresCustom = JSON.stringify(existingFields);
+      }
+    }
+
     const updated = await prisma.dhruService.update({
       where: { id: serviceId },
       data: updateData
@@ -188,6 +213,7 @@ router.get('/services/:id', async (req, res) => {
     const credit = typeof service.credit === 'number' ? service.credit : parseFloat(service.credit as any) || 0;
     const margin = typeof service.margin === 'number' ? service.margin : parseFloat(service.margin as any) || 0;
     const finalPrice = Number((credit + margin).toFixed(2));
+    const qtyConfig = getServiceQuantityConfig(service);
 
     const cleanedService = {
       ...service,
@@ -196,7 +222,13 @@ router.get('/services/:id', async (req, res) => {
       price: finalPrice,
       finalPrice,
       sellingPrice: finalPrice,
-      name: cleanServiceName(service.name, service.info || '', service.groupName || '')
+      name: cleanServiceName(service.name, service.info || '', service.groupName || ''),
+      supportsQty: qtyConfig.supportsQty,
+      supports_quantity: qtyConfig.supportsQty,
+      minQty: qtyConfig.minQty,
+      maxQty: qtyConfig.maxQty,
+      min_quantity: qtyConfig.min_quantity,
+      max_quantity: qtyConfig.max_quantity
     };
 
     res.json(cleanedService);

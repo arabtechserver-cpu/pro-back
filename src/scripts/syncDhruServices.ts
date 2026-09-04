@@ -1,6 +1,7 @@
 import { PrismaClient } from '@prisma/client';
 import { getImeiServiceList, getServerServiceList } from '../utils/dhru-api';
 import { extractCustomFields, normalizeCustomField } from '../routes/providers';
+import { extractQuantityLimits, enrichCustomFieldsWithQuantity } from '../utils/provider-quantity';
 
 const prisma = new PrismaClient();
 
@@ -106,7 +107,12 @@ export async function syncDhruServices() {
       const info = service.INFO || "";
       
       const rawCustomFields = extractCustomFields(service);
-      const normalizedFields = rawCustomFields.map(normalizeCustomField).filter(Boolean);
+      let normalizedFields = rawCustomFields.map(normalizeCustomField).filter(Boolean);
+
+      const qtyLimits = extractQuantityLimits(service, normalizedFields);
+      if (qtyLimits.supportsQty) {
+        normalizedFields = enrichCustomFieldsWithQuantity(normalizedFields, qtyLimits);
+      }
 
       let categoryName = defaultCategory;
       if (`${groupName} ${serviceName}`.match(/remote|rent|teamviewer|anydesk|usb|flexi/i)) {

@@ -1,0 +1,36 @@
+{
+  "usdToSdg": 2850,
+  "usdToEgp": 50,
+  "usdToSar": 3.75,
+  "usdToAed": 3.67,
+  "bankak": {
+    "accountNumber": "6302273",
+    "accountName": "حسن",
+    "instructionsAr": "حول المبلغ بالجنيه السوداني عبر تطبيق بنكك إلى رقم الحساب (6302273) باسم حسن ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
+    "instructionsEn": "Transfer in Sudanese Pounds via Bankak app to account # 6302273 (Hassan) then upload the transfer receipt image.",
+    "isActive": true
+  },
+  "vodafone": {
+    "walletNumber": "01097160605",
+    "instructionsAr": "حول المبلغ إلى رقم المحفظة (01097160605) واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",
+    "instructionsEn": "Transfer funds to wallet number 01097160605 then attach receipt screenshot.",
+    "isActive": true
+  },
+  "binance": {
+    "payId": "894642115",
+    "instructionsAr": "افتح تطبيق باينانس واكتب معرف Binance Pay ID (894642115) ثم ارفق لقطة الشاشة للتأكيد.",
+    "instructionsEn": "Open Binance App and send funds via Pay ID (894642115) then attach payment screenshot.",
+    "isActive": true
+  },
+  "cryptoBnb": {
+    "address": "0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f",
+    "network": "BNB Smart Chain (BEP20)",
+    "instructionsAr": "تأكد من اختيار شبكة (BNB Smart Chain - BEP20) ثم ارفع صورة إثبات المعاملة من باينانس أو Trust Wallet.",
+    "instructionsEn": "Ensure network selected is BNB Smart Chain (BEP20) then upload transaction receipt screenshot.",
+    "isActive": true
+  },
+  "paypal": {
+    "email": "paypal@gsmteam.com",
+    "isActive": true
+  }
+}

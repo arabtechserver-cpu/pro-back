@@ -57,15 +57,15 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     isActive: true
   },
   vodafone: {
-    walletNumber: "01036673447",
-    instructionsAr: "حول المبلغ إلى رقم المحفظة (01036673447) واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",
-    instructionsEn: "Transfer funds to wallet number 01036673447 then attach receipt screenshot.",
+    walletNumber: "01097160605",
+    instructionsAr: "حول المبلغ إلى رقم المحفظة (01097160605) واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",
+    instructionsEn: "Transfer funds to wallet number 01097160605 then attach receipt screenshot.",
     isActive: true
   },
   binance: {
-    payId: "287584748",
-    instructionsAr: "افتح تطبيق باينانس واكتب معرف Binance Pay ID (287584748) ثم ارفق لقطة الشاشة للتأكيد.",
-    instructionsEn: "Open Binance App and send funds via Pay ID (287584748) then attach payment screenshot.",
+    payId: "894642115",
+    instructionsAr: "افتح تطبيق باينانس واكتب معرف Binance Pay ID (894642115) ثم ارفق لقطة الشاشة للتأكيد.",
+    instructionsEn: "Open Binance App and send funds via Pay ID (894642115) then attach payment screenshot.",
     isActive: true
   },
   cryptoBnb: {

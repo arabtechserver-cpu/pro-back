@@ -78,27 +78,31 @@ export function extractLimitsFromText(text: string): { min: number | null; max: 
   let min: number | null = null;
   let max: number | null = null;
 
-  // Pattern: Min: 5, Max: 1000 or الحد الأدنى: 5, الحد الأقصى: 1000
-  const minMatch = text.match(/(?:min|minimum|qnt_min|أقل كمية|الحد الأدنى|اقل كمية)[:\s]*([0-9]+)/i);
+  // Ignore delivery time expressions (e.g. 1-24 Hours, 1-3 Days, 30 mins) to avoid false limit extraction
+  const sanitized = text.replace(/\b\d+\s*[-–—]\s*\d+\s*(?:hours?|hrs?|days?|minutes?|mins?|ساعة|ساعات|يوم|أيام|دقيقة|دقائق)\b/gi, "");
+
+  // Match explicit quantity min: qnt_min: 10, min qnt: 10, min quantity: 10, Min: 10, Min 10, أقل كمية: 10
+  const minMatch =
+    sanitized.match(/(?:qnt_min|min_qnt|min\s*qnt|minimum\s*qnt|min\s*quantity|minimum\s*quantity|أقل\s*كمية|اقل\s*كمية|الحد\s*الأدنى\s*للكمية|الحد\s*الادنى\s*للكمية|أدنى\s*كمية)[:\s]*([0-9]+)/i) ||
+    sanitized.match(/\bmin[:\s]+([0-9]+)\b/i);
   if (minMatch && minMatch[1]) {
     min = parseInt(minMatch[1], 10);
   }
 
-  const maxMatch = text.match(/(?:max|maximum|qnt_max|أقصى كمية|الحد الأقصى|اقصى كمية)[:\s]*([0-9]+)/i);
+  // Match explicit quantity max: qnt_max: 500, max qnt: 500, max quantity: 500, Max: 500, Max 500, أقصى كمية: 500
+  const maxMatch =
+    sanitized.match(/(?:qnt_max|max_qnt|max\s*qnt|maximum\s*qnt|max\s*quantity|maximum\s*quantity|أقصى\s*كمية|اقصى\s*كمية|الحد\s*الأقصى\s*للكمية|الحد\s*الاقصى\s*للكمية|أعلى\s*كمية)[:\s]*([0-9]+)/i) ||
+    sanitized.match(/\bmax[:\s]+([0-9]+)\b/i);
   if (maxMatch && maxMatch[1]) {
     max = parseInt(maxMatch[1], 10);
   }
 
-  // Pattern: (5 - 1000) or 5-500
+  // Pattern: (Min: 10 - Max: 1000) or Min 10 Max 1000
   if (min === null && max === null) {
-    const rangeMatch = text.match(/\b([1-9][0-9]*)\s*[-–—]\s*([1-9][0-9]*)\b/);
-    if (rangeMatch && rangeMatch[1] && rangeMatch[2]) {
-      const p1 = parseInt(rangeMatch[1], 10);
-      const p2 = parseInt(rangeMatch[2], 10);
-      if (p1 < p2 && p2 <= 1000000) {
-        min = p1;
-        max = p2;
-      }
+    const explicitRangeMatch = sanitized.match(/\bmin[:\s]*([0-9]+)\s*[-–—,]\s*max[:\s]*([0-9]+)\b/i);
+    if (explicitRangeMatch && explicitRangeMatch[1] && explicitRangeMatch[2]) {
+      min = parseInt(explicitRangeMatch[1], 10);
+      max = parseInt(explicitRangeMatch[2], 10);
     }
   }
 
@@ -120,8 +124,6 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.qnt_min ??
     s.MIN_QNT ??
     s.min_qnt ??
-    s.MIN ??
-    s.min ??
     s.min_quantity ??
     s.minQuantity ??
     s.minQty ??
@@ -132,8 +134,6 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.qnt_max ??
     s.MAX_QNT ??
     s.max_qnt ??
-    s.MAX ??
-    s.max ??
     s.max_quantity ??
     s.maxQuantity ??
     s.maxQty ??
@@ -184,7 +184,7 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     }
   }
 
-  // 3. Extract from service name, info, or description
+  // 3. Extract limits from service name, info, or description if it's an explicit quantity service
   const combinedText = `${sName} ${sInfo} ${sDesc}`;
   const textLimits = extractLimitsFromText(combinedText);
   if (minQty === null && textLimits.min !== null) minQty = textLimits.min;
@@ -192,40 +192,41 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
 
   // Raw string check on requiresCustom if present
   if (!hasExplicitQuantityField && typeof s.requiresCustom === "string") {
-    if (/qnt|quantity|كمية|الكميه/i.test(s.requiresCustom)) {
-      hasExplicitQuantityField = true;
-    }
+    try {
+      const parsed = JSON.parse(s.requiresCustom);
+      if (Array.isArray(parsed) && parsed.some(f => isQuantityField(f))) {
+        hasExplicitQuantityField = true;
+      }
+    } catch {}
   }
 
-  // 4. Check name patterns like "Any Qnt", "Credits Qnt", or Arabic patterns
+  // 4. Check name patterns for dynamic quantity (e.g. "Any Qnt", "Credits Qnt", "Any Quantity")
   const hasQuantityNamePattern =
-    /\bany\s*qnt\b|\bcredits?\s*qnt\b|\bqnt\b|\bquantity\b|\bqty\b|كمية|الكمية|كريديت/i.test(sName) ||
-    /\bany\s*qnt\b|\bcredits?\s*qnt\b|\bqnt\b|\bquantity\b|\bqty\b|كمية|الكمية/i.test(sInfo) ||
-    /\bany\s*qnt\b|\bcredits?\s*qnt\b|\bqnt\b|\bquantity\b|\bqty\b/i.test(sDesc);
+    /\bany\s*qnt\b|\bany\s*quantity\b|\bcustom\s*qnt\b|\bcustom\s*quantity\b|\bcredits?\s*qnt\b/i.test(sName) ||
+    /\bany\s*qnt\b|\bany\s*quantity\b|\bcustom\s*qnt\b|\bcustom\s*quantity\b|\bcredits?\s*qnt\b/i.test(sInfo) ||
+    /بأي\s*كمية|كمية\s*مخصصة/i.test(sName) ||
+    /بأي\s*كمية|كمية\s*مخصصة/i.test(sInfo);
 
-  // 5. Determine if service supports quantity
-  const hasRawLimits = (rawMin !== undefined && rawMin !== null && rawMin !== "") ||
-                       (rawMax !== undefined && rawMax !== null && rawMax !== "");
-
-  const explicitFlag =
-    s.supportsQty === true ||
-    s.supportsQty === "1" ||
-    s.supports_quantity === true ||
-    s.requires_quantity === true ||
+  // 5. Explicit provider quantity attributes
+  const hasExplicitProviderQuantityAttr =
+    (rawMin !== undefined && rawMin !== null && rawMin !== "" && Number(rawMin) > 0) ||
+    (rawMax !== undefined && rawMax !== null && rawMax !== "" && Number(rawMax) > 0) ||
     s.REQUIRES_QUANTITY === "1" ||
-    s.REQUIRES_QUANTITY === true;
+    s.REQUIRES_QUANTITY === true ||
+    s.requires_quantity === true ||
+    s.supports_quantity === true ||
+    s.supportsQty === true ||
+    s.supportsQty === "1";
 
+  // Determine if service truly supports dynamic quantity
   const supportsQty = Boolean(
-    explicitFlag ||
     hasExplicitQuantityField ||
-    hasRawLimits ||
-    (minQty !== null && minQty > 1) ||
-    (maxQty !== null && maxQty > 1) ||
+    hasExplicitProviderQuantityAttr ||
     hasQuantityNamePattern
   );
 
-  const finalMin = minQty !== null && minQty > 0 ? minQty : 1;
-  const finalMax = maxQty !== null && maxQty > 0 ? maxQty : 0; // 0 = unlimited
+  const finalMin = supportsQty && minQty !== null && minQty > 0 ? minQty : 1;
+  const finalMax = supportsQty && maxQty !== null && maxQty > 0 ? maxQty : 0; // 0 = unlimited
 
   return {
     supportsQty,

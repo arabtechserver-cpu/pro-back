@@ -64,6 +64,31 @@ assert.equal(limits4.supportsQty, false);
 assert.equal(limits4.minQty, 1);
 assert.equal(limits4.maxQty, 0);
 
+// Case E: Service with delivery time range (1-24 Hours) must NOT support quantity
+const service5 = {
+  SERVICENAME: "EFT Pro 1 Year Activation",
+  TIME: "1-24 Hours",
+  INFO: "Delivery time: 1-24 Hours for all users"
+};
+const limits5 = extractQuantityLimits(service5);
+assert.equal(limits5.supportsQty, false);
+
+// Case F: Fixed credit pack (e.g. Chimera 150 Credits) must NOT support quantity
+const service6 = {
+  SERVICENAME: "Chimera Tool 150 Credits",
+  INFO: "Server credits package"
+};
+const limits6 = extractQuantityLimits(service6);
+assert.equal(limits6.supportsQty, false);
+
+// Case G: Tool activation period must NOT support quantity
+const service7 = {
+  SERVICENAME: "UnlockTool 3 Months Activation",
+  INFO: "Instant activation 3 months"
+};
+const limits7 = extractQuantityLimits(service7);
+assert.equal(limits7.supportsQty, false);
+
 // 3. enrichCustomFieldsWithQuantity tests
 const customFields = [
   { field_id: "Username", name: "Username", type: "text" },

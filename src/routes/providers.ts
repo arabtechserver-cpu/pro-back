@@ -1119,6 +1119,111 @@ router.get("/:id/export-full-data", async (req, res) => {
   }
 });
 
+// GET /api/providers/:id/raw-data - Download 100% untouched pure raw data directly from provider API without ANY modifications from us
+router.get("/:id/raw-data", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const provider = await prisma.apiProvider.findUnique({ where: { id } });
+    if (!provider) {
+      return res.status(404).json({ error: "المزود غير موجود" });
+    }
+
+    const type = String(req.query.type || "all").toLowerCase();
+    const isDownload = req.query.download === "true" || req.query.download === "1";
+    const cleanName = (provider.name || "provider").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+
+    if (type === "imei") {
+      const imeiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist");
+      if (isDownload) {
+        res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_IMEI_Services.json"`);
+        res.setHeader("Content-Type", "application/json");
+      }
+      return res.json(imeiRes.data);
+    }
+
+    if (type === "server") {
+      const serverRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist");
+      if (isDownload) {
+        res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_Server_Services.json"`);
+        res.setHeader("Content-Type", "application/json");
+      }
+      return res.json(serverRes.data);
+    }
+
+    if (type === "remote") {
+      const remoteRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist");
+      if (isDownload) {
+        res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_Remote_Services.json"`);
+        res.setHeader("Content-Type", "application/json");
+      }
+      return res.json(remoteRes.data);
+    }
+
+    // Default "all" or "pure_dhru": Fetch all 3 lists simultaneously
+    const [imeiRes, serverRes, remoteRes] = await Promise.all([
+      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist"),
+      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
+      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
+    ]);
+
+    if (type === "pure_dhru") {
+      const allOriginalGroups: any[] = [];
+      const appendGroups = (data: any) => {
+        if (!data || typeof data !== "object") return;
+        const success = data.SUCCESS ?? data.success;
+        if (Array.isArray(success)) {
+          for (const item of success) {
+            if (item && Array.isArray(item.LIST)) {
+              allOriginalGroups.push(...item.LIST);
+            } else if (item) {
+              allOriginalGroups.push(item);
+            }
+          }
+        } else if (success && typeof success === "object") {
+          allOriginalGroups.push(...Object.values(success));
+        }
+      };
+
+      appendGroups(imeiRes.data);
+      appendGroups(serverRes.data);
+      appendGroups(remoteRes.data);
+
+      if (isDownload) {
+        res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_Dhru_SUCCESS.json"`);
+        res.setHeader("Content-Type", "application/json");
+      }
+      return res.json({ SUCCESS: allOriginalGroups });
+    }
+
+    // Combined Raw - pure original data without any additions
+    const combinedRaw = {
+      provider: {
+        id: provider.id,
+        name: provider.name,
+        apiUrl: provider.apiUrl,
+        username: provider.username,
+        type: provider.type,
+        currency: provider.currency,
+        balance: provider.balance,
+        exportedAt: new Date().toISOString()
+      },
+      imeiservicelist: imeiRes.data ?? null,
+      serverservicelist: serverRes.data ?? null,
+      remoteservicelist: remoteRes.data ?? null
+    };
+
+    if (isDownload) {
+      res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_Original_Full.json"`);
+      res.setHeader("Content-Type", "application/json");
+    }
+
+    return res.json(combinedRaw);
+  } catch (error: any) {
+    console.error("Fetch raw provider data error:", error);
+    return res.status(500).json({ error: "فشل سحب الداتا الأصلية من المزود: " + (error.message || "") });
+  }
+});
+
 // Helper function to persist/upsert any list of provider services into DB
 export async function persistProviderServicesList(
   provider: { id: string },

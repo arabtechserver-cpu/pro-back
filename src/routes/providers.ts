@@ -269,16 +269,11 @@ export function extractCustomFields(service: any): any[] {
       field.customname || field.fieldname || field.FIELDNAME || field.field_name || field.name || field.NAME || field.label || ""
     ).trim().toLowerCase();
 
-    // Ignore internal provider fields like order code / supplier code
+    // Ignore only internal system metadata fields (never customer-facing fields like Order Code or Lock Code)
     if (
-      name.includes("order_code") ||
-      name.includes("ordercode") ||
-      name.includes("order code") ||
-      name.includes("ref_code") ||
-      name.includes("refcode") ||
       name.includes("supplier_code") ||
       name.includes("provider_code") ||
-      name.includes("code_id")
+      name === "code_id"
     ) {
       continue;
     }
@@ -299,22 +294,30 @@ export function normalizeCustomField(cf: any): any {
   );
   if (!name) return null;
 
-  const description = stripHtml(String(field.description || field.DESCRIPTION || field.placeholder || "").trim());
+  // Check adminonly strictly so "0" or "" does NOT hide valid customer fields
+  const rawAdmin = field.adminonly ?? field.ADMINONLY ?? field.admin_only;
+  const isAdminOnly = rawAdmin === true || rawAdmin === 1 || rawAdmin === "1" || rawAdmin === "true";
+  if (isAdminOnly) return null;
+
+  const description = stripHtml(String(field.description || field.DESCRIPTION || field.placeholder || field.custominfo || "").trim());
   const fieldoptions = normalizeFieldOptions(field.fieldoptions ?? field.FIELDOPTIONS ?? field.options);
   const rawType = field.fieldtype || field.FIELDTYPE || field.type;
   const normalizedType = normalizeFieldType(rawType);
   const isQty = isQuantityField(field, name);
   const resolvedType = isQty ? "quantity" : (fieldoptions.length > 0 && normalizedType === "text" ? "select" : normalizedType);
 
+  const rawFieldId = String(field.field_id || field.reqid || field.REQID || field.id || name).trim();
+  const isRequired = isQty ? true : (field.allow !== undefined ? isRequiredField(field.allow) : isRequiredField(field.required ?? field.REQUIRED));
+
   return {
-    id: `custom_${String(field.field_id || field.reqid || field.REQID || field.id || name).trim()}`,
-    field_id: String(field.field_id || field.reqid || field.REQID || field.id || name).trim(),
+    id: `custom_${rawFieldId}`,
+    field_id: rawFieldId,
     name,
     label: isQty ? "الكمية (Quantity)" : name,
     type: resolvedType,
     fieldtype: resolvedType,
     is_quantity: isQty,
-    required: isQty ? true : isRequiredField(field.required ?? field.REQUIRED),
+    required: isRequired,
     description,
     placeholder: description || (isQty ? "أدخل الكمية المطلوبة" : `أدخل ${name}`),
     options: fieldoptions,
@@ -707,7 +710,7 @@ export function getProviderServiceType(categoryName: unknown): ProviderServiceTy
 
 export function normalizeProviderApiServiceType(
   explicitType: unknown,
-  endpointType?: ProviderServiceType
+  endpointType?: ProviderServiceType | "unknown"
 ): ProviderServiceType | "unknown" {
   const normalized = String(explicitType || "").trim().toLowerCase();
   if (normalized.includes("remote")) return "remote";
@@ -734,40 +737,55 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
     if (groupData?.SUCCESS === true && Array.isArray(groupData?.RESULT)) {
       groups = groupData.RESULT;
     } else if (Array.isArray(groupData?.SUCCESS)) {
-      const first = groupData.SUCCESS[0];
-      if (first && first.LIST && typeof first.LIST === "object") {
-        groups = Object.values(first.LIST);
-      } else {
-        groups = groupData.SUCCESS;
+      for (const item of groupData.SUCCESS) {
+        if (item && item.LIST && typeof item.LIST === "object") {
+          groups.push(...Object.values(item.LIST));
+        } else if (item && typeof item === "object") {
+          groups.push(item);
+        }
       }
     } else if (Array.isArray(groupData)) {
       groups = groupData;
     } else if (typeof groupData === "object" && groupData !== null) {
-      groups = Object.values(groupData);
+      if (groupData.LIST && typeof groupData.LIST === "object") {
+        groups = Object.values(groupData.LIST);
+      } else {
+        groups = Object.values(groupData);
+      }
     }
 
     for (const g of groups) {
-      if (!g) continue;
+      if (!g || typeof g !== "object") continue;
       const rawGroupName = String(g.GROUPNAME || g.groupName || g.name || "").trim();
       const groupName = rawGroupName || (type === "imei" ? "IMEI Services" : "Server Services");
-      const rawServices = Array.isArray(g.SERVICES) ? g.SERVICES : (g.SERVICES && typeof g.SERVICES === "object" ? Object.values(g.SERVICES) : (g.SERVICEID ? [g] : []));
+      const groupType = normalizeProviderApiServiceType(g.GROUPTYPE || g.groupType || type, type);
+      const rawServices = Array.isArray(g.SERVICES)
+        ? g.SERVICES
+        : (g.SERVICES && typeof g.SERVICES === "object" ? Object.values(g.SERVICES) : (g.SERVICEID ? [g] : []));
 
       for (const s of rawServices as any[]) {
-        if (!s) continue;
+        if (!s || typeof s !== "object") continue;
         const rawCustomFields = extractCustomFields(s);
         const normalizedFields = rawCustomFields.map(normalizeCustomField).filter(Boolean);
 
         const sId = String(s.SERVICEID || s.id || s.ID || "").trim();
         const sName = String(s.SERVICENAME || s.name || s.NAME || "").trim();
+        if (!sId || !sName) continue;
+
         const sCredit = parseFloat(s.CREDIT || s.credit || s.PRICE || s.price || "0") || 0;
         const sTime = String(s.TIME || s.time || "1-24 Hours");
         const sInfo = String(s.INFO || s.info || "");
         const apiServiceType = normalizeProviderApiServiceType(
-          s.SERVICETYPE ?? s.SERVICE_TYPE ?? s.serviceType ?? s.service_type,
-          type
+          s.SERVICETYPE ?? s.SERVICE_TYPE ?? s.serviceType ?? s.service_type ?? groupType,
+          groupType
         );
 
         if (apiServiceType === "imei") {
+          const hasHardwareId = normalizedFields.some((f: any) => {
+            const lowerName = String(f.name || f.field_id || "").toLowerCase();
+            return lowerName === "sn" || lowerName === "serial" || lowerName === "ecid" || lowerName === "udid" || lowerName.includes("serial");
+          });
+
           const existingImeiIndex = normalizedFields.findIndex((f: any) => {
              const lowerName = String(f.name || f.field_id || "").toLowerCase();
              return lowerName === "imei" || lowerName === "custom_imei" || lowerName.includes("imei");
@@ -779,7 +797,7 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
               const [imeiField] = normalizedFields.splice(existingImeiIndex, 1);
               normalizedFields.unshift(imeiField);
             }
-          } else {
+          } else if (!hasHardwareId) {
             normalizedFields.unshift({
               id: "custom_IMEI",
               field_id: "IMEI",

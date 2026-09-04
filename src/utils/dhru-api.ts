@@ -60,15 +60,11 @@ export function dhruApiRequest(
     data.append("action", action);
     data.append("requestformat", "JSON");
 
-    // Format parameters in all standard formats expected by different Dhru Fusion versions:
-    // 1. parameters[KEY] = VALUE
-    // 2. top-level KEY = VALUE
-    // 3. parameters = JSON string
+    // Format parameters standardly for Dhru Fusion
     Object.entries(parameters).forEach(([key, value]) => {
       data.append(`parameters[${key}]`, value);
       data.append(key, value);
     });
-    data.append("parameters", JSON.stringify(parameters));
 
     try {
       const postData = data.toString();
@@ -168,8 +164,8 @@ export function normalizeProviderCustomFields(
     const cleanKey = inputKey.replace(/^custom_/i, "").trim().toLowerCase();
 
     const matchingField = requiredMeta.find((meta: any) => {
-      const fieldId = String(meta?.id || meta?.field_id || "").toLowerCase();
-      const fieldName = String(meta?.name || meta?.field_name || "").toLowerCase();
+      const fieldId = String(meta?.id || meta?.field_id || meta?.reqid || meta?.REQID || "").replace(/^custom_/i, "").toLowerCase();
+      const fieldName = String(meta?.name || meta?.field_name || meta?.fieldname || meta?.FIELDNAME || meta?.customname || "").toLowerCase();
       const fieldApiName = String(meta?.api_name || meta?.field_api_name || "").toLowerCase();
       return (
         fieldId === cleanKey ||
@@ -182,10 +178,16 @@ export function normalizeProviderCustomFields(
 
     const providerKey =
       matchingField?.field_id
-      || matchingField?.id
-      || matchingField?.api_name
-      || inputKey;
+      || matchingField?.customname
+      || matchingField?.fieldname
+      || matchingField?.name
+      || matchingField?.reqid
+      || inputKey.replace(/^custom_/i, "");
+
     normalized[String(providerKey)] = String(value);
+    if (String(providerKey) !== inputKey) {
+      normalized[inputKey] = String(value);
+    }
   }
 
   return normalized;
@@ -206,10 +208,22 @@ export async function placeImeiOrder(
     imei: imei
   };
 
-  if (customFields && Object.keys(customFields).length > 0) {
-    params["CUSTOMFIELD"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
-    params["customfield"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
+  const cleanFields: Record<string, string> = {};
+  if (customFields && typeof customFields === "object") {
     Object.entries(customFields).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      const valStr = String(v).trim();
+      if (!valStr) return;
+      const strippedKey = k.replace(/^custom_/i, "").trim();
+      cleanFields[strippedKey] = valStr;
+    });
+  }
+
+  if (Object.keys(cleanFields).length > 0) {
+    const base64Custom = Buffer.from(JSON.stringify(cleanFields)).toString("base64");
+    params["CUSTOMFIELD"] = base64Custom;
+    params["customfield"] = base64Custom;
+    Object.entries(cleanFields).forEach(([k, v]) => {
       params[`customfield[${k}]`] = v;
       params[k] = v;
     });
@@ -233,40 +247,67 @@ export async function placeServerOrder(
   imei?: string,
   provider?: ProviderConfig
 ) {
+  const finalQty = quantity > 0 ? quantity : 1;
   const params: Record<string, string> = {
     SERVICEID: serviceId,
     ID: serviceId,
     serviceid: serviceId,
     id: serviceId,
-    QNT: String(quantity),
-    qnt: String(quantity)
+    QNT: String(finalQty),
+    qnt: String(finalQty)
   };
 
   const targetIdentifier = (imei && imei.trim())
     ? imei.trim()
-    : (customFields.email || customFields.username || customFields.account || customFields.custom_email || customFields.custom_username || "");
+    : (
+        customFields.SN ||
+        customFields.sn ||
+        customFields.ecid ||
+        customFields.ECID ||
+        customFields.serial ||
+        customFields.email ||
+        customFields.username ||
+        customFields.account ||
+        customFields.custom_sn ||
+        customFields.custom_ecid ||
+        customFields.custom_email ||
+        customFields.custom_username ||
+        ""
+      );
 
   if (targetIdentifier) {
     params["IMEI"] = targetIdentifier;
     params["imei"] = targetIdentifier;
   }
 
-  if (customFields && Object.keys(customFields).length > 0) {
-    params["CUSTOMFIELD"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
-    params["customfield"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
+  const cleanFields: Record<string, string> = {};
+  if (customFields && typeof customFields === "object") {
     Object.entries(customFields).forEach(([k, v]) => {
+      if (v === undefined || v === null) return;
+      const valStr = String(v).trim();
+      if (!valStr) return;
+      const strippedKey = k.replace(/^custom_/i, "").trim();
+      cleanFields[strippedKey] = valStr;
+    });
+  }
+
+  if (Object.keys(cleanFields).length > 0) {
+    const base64Custom = Buffer.from(JSON.stringify(cleanFields)).toString("base64");
+    params["CUSTOMFIELD"] = base64Custom;
+    params["customfield"] = base64Custom;
+    Object.entries(cleanFields).forEach(([k, v]) => {
       params[`customfield[${k}]`] = v;
       params[k] = v;
     });
   }
 
-  // Standard Dhru command for placing orders is placeimeiorder
-  let res = await dhruApiRequest("placeimeiorder", params, provider);
+  // Standard Dhru command for placing server service orders is placeserverorder
+  let res = await dhruApiRequest("placeserverorder", params, provider);
 
-  // If provider returns Command Not Found, fallback to placeserverorder
+  // If provider returns Command Not Found, fallback to placeimeiorder
   if (res?.ERROR?.[0]?.MESSAGE === 'Command Not Found' || res?.error?.includes?.('Command Not Found')) {
-    console.log('[Dhru API] placeimeiorder returned Command Not Found, attempting fallback placeserverorder...');
-    res = await dhruApiRequest("placeserverorder", params, provider);
+    console.log('[Dhru API] placeserverorder returned Command Not Found, attempting fallback placeimeiorder...');
+    res = await dhruApiRequest("placeimeiorder", params, provider);
   }
 
   return res;

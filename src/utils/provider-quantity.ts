@@ -51,7 +51,11 @@ export function isQuantityField(field?: any, key?: string): boolean {
       clean === "الكمية" ||
       clean === "الكميه" ||
       clean === "amount" ||
-      clean === "credits_count"
+      clean === "credits_count" ||
+      clean === "minqnt" ||
+      clean === "maxqnt" ||
+      clean === "min_qnt" ||
+      clean === "max_qnt"
     ) {
       return true;
     }
@@ -118,8 +122,10 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   const sInfo = String(s.INFO || s.info || "");
   const sDesc = String(s.description || s.DESCRIPTION || "");
 
-  // 1. Direct service attributes from provider API or DB
+  // 1. Direct service attributes from provider API or DB (including Dhru MINQNT / MAXQNT without underscore)
   const rawMin =
+    s.MINQNT ??
+    s.minqnt ??
     s.QNT_MIN ??
     s.qnt_min ??
     s.MIN_QNT ??
@@ -130,6 +136,8 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.MIN_QTY;
 
   const rawMax =
+    s.MAXQNT ??
+    s.maxqnt ??
     s.QNT_MAX ??
     s.qnt_max ??
     s.MAX_QNT ??
@@ -170,8 +178,8 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
       hasExplicitQuantityField = true;
 
       // Extract from field attributes
-      const fMin = parseQuantityNumber(field.min_quantity ?? field.minQty ?? field.min ?? field.MIN);
-      const fMax = parseQuantityNumber(field.max_quantity ?? field.maxQty ?? field.max ?? field.MAX);
+      const fMin = parseQuantityNumber(field.min_quantity ?? field.minQty ?? field.min ?? field.MIN ?? field.MINQNT ?? field.minqnt);
+      const fMax = parseQuantityNumber(field.max_quantity ?? field.maxQty ?? field.max ?? field.MAX ?? field.MAXQNT ?? field.maxqnt);
       if (minQty === null && fMin !== null) minQty = fMin;
       if (maxQty === null && fMax !== null) maxQty = fMax;
 
@@ -184,7 +192,7 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     }
   }
 
-  // 3. Extract limits from service name, info, or description if it's an explicit quantity service
+  // 3. Extract limits from service name, info, or description
   const combinedText = `${sName} ${sInfo} ${sDesc}`;
   const textLimits = extractLimitsFromText(combinedText);
   if (minQty === null && textLimits.min !== null) minQty = textLimits.min;
@@ -207,40 +215,42 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     /بأي\s*كمية|كمية\s*مخصصة/i.test(sName) ||
     /بأي\s*كمية|كمية\s*مخصصة/i.test(sInfo);
 
-  // Check if provider explicitly declared this is NOT a quantity service
+  // Check if provider explicitly declared quantity status
+  const rawQntFlag =
+    s.QNT ??
+    s.qnt ??
+    s.REQUIRES_QUANTITY ??
+    s.requires_quantity ??
+    s.supports_quantity ??
+    s.supportsQty;
+
   const isExplicitlyDisabled =
-    s.requires_quantity === false ||
-    s.REQUIRES_QUANTITY === false ||
-    s.REQUIRES_QUANTITY === "0" ||
-    s.supports_quantity === false ||
+    rawQntFlag === false ||
+    rawQntFlag === "0" ||
+    rawQntFlag === 0 ||
     s.supportsQty === false;
 
-  // Check if service is an IMEI service (IMEI services are per-device, never quantity based)
-  const isImei =
-    s.api_service_type === "imei" ||
-    s.service_type === "imei" ||
-    String(s.category_name || "").toLowerCase().includes("imei") ||
-    String(s.dhruCategory?.name || "").toLowerCase().includes("imei");
-
-  // 5. Explicit provider quantity attributes (must be explicit boolean or true upper range max > 1)
+  // 5. Explicit provider quantity attributes
   const hasExplicitProviderQuantityAttr =
+    rawQntFlag === "1" ||
+    rawQntFlag === 1 ||
+    rawQntFlag === true ||
     s.REQUIRES_QUANTITY === "1" ||
     s.REQUIRES_QUANTITY === true ||
     s.requires_quantity === true ||
     s.supports_quantity === true ||
     s.supportsQty === true ||
     s.supportsQty === "1" ||
-    (maxQty !== null && maxQty > 1 && (minQty === null || maxQty > minQty));
+    (minQty !== null && minQty > 1) ||
+    (maxQty !== null && maxQty > 1);
 
   // Determine if service truly supports dynamic quantity
   const supportsQty = Boolean(
     !isExplicitlyDisabled &&
     (
+      hasExplicitProviderQuantityAttr ||
       hasQuantityNamePattern ||
-      (!isImei && (
-        hasExplicitQuantityField ||
-        hasExplicitProviderQuantityAttr
-      ))
+      hasExplicitQuantityField
     )
   );
 

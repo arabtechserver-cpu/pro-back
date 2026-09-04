@@ -220,3 +220,11 @@ model WalletTransaction {
   status    String   @default("completed")
   createdAt DateTime @default(now())
 }
+
+model Setting {
+  key       String   @id
+  value     String   @db.Text
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+}
+

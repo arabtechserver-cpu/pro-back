@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { isAdmin } from '../middleware/auth';
+import { prisma } from '../utils/prisma';
 
 const router = Router();
 const DATA_FILE = path.join(__dirname, '../data/currencies.json');
@@ -52,20 +53,20 @@ const DEFAULT_CONFIG: CurrencyConfig = {
   bankak: {
     accountNumber: "6302273",
     accountName: "حسن",
-    instructionsAr: "حول المبلغ بالجنيه السوداني عبر تطبيق بنكك إلى رقم الحساب (6302273) باسم حسن ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
-    instructionsEn: "Transfer in Sudanese Pounds via Bankak app to account # 6302273 (Hassan) then upload the transfer receipt image.",
+    instructionsAr: "حول المبلغ بالجنيه السوداني عبر تطبيق بنكك إلى رقم الحساب ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
+    instructionsEn: "Transfer in Sudanese Pounds via Bankak app then upload the transfer receipt image.",
     isActive: true
   },
   vodafone: {
     walletNumber: "01097160605",
-    instructionsAr: "حول المبلغ إلى رقم المحفظة (01097160605) واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",
-    instructionsEn: "Transfer funds to wallet number 01097160605 then attach receipt screenshot.",
+    instructionsAr: "حول المبلغ إلى رقم المحفظة واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",
+    instructionsEn: "Transfer funds to wallet number then attach receipt screenshot.",
     isActive: true
   },
   binance: {
     payId: "894642115",
-    instructionsAr: "افتح تطبيق باينانس واكتب معرف Binance Pay ID (894642115) ثم ارفق لقطة الشاشة للتأكيد.",
-    instructionsEn: "Open Binance App and send funds via Pay ID (894642115) then attach payment screenshot.",
+    instructionsAr: "افتح تطبيق باينانس واكتب معرف Binance Pay ID ثم ارفق لقطة الشاشة للتأكيد.",
+    instructionsEn: "Open Binance App and send funds via Pay ID then attach payment screenshot.",
     isActive: true
   },
   cryptoBnb: {
@@ -81,7 +82,7 @@ const DEFAULT_CONFIG: CurrencyConfig = {
   }
 };
 
-function readConfig(): CurrencyConfig {
+function readConfigFile(): CurrencyConfig {
   try {
     if (!fs.existsSync(path.dirname(DATA_FILE))) {
       fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
@@ -91,12 +92,12 @@ function readConfig(): CurrencyConfig {
       return { ...DEFAULT_CONFIG, ...JSON.parse(data) };
     }
   } catch (err) {
-    console.error('Failed to read currencies config:', err);
+    console.error('Failed to read currencies config file:', err);
   }
   return DEFAULT_CONFIG;
 }
 
-function writeConfig(config: CurrencyConfig): boolean {
+function writeConfigFile(config: CurrencyConfig): boolean {
   try {
     if (!fs.existsSync(path.dirname(DATA_FILE))) {
       fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
@@ -104,21 +105,53 @@ function writeConfig(config: CurrencyConfig): boolean {
     fs.writeFileSync(DATA_FILE, JSON.stringify(config, null, 2), 'utf-8');
     return true;
   } catch (err) {
-    console.error('Failed to write currencies config:', err);
+    console.error('Failed to write currencies config file:', err);
+    return false;
+  }
+}
+
+// Load config from Database (Setting table) with fallback to file
+async function loadConfig(): Promise<CurrencyConfig> {
+  try {
+    const record = await prisma.setting.findUnique({
+      where: { key: 'currencies_config' }
+    });
+    if (record && record.value) {
+      const parsed = JSON.parse(record.value);
+      return { ...DEFAULT_CONFIG, ...parsed };
+    }
+  } catch (err) {
+    console.warn('Could not read currencies from Setting table, falling back to local file:', err);
+  }
+  return readConfigFile();
+}
+
+// Save config to Database (Setting table) and local file as backup
+async function saveConfig(config: CurrencyConfig): Promise<boolean> {
+  writeConfigFile(config);
+  try {
+    await prisma.setting.upsert({
+      where: { key: 'currencies_config' },
+      update: { value: JSON.stringify(config) },
+      create: { key: 'currencies_config', value: JSON.stringify(config) }
+    });
+    return true;
+  } catch (err) {
+    console.error('Failed to persist currencies in database:', err);
     return false;
   }
 }
 
 // GET /api/currencies - Public & Authenticated endpoint to get current exchange rates & bank details
-router.get('/', (req, res) => {
-  const config = readConfig();
+router.get('/', async (req, res) => {
+  const config = await loadConfig();
   res.json({ success: true, config });
 });
 
 // POST /api/currencies - Admin endpoint to update currency rates and payment settings
-router.post('/', isAdmin, (req, res) => {
+router.post('/', isAdmin, async (req, res) => {
   try {
-    const current = readConfig();
+    const current = await loadConfig();
     const {
       usdToSdg,
       usdToEgp,
@@ -144,19 +177,16 @@ router.post('/', isAdmin, (req, res) => {
       updatedAt: new Date().toISOString()
     };
 
-    const saved = writeConfig(updatedConfig);
-    if (!saved) {
-      return res.status(500).json({ error: 'فشل حفظ إعدادات العملات وأسعار الصرف' });
-    }
+    await saveConfig(updatedConfig);
 
     return res.json({
       success: true,
-      message: 'تم تحديث أسعار الصرف وبيانات الحسابات بنجاح!',
+      message: 'تم حفظ وتثبيت أسعار الصرف وبيانات الحسابات في قاعدة البيانات بنجاح!',
       config: updatedConfig
     });
   } catch (error: any) {
     console.error('Error updating currency config:', error);
-    return res.status(500).json({ error: 'حدث خطأ غير متوقع أثناء الحفظ' });
+    return res.status(500).json({ error: 'حدث خطأ أثناء حفظ الإعدادات في قاعدة البيانات' });
   }
 });
 

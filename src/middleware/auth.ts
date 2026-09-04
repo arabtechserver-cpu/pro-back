@@ -56,6 +56,7 @@ function extractCandidateTokens(req: Request): string[] {
       req.originalUrl.includes('/admin') ||
       req.originalUrl.includes('/providers') ||
       req.originalUrl.includes('/settings') ||
+      req.originalUrl.includes('/currencies') ||
       req.originalUrl.includes('/users')
     ));
 

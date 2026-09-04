@@ -19,6 +19,14 @@ import { syncDhruServices, cleanServiceName } from '../scripts/syncDhruServices'
 import { serializeAdminServiceCategories, serializePricingServiceCategories } from "../utils/admin-service-response";
 import { getServiceQuantityConfig, enrichCustomFieldsWithQuantity } from '../utils/provider-quantity';
 
+// In-memory cache for ultra-fast pricing responses without database re-querying
+let pricingCache: { data: any; timestamp: number; etag: string } | null = null;
+const PRICING_CACHE_TTL = 60 * 1000; // 60 seconds TTL
+
+export function invalidateDhruServicesCache() {
+  pricingCache = null;
+}
+
 router.get('/services', (req, res, next) => {
   if (req.query.all === 'true') return isAdmin(req, res, next);
   return next();
@@ -26,6 +34,18 @@ router.get('/services', (req, res, next) => {
   try {
     const { all } = req.query;
     const isPricingView = req.query.view === "pricing";
+
+    // Instant in-memory cache check for pricing view
+    if (isPricingView && all !== 'true' && pricingCache && (Date.now() - pricingCache.timestamp < PRICING_CACHE_TTL)) {
+      const clientEtag = req.headers['if-none-match'];
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+      res.setHeader('ETag', pricingCache.etag);
+      if (clientEtag && clientEtag === pricingCache.etag) {
+        return res.status(304).end();
+      }
+      return res.json(pricingCache.data);
+    }
+
     const categories = await prisma.dhruCategory.findMany({
       select: {
         id: true,
@@ -54,6 +74,17 @@ router.get('/services', (req, res, next) => {
       ? serializePricingServiceCategories(categories, cleanServiceName)
       : serializeAdminServiceCategories(categories, cleanServiceName);
 
+    if (isPricingView && all !== 'true') {
+      const etag = `"${Buffer.from(`${Date.now()}_${cleanedCategories.length}`).toString('base64')}"`;
+      pricingCache = {
+        data: cleanedCategories,
+        timestamp: Date.now(),
+        etag
+      };
+      res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
+      res.setHeader('ETag', etag);
+    }
+
     res.json(cleanedCategories);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch Dhru services from DB' });
@@ -79,6 +110,7 @@ router.post('/services/toggle', isAdmin, async (req, res) => {
       data: { isActive: nextState }
     });
 
+    invalidateDhruServicesCache();
     res.json({ success: true, service: updated, message: nextState ? 'تم إظهار الخدمة للعملاء' : 'تم إخفاء الخدمة عن العملاء' });
   } catch (error) {
     console.error('Toggle service error:', error);
@@ -106,6 +138,7 @@ router.post('/services/toggle-group', isAdmin, async (req, res) => {
       data: { isActive: nextState }
     });
 
+    invalidateDhruServicesCache();
     res.json({
       success: true,
       count: result.count,
@@ -184,6 +217,7 @@ router.post('/services/update', isAdmin, async (req, res) => {
       data: updateData
     });
 
+    invalidateDhruServicesCache();
     res.json({ success: true, service: updated, message: 'تم حفظ تعديلات الخدمة بنجاح' });
   } catch (error) {
     console.error('Update service error:', error);
@@ -302,6 +336,7 @@ router.post('/services/delete-all', isAdmin, async (req, res) => {
     const deletedServices = await prisma.dhruService.deleteMany({});
     const deletedCategories = await prisma.dhruCategory.deleteMany({});
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       servicesCount: deletedServices.count,
@@ -340,6 +375,7 @@ router.post('/services/bulk-margin', isAdmin, async (req, res) => {
         where: whereClause,
         data: { margin: numVal }
       });
+      invalidateDhruServicesCache();
       return res.json({
         success: true,
         updatedCount: result.count,
@@ -368,6 +404,7 @@ router.post('/services/bulk-margin', isAdmin, async (req, res) => {
       updatedCount++;
     }
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       updatedCount,

@@ -11,6 +11,7 @@ import {
   getServiceQuantityConfig,
   enrichCustomFieldsWithQuantity
 } from "../utils/provider-quantity";
+import { invalidateDhruServicesCache } from "./dhru";
 
 const router = Router();
 
@@ -1355,6 +1356,7 @@ export async function persistProviderServicesList(
     data: { servicesCount: totalSynced }
   });
 
+  invalidateDhruServicesCache();
   return totalSynced;
 }
 
@@ -1513,6 +1515,7 @@ router.post("/:id/import-services", async (req, res) => {
       }
     });
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       count,
@@ -1598,6 +1601,7 @@ router.post("/:id/toggle-packages", async (req, res) => {
       }
     });
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       count: result.count,
@@ -1627,6 +1631,7 @@ router.post("/:id/toggle-all", async (req, res) => {
       }
     });
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       count: result.count,
@@ -1653,6 +1658,7 @@ router.post("/:id/toggle-service", async (req, res) => {
       data: { isActive: Boolean(isActive) }
     });
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       service: updated,

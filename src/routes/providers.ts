@@ -900,6 +900,225 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
 router.get("/:id/fetch-services", fetchRemoteServicesHandler);
 router.post("/:id/fetch-services", fetchRemoteServicesHandler);
 
+// Helper to build comprehensive provider export JSON
+async function buildProviderExportData(provider: any, includeRaw = true) {
+  // 1. Fetch DB services
+  const dbServices = await prisma.dhruService.findMany({
+    where: { providerId: provider.id },
+    include: { dhruCategory: true }
+  });
+
+  // 2. Fetch live remote services if credentials exist
+  let rawApiResponses: any = {};
+  let remoteServices: any[] = [];
+
+  if (provider.apiUrl && provider.apiKey) {
+    try {
+      const [imeiRes, serverRes, remoteRes] = await Promise.all([
+        makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist"),
+        makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
+        makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
+      ]);
+
+      if (includeRaw) {
+        rawApiResponses = {
+          imeiservicelist: imeiRes.data,
+          serverservicelist: serverRes.data,
+          remoteservicelist: remoteRes.data
+        };
+      }
+
+      remoteServices = parseAllProviderServices(imeiRes, serverRes, remoteRes);
+    } catch (apiErr) {
+      console.warn(`Could not fetch live API services for provider ${provider.name}:`, apiErr);
+    }
+  }
+
+  // Combine & cross-reference services
+  const allServicesList = remoteServices.length > 0 ? remoteServices : dbServices.map(s => {
+    let customFields = [];
+    try {
+      customFields = s.requiresCustom ? JSON.parse(s.requiresCustom) : [];
+    } catch {}
+    const qtyLimits = extractQuantityLimits(s, customFields);
+    return {
+      id: s.id,
+      service_id: s.dhruId,
+      name: s.name,
+      group_name: s.groupName || "General",
+      category_name: s.dhruCategory?.name || "General",
+      service_type: s.dhruCategory?.name === "IMEI Service" ? "imei" : (s.dhruCategory?.name === "Remote Service" ? "remote" : "server"),
+      credit: Number(s.credit) || 0,
+      price: Number(s.credit) || 0,
+      margin: Number(s.margin) || 0,
+      finalPrice: Number((Number(s.credit) || 0) + (Number(s.margin) || 0)),
+      time: s.time || "",
+      info: s.info || "",
+      customFields,
+      requiresCustom: s.requiresCustom,
+      supportsQty: qtyLimits.supportsQty,
+      minQty: qtyLimits.minQty,
+      maxQty: qtyLimits.maxQty,
+      isActive: s.isActive,
+      isImported: true
+    };
+  });
+
+  // Cross-reference with DB services
+  const dbMap = new Map<string, any>();
+  for (const ds of dbServices) {
+    if (ds.dhruId) dbMap.set(ds.dhruId, ds);
+    dbMap.set(ds.id, ds);
+  }
+
+  const enrichedServices = allServicesList.map(s => {
+    const remoteId = String(s.id || s.service_id);
+    const fullDhruId = buildProviderServiceId(provider.id, remoteId);
+    const matchedDb = dbMap.get(fullDhruId) || dbMap.get(remoteId);
+
+    return {
+      id: s.id,
+      service_id: remoteId,
+      name: s.name,
+      group_name: s.group_name || s.groupName || "General",
+      category_name: s.category_name || (s.service_type === "imei" ? "IMEI Service" : "Server Service"),
+      service_type: s.service_type || "server",
+      credit: Number(s.credit || s.price) || 0,
+      price: Number(s.credit || s.price) || 0,
+      margin: matchedDb ? Number(matchedDb.margin) : 0,
+      sellingPrice: matchedDb ? Number(((Number(matchedDb.credit) || 0) + (Number(matchedDb.margin) || 0)).toFixed(2)) : Number((Number(s.credit || s.price) || 0).toFixed(2)),
+      time: s.time || "1-24 Hours",
+      info: s.info || "",
+      customFields: s.customFields || [],
+      requiresCustom: s.requiresCustom || null,
+      supportsQty: Boolean(s.supportsQty || s.supports_quantity),
+      minQty: s.minQty ?? 1,
+      maxQty: s.maxQty ?? 0,
+      isImported: Boolean(matchedDb),
+      isActive: matchedDb ? matchedDb.isActive : Boolean(s.isActive),
+      databaseId: matchedDb?.id || null,
+      fullDhruId: matchedDb?.dhruId || fullDhruId
+    };
+  });
+
+  // Group services by package / group name
+  const packagesMap: Record<string, any[]> = {};
+  for (const s of enrichedServices) {
+    const pkg = s.group_name || "باقة عامة";
+    if (!packagesMap[pkg]) packagesMap[pkg] = [];
+    packagesMap[pkg].push(s);
+  }
+
+  const packages = Object.entries(packagesMap).map(([packageName, services]) => ({
+    packageName,
+    servicesCount: services.length,
+    serviceTypes: Array.from(new Set(services.map(srv => srv.service_type || srv.category_name))),
+    services
+  }));
+
+  const typeCounts = {
+    imei: enrichedServices.filter(s => (s.service_type === "imei" || s.category_name === "IMEI Service")).length,
+    server: enrichedServices.filter(s => (s.service_type === "server" || s.category_name === "Server Service")).length,
+    remote: enrichedServices.filter(s => (s.service_type === "remote" || s.category_name === "Remote Service")).length
+  };
+
+  return {
+    provider: {
+      id: provider.id,
+      name: provider.name,
+      apiUrl: provider.apiUrl,
+      username: provider.username,
+      apiKey: provider.apiKey,
+      type: provider.type,
+      isActive: provider.isActive,
+      balance: provider.balance,
+      currency: provider.currency,
+      servicesCount: enrichedServices.length,
+      createdAt: provider.createdAt,
+      updatedAt: provider.updatedAt
+    },
+    metadata: {
+      exportedAt: new Date().toISOString(),
+      system: "Arab Tech Pro Server",
+      totalServices: enrichedServices.length,
+      totalPackages: packages.length,
+      servicesByType: typeCounts
+    },
+    packages,
+    services: enrichedServices,
+    databaseServices: dbServices,
+    ...(includeRaw && Object.keys(rawApiResponses).length > 0 ? { rawApiResponses } : {})
+  };
+}
+
+// GET /api/providers/export-all-data - Export full data for ALL providers
+router.get("/export-all-data", async (req, res) => {
+  try {
+    const providers = await prisma.apiProvider.findMany({
+      orderBy: { createdAt: "asc" }
+    });
+
+    const exportList = [];
+    for (const provider of providers) {
+      const pData = await buildProviderExportData(provider, false);
+      exportList.push(pData);
+    }
+
+    const fullExport = {
+      metadata: {
+        exportedAt: new Date().toISOString(),
+        system: "Arab Tech Pro Server",
+        totalProviders: providers.length,
+        totalServicesAcrossProviders: exportList.reduce((acc, p) => acc + (p.metadata?.totalServices || 0), 0)
+      },
+      providers: exportList
+    };
+
+    if (req.query.download === "true") {
+      const filename = `all_providers_full_data_${new Date().toISOString().slice(0, 10)}.json`;
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "application/json");
+    }
+
+    return res.json({
+      success: true,
+      data: fullExport
+    });
+  } catch (error: any) {
+    console.error("Export all providers error:", error);
+    return res.status(500).json({ error: "فشل تصدير بيانات المزودين: " + (error.message || "") });
+  }
+});
+
+// GET /api/providers/:id/export-full-data - Export complete data for a single provider
+router.get("/:id/export-full-data", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const provider = await prisma.apiProvider.findUnique({ where: { id } });
+    if (!provider) {
+      return res.status(404).json({ error: "المزود غير موجود" });
+    }
+
+    const includeRaw = req.query.include_raw !== "false";
+    const exportData = await buildProviderExportData(provider, includeRaw);
+
+    if (req.query.download === "true") {
+      const cleanName = provider.name.replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+      const filename = `provider_${cleanName}_full_data_${new Date().toISOString().slice(0, 10)}.json`;
+      res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+      res.setHeader("Content-Type", "application/json");
+    }
+
+    return res.json({
+      success: true,
+      data: exportData
+    });
+  } catch (error: any) {
+    console.error("Export provider full data error:", error);
+    return res.status(500).json({ error: "فشل تصدير بيانات المزود: " + (error.message || "") });
+  }
+});
+
 // Helper function to persist/upsert any list of provider services into DB
 export async function persistProviderServicesList(
   provider: { id: string },

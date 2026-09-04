@@ -89,15 +89,30 @@ const service7 = {
 const limits7 = extractQuantityLimits(service7);
 assert.equal(limits7.supportsQty, false);
 
-// 3. enrichCustomFieldsWithQuantity tests
-const customFields = [
-  { field_id: "Username", name: "Username", type: "text" },
-  { field_id: "QNT", name: "custom_QNT", type: "text" }
+// Case H: IMEI bypass service with min_quantity: 1 and ECID must NOT support quantity
+const service8 = {
+  name: "iEZPro Premium for A12 Bypass Passcode With Signal - MAC TOOL",
+  groupName: "⚡ iEZPro Tools | Direct Source",
+  api_service_type: "imei",
+  category_name: "IMEI Service",
+  min_quantity: 1,
+  requiresCustom: JSON.stringify({
+    ecid: { reqid: "ecid", fieldname: "custom_ecid", fieldtype: "text", required: "1" }
+  })
+};
+const limits8 = extractQuantityLimits(service8);
+assert.equal(limits8.supportsQty, false);
+assert.equal(limits8.minQty, 1);
+assert.equal(limits8.maxQty, 0);
+
+// Case I: Non-quantity service must filter out any leftover synthetic custom_QNT
+const fieldsWithStaleQNT = [
+  { field_id: "ecid", name: "custom_ecid", type: "text" },
+  { field_id: "custom_QNT", name: "QNT", type: "quantity" }
 ];
-const enriched = enrichCustomFieldsWithQuantity(customFields, limits2);
-assert.equal(enriched[1].type, "quantity");
-assert.equal(enriched[1].fieldtype, "quantity");
-assert.equal(enriched[1].min_quantity, 10);
-assert.equal(enriched[1].max_quantity, 1000);
+const cleanedFields = enrichCustomFieldsWithQuantity(fieldsWithStaleQNT, limits8);
+assert.equal(cleanedFields.length, 1);
+assert.equal(cleanedFields[0].field_id, "ecid");
 
 console.log("provider quantity tests passed successfully");
+

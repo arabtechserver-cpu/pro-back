@@ -207,22 +207,41 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     /بأي\s*كمية|كمية\s*مخصصة/i.test(sName) ||
     /بأي\s*كمية|كمية\s*مخصصة/i.test(sInfo);
 
-  // 5. Explicit provider quantity attributes
+  // Check if provider explicitly declared this is NOT a quantity service
+  const isExplicitlyDisabled =
+    s.requires_quantity === false ||
+    s.REQUIRES_QUANTITY === false ||
+    s.REQUIRES_QUANTITY === "0" ||
+    s.supports_quantity === false ||
+    s.supportsQty === false;
+
+  // Check if service is an IMEI service (IMEI services are per-device, never quantity based)
+  const isImei =
+    s.api_service_type === "imei" ||
+    s.service_type === "imei" ||
+    String(s.category_name || "").toLowerCase().includes("imei") ||
+    String(s.dhruCategory?.name || "").toLowerCase().includes("imei");
+
+  // 5. Explicit provider quantity attributes (must be explicit boolean or true upper range max > 1)
   const hasExplicitProviderQuantityAttr =
-    (rawMin !== undefined && rawMin !== null && rawMin !== "" && Number(rawMin) > 0) ||
-    (rawMax !== undefined && rawMax !== null && rawMax !== "" && Number(rawMax) > 0) ||
     s.REQUIRES_QUANTITY === "1" ||
     s.REQUIRES_QUANTITY === true ||
     s.requires_quantity === true ||
     s.supports_quantity === true ||
     s.supportsQty === true ||
-    s.supportsQty === "1";
+    s.supportsQty === "1" ||
+    (maxQty !== null && maxQty > 1 && (minQty === null || maxQty > minQty));
 
   // Determine if service truly supports dynamic quantity
   const supportsQty = Boolean(
-    hasExplicitQuantityField ||
-    hasExplicitProviderQuantityAttr ||
-    hasQuantityNamePattern
+    !isExplicitlyDisabled &&
+    (
+      hasQuantityNamePattern ||
+      (!isImei && (
+        hasExplicitQuantityField ||
+        hasExplicitProviderQuantityAttr
+      ))
+    )
   );
 
   const finalMin = supportsQty && minQty !== null && minQty > 0 ? minQty : 1;
@@ -257,6 +276,14 @@ export function enrichCustomFieldsWithQuantity(
 ): any[] {
   if (!Array.isArray(customFields)) return [];
 
+  // If service does not support quantity, strip any erroneously injected QNT fields
+  if (!quantityLimits.supportsQty) {
+    return customFields.filter((field) => {
+      const fid = String(field?.field_id || field?.reqid || field?.name || field?.id || "").trim();
+      return fid !== "custom_QNT" && fid !== "QNT";
+    });
+  }
+
   let foundQuantityField = false;
 
   const enriched = customFields.map((field) => {
@@ -270,6 +297,7 @@ export function enrichCustomFieldsWithQuantity(
         fieldtype: "quantity",
         is_quantity: true,
         label: field.label || "الكمية (Quantity)",
+        required: false,
         min_quantity: quantityLimits.minQty,
         max_quantity: quantityLimits.maxQty
       };
@@ -289,7 +317,7 @@ export function enrichCustomFieldsWithQuantity(
       type: "quantity",
       fieldtype: "quantity",
       is_quantity: true,
-      required: true,
+      required: false,
       description: `الحد الأدنى: ${quantityLimits.minQty}${quantityLimits.maxQty > 0 ? ` | الحد الأقصى: ${quantityLimits.maxQty}` : ""}`,
       placeholder: `أدخل الكمية المطلوبة`,
       options: [],

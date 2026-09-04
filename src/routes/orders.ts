@@ -165,8 +165,10 @@ router.post('/', authenticateToken, async (req, res) => {
   try {
     const { serviceId, serviceName, targetInput, rawImei, quantity, notes, customFields } = req.body;
 
-    if (!serviceId || !serviceName || !targetInput) {
-      return res.status(400).json({ error: 'يرجى تعبئة جميع بيانات الطلب (الخدمة والرقم المطلوب)' });
+    const finalTargetInput = (targetInput && String(targetInput).trim()) || (rawImei && String(rawImei).trim()) || 'طلب فوري';
+
+    if (!serviceId || !serviceName) {
+      return res.status(400).json({ error: 'يرجى اختيار الخدمة المطلوبة' });
     }
 
     const targetUserId = (req as any).user?.id;
@@ -261,7 +263,7 @@ router.post('/', authenticateToken, async (req, res) => {
         userId: targetUserId,
         serviceId: String(serviceId),
         serviceName: String(serviceName).trim(),
-        targetInput: String(targetInput).trim(),
+        targetInput: finalTargetInput,
         quantity: qty,
         price: totalPrice,
         status: 'pending',

@@ -63,35 +63,64 @@ export function buildOrderFieldDetails(
   const submittedEntries = Object.entries(submittedFields || {});
   const usedKeys = new Set<string>();
 
-  const details = definitions.map((field: any) => {
+  const details: OrderFieldDetail[] = [];
+  const seenNormLabels = new Set<string>();
+
+  definitions.forEach((field: any) => {
     const id = String(field?.id || field?.name || field?.field_id || field?.reqid || "field");
     const providerFieldId = String(
       field?.field_id || field?.reqid || field?.REQID || field?.api_name || id
     );
-    const aliases = [id, providerFieldId, field?.name, field?.label]
+    const rawAliases = [id, providerFieldId, field?.name, field?.label]
       .filter(Boolean)
       .map((alias) => String(alias).toLowerCase());
-    const submitted = submittedEntries.find(([key]) => aliases.includes(key.toLowerCase()));
-    if (submitted) usedKeys.add(submitted[0]);
+
+    const expandedAliases = new Set<string>();
+    rawAliases.forEach((a) => {
+      expandedAliases.add(a);
+      const stripped = a.replace(/^custom_/i, "").trim();
+      if (stripped) {
+        expandedAliases.add(stripped);
+        expandedAliases.add(`custom_${stripped}`);
+      }
+    });
+
+    const submitted = submittedEntries.find(([key]) => expandedAliases.has(key.toLowerCase()));
+    
+    // Mark ALL matching entries as used so aliases like QNT and custom_QNT don't duplicate
+    submittedEntries.forEach(([key]) => {
+      const cleanKey = key.toLowerCase().replace(/^custom_/i, "").trim();
+      if (expandedAliases.has(key.toLowerCase()) || (cleanKey && expandedAliases.has(cleanKey))) {
+        usedKeys.add(key);
+      }
+    });
 
     const value = submitted ? String(submitted[1] ?? "") : "";
     const required = field?.required === true
       || field?.required === 1
       || ["1", "true", "on", "yes"].includes(String(field?.required || "").toLowerCase());
 
-    return {
-      id,
-      providerFieldId,
-      label: providerFieldId.replace(/^custom_/i, "").trim() || id,
-      type: String(field?.type || field?.fieldtype || "text"),
-      required,
-      value,
-      missing: required && !value.trim()
-    };
+    const normLabel = providerFieldId.toLowerCase().replace(/^custom_/i, "").trim() || id.toLowerCase();
+    if (!seenNormLabels.has(normLabel)) {
+      seenNormLabels.add(normLabel);
+      details.push({
+        id,
+        providerFieldId,
+        label: providerFieldId.replace(/^custom_/i, "").trim() || id,
+        type: String(field?.type || field?.fieldtype || "text"),
+        required,
+        value,
+        missing: required && !value.trim()
+      });
+    }
   });
 
   for (const [key, rawValue] of submittedEntries) {
     if (usedKeys.has(key)) continue;
+    const normKey = key.toLowerCase().replace(/^custom_/i, "").trim();
+    if (seenNormLabels.has(normKey)) continue;
+    seenNormLabels.add(normKey);
+
     const value = String(rawValue ?? "");
     details.push({
       id: key,

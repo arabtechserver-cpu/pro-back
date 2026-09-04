@@ -46,7 +46,18 @@ function extractCandidateTokens(req: Request): string[] {
   }
 
   // If request explicitly asks for all orders or admin operations, prioritize admin_token cookie!
-  const isExplicitAdminQuery = req.query.all === 'true' || req.query.all === '1' || (req.originalUrl && req.originalUrl.includes('all=true'));
+  const isExplicitAdminQuery =
+    req.query.all === 'true' ||
+    req.query.all === '1' ||
+    Boolean(req.headers['x-admin-token']) ||
+    (req.originalUrl && (
+      req.originalUrl.includes('all=true') ||
+      req.originalUrl.includes('/analytics') ||
+      req.originalUrl.includes('/admin') ||
+      req.originalUrl.includes('/providers') ||
+      req.originalUrl.includes('/settings') ||
+      req.originalUrl.includes('/users')
+    ));
 
   if (isExplicitAdminQuery && cookieAdminToken) {
     tokens.push(cookieAdminToken);

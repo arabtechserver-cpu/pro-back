@@ -41,23 +41,39 @@ assert.deepEqual(
   buildOrderFieldDetails(
     JSON.stringify([
       {
-        id: "custom_PlayerID",
-        field_id: "PlayerID",
-        label: "custom_PlayerID",
+        id: "custom_QNT",
+        field_id: "QNT",
+        label: "QNT",
+        type: "text",
+        required: true
+      },
+      {
+        id: "custom_email",
+        field_id: "email",
+        label: "email",
         type: "text",
         required: true
       }
     ]),
-    { custom_PlayerID: "51470430069" }
+    { QNT: "2", custom_QNT: "2", custom_email: "belalabdaltwap@gmail.com" }
   ),
   [
     {
-      id: "custom_PlayerID",
-      providerFieldId: "PlayerID",
-      label: "PlayerID",
+      id: "custom_QNT",
+      providerFieldId: "QNT",
+      label: "QNT",
       type: "text",
       required: true,
-      value: "51470430069",
+      value: "2",
+      missing: false
+    },
+    {
+      id: "custom_email",
+      providerFieldId: "email",
+      label: "email",
+      type: "text",
+      required: true,
+      value: "belalabdaltwap@gmail.com",
       missing: false
     }
   ]

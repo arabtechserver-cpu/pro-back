@@ -86,12 +86,20 @@ router.get('/summary', isAdmin, async (req, res) => {
       
     const topServices = await Promise.all(
       topServiceIds.map(async ([id, count]) => {
-        const service = await prisma.dhruService.findUnique({ where: { id } });
-        return {
-          id,
-          name: service?.name || 'Unknown Service',
-          views: count
-        };
+        try {
+          const service = await prisma.dhruService.findFirst({
+            where: {
+              OR: [{ id: String(id) }, { dhruId: String(id) }]
+            }
+          });
+          return {
+            id,
+            name: service?.name || 'Unknown Service',
+            views: count
+          };
+        } catch {
+          return { id, name: 'Unknown Service', views: count };
+        }
       })
     );
 
@@ -275,11 +283,11 @@ router.get('/provider-orders', isAdmin, async (req, res) => {
       ];
     }
 
-    const [orders, totalCount, servicesList] = await Promise.all([
+    const [orders, totalCount, rawServices] = await Promise.all([
       prisma.order.findMany({
         where,
         orderBy: { createdAt: 'desc' },
-        take: 300,
+        take: 500,
         include: {
           user: {
             select: { id: true, fullName: true, email: true, username: true }
@@ -290,9 +298,11 @@ router.get('/provider-orders', isAdmin, async (req, res) => {
       prisma.order.findMany({
         where: { apiOrderId: { not: null } },
         select: { serviceName: true },
-        distinct: ['serviceName']
+        take: 1000
       })
     ]);
+
+    const servicesList = Array.from(new Set(rawServices.map((s) => s.serviceName).filter(Boolean)));
 
     const completedOrders = orders.filter((o) => o.status === 'completed');
     const totalVolume = orders.reduce((sum, o) => sum + (o.price || 0), 0);
@@ -303,7 +313,7 @@ router.get('/provider-orders', isAdmin, async (req, res) => {
       data: {
         orders,
         totalCount,
-        servicesList: servicesList.map((s) => s.serviceName).filter(Boolean),
+        servicesList,
         summary: {
           total: totalCount,
           completedCount: completedOrders.length,

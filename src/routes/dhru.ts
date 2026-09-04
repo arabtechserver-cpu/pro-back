@@ -275,7 +275,7 @@ router.post('/services/notify', isAdmin, async (req, res) => {
     const price = (credit + margin).toFixed(2);
 
     const title = `خدمة وتفعيل جديد: ${service.name}`;
-    const message = customMessage || `يسرنا إعلامكم بتوفر خدمة وتفعيل (${service.name}) عبر سيرفر عرب تك برو بسعر $${price} USD وبتسليم فوري.\n\nتفضل بطلب الخدمة الآن عبر المنصة.`;
+    const message = customMessage || `يسرنا إعلامكم بتوفر خدمة وتفعيل (${service.name}) عبر سيرفر الوفاق بسعر $${price} USD وبتسليم فوري.\n\nتفضل بطلب الخدمة الآن عبر المنصة.`;
 
     const result = await broadcastNewItemToSubscribers({
       title,

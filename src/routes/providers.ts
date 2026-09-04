@@ -431,7 +431,7 @@ router.get("/", async (req, res) => {
     // If empty, initialize the default primary provider
     if (providers.length === 0) {
       const realProvider = {
-        name: "سيرفر عرب تك (Dhru Fusion API)",
+        name: "سيرفر الوفاق (Dhru Fusion API)",
         apiUrl: process.env.DHRU_API_URL || "https://arab-tech1.online/api/v1",
         username: process.env.DHRU_USERNAME || "mina15g4y",
         apiKey: process.env.DHRU_API_KEY || "3AE-27F-14D-104-830-375-6D",
@@ -747,7 +747,8 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
 
     for (const g of groups) {
       if (!g) continue;
-      const groupName = g.GROUPNAME || g.groupName || g.name || (type === "imei" ? "IMEI Services" : "Server Services");
+      const rawGroupName = String(g.GROUPNAME || g.groupName || g.name || "").trim();
+      const groupName = rawGroupName || (type === "imei" ? "IMEI Services" : "Server Services");
       const rawServices = Array.isArray(g.SERVICES) ? g.SERVICES : (g.SERVICES && typeof g.SERVICES === "object" ? Object.values(g.SERVICES) : (g.SERVICEID ? [g] : []));
 
       for (const s of rawServices as any[]) {
@@ -755,8 +756,8 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
         const rawCustomFields = extractCustomFields(s);
         const normalizedFields = rawCustomFields.map(normalizeCustomField).filter(Boolean);
 
-        const sId = String(s.SERVICEID || s.id || s.ID || "");
-        const sName = String(s.SERVICENAME || s.name || s.NAME || "");
+        const sId = String(s.SERVICEID || s.id || s.ID || "").trim();
+        const sName = String(s.SERVICENAME || s.name || s.NAME || "").trim();
         const sCredit = parseFloat(s.CREDIT || s.credit || s.PRICE || s.price || "0") || 0;
         const sTime = String(s.TIME || s.time || "1-24 Hours");
         const sInfo = String(s.INFO || s.info || "");
@@ -863,11 +864,25 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       });
     }
 
-    // Automatically persist all fetched services to PostgreSQL DB!
+    // Cross-reference with existing database services to mark which ones are already imported and active
     try {
-      await persistProviderServicesList(provider, services);
-    } catch (saveErr) {
-      console.error("Auto persist on fetch services warning:", saveErr);
+      const existingServices = await prisma.dhruService.findMany({
+        where: { providerId: id },
+        select: { dhruId: true, isActive: true }
+      });
+      const existingMap = new Map<string, boolean>();
+      for (const es of existingServices) {
+        if (es.dhruId) existingMap.set(es.dhruId, es.isActive);
+      }
+
+      for (const s of services) {
+        const dhruId = buildProviderServiceId(provider.id, String(s.id || s.service_id));
+        const isImported = existingMap.has(dhruId);
+        s.isImported = isImported;
+        s.isActive = isImported ? (existingMap.get(dhruId) ?? false) : false;
+      }
+    } catch (dbErr) {
+      console.error("Error cross-referencing DB services on fetch-services preview:", dbErr);
     }
 
     return res.json({
@@ -1108,8 +1123,8 @@ router.post("/:id/import-services", async (req, res) => {
       if (!remoteServiceId) continue;
       const dhruId = buildProviderServiceId(provider.id, remoteServiceId);
 
-      const serviceName = s.name || s.service_name || "";
-      const groupName = s.group_name || s.groupName || "General";
+      const serviceName = String(s.name || s.service_name || "").trim();
+      const groupName = String(s.group_name || s.groupName || "General").trim();
       let credit = (parseFloat(s.credit || s.price) || 0) * rate;
       const margin = markup > 0 ? Number(((credit * markup) / 100).toFixed(2)) : 0;
       const cleanName = cleanServiceName(serviceName, s.info || "", groupName);
@@ -1166,17 +1181,19 @@ router.post("/:id/import-services", async (req, res) => {
       count++;
     }
 
+    const totalCount = await prisma.dhruService.count({ where: { providerId: id } });
     await prisma.apiProvider.update({
       where: { id },
       data: {
-        servicesCount: await prisma.dhruService.count({ where: { providerId: id } })
+        servicesCount: totalCount
       }
     });
 
     return res.json({
       success: true,
       count,
-      message: `تم استيراد وتحديث ${count} خدمة بنجاح!`
+      totalCount,
+      message: `تم استيراد وتفعيل ${count} خدمة بنجاح!`
     });
   } catch (error: any) {
     console.error("Selective import error:", error);

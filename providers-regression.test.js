@@ -102,8 +102,33 @@ function run() {
   assert.ok(parsedServices.length >= 1171, "expected every provider service to be parsed");
   const serviceWithEmail = parsedServices.find((service) => service.service_id === "1477000001");
   assert.equal(serviceWithEmail.group_name, "Haafedk Tool iCloud");
-  assert.equal(serviceWithEmail.customFields[0].name, "custom_Email");
-  assert.equal(serviceWithEmail.customFields[0].required, true);
+  const emailField = serviceWithEmail.customFields.find((f) => f.name === "custom_Email" || f.field_id === "Email");
+  assert.ok(emailField, "expected email custom field to exist");
+  assert.equal(emailField.required, true);
+
+  // Verify group names with leading/trailing whitespace and tabs are trimmed
+  const testWhitespacePayload = {
+    SUCCESS: [
+      {
+        LIST: {
+          "1": {
+            GROUPNAME: "\t Pandonymus PandaX MDM Maker Pro \n",
+            SERVICES: [
+              {
+                SERVICEID: "99901",
+                SERVICENAME: " PandaX License 1 Year ",
+                CREDIT: "15.00"
+              }
+            ]
+          }
+        }
+      }
+    ]
+  };
+  const parsedTrimmed = providers.parseAllProviderServices(null, { data: testWhitespacePayload });
+  assert.equal(parsedTrimmed[0].group_name, "Pandonymus PandaX MDM Maker Pro");
+  assert.equal(parsedTrimmed[0].groupName, "Pandonymus PandaX MDM Maker Pro");
+  assert.equal(parsedTrimmed[0].name, "PandaX License 1 Year");
 
   const prismaSchema = fs.readFileSync(path.join(__dirname, "prisma", "schema.prisma"), "utf8");
   assert.match(prismaSchema, /apiServiceType\s+String\?\s+@map\("api_service_type"\)/);

@@ -158,7 +158,7 @@ router.post('/post', isAdmin, async (req, res) => {
     // Notify subscribers in background about the new article
     broadcastNewItemToSubscribers({
       title: `مقال جديد: ${post.titleAr || post.titleEn}`,
-      message: `${post.excerptAr || post.excerptEn}\n\nتم نشر مقال جديد في مدونة عرب تك برو سيرفر. اضغط على الرابط لقراءة المقال كاملاً والاستفادة من الشرح.`,
+      message: `${post.excerptAr || post.excerptEn}\n\nتم نشر مقال جديد في مدونة سيرفر الوفاق. اضغط على الرابط لقراءة المقال كاملاً والاستفادة من الشرح.`,
       category: "Blog",
       actionUrl: `https://arabtechproserver.tech/ar/blog/${post.id}`,
       actionText: "قراءة المقال الآن"
@@ -187,7 +187,7 @@ router.post('/tutorial', isAdmin, async (req, res) => {
     // Notify subscribers in background about the new video tutorial
     broadcastNewItemToSubscribers({
       title: `فيديو وشرح تعليمي جديد: ${tutorial.titleAr || tutorial.titleEn}`,
-      message: `تم إضافة فيديو وشرح تعليمي جديد في أكاديمية عرب تك برو: ${tutorial.titleAr || tutorial.titleEn}. شاهد الفيديو الآن وتعلم طريقة التنفيذ خطوة بخطوة.`,
+      message: `تم إضافة فيديو وشرح تعليمي جديد في أكاديمية سيرفر الوفاق: ${tutorial.titleAr || tutorial.titleEn}. شاهد الفيديو الآن وتعلم طريقة التنفيذ خطوة بخطوة.`,
       category: "Tutorial",
       actionUrl: `https://arabtechproserver.tech/ar/tutorials/${tutorial.id}`,
       actionText: "مشاهدة الفيديو التعليمي"

@@ -34,14 +34,10 @@ function extractCandidateTokens(req: Request): string[] {
       const name = parts[0]?.trim();
       const val = parts.slice(1).join('=').trim();
       if (name && val) {
-        if (['admin_token', 'user_token', 'token', 'session'].includes(name)) {
+        if (['user_token', 'token', 'session', 'admin_token'].includes(name)) {
           const clean = val.replace(/^["']|["']$/g, '').trim();
           if (clean && clean !== 'null' && clean !== 'undefined' && clean !== 'false' && !tokens.includes(clean)) {
-            if (name === 'admin_token') {
-              tokens.unshift(clean);
-            } else {
-              tokens.push(clean);
-            }
+            tokens.push(clean);
           }
         }
       }

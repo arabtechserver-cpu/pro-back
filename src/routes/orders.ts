@@ -89,32 +89,61 @@ async function enrichOrdersWithProviderData(orders: any[]) {
 // GET /api/orders - Fetch customer order history or all orders for admin
 router.get('/', authenticateToken, async (req, res) => {
   try {
-    const { userId, email } = req.query;
+    const { userId, email, all } = req.query;
 
     const authenticatedUser = (req as any).user;
-    let targetUserId: string | undefined;
-
-    if (authenticatedUser?.role === 'admin' || authenticatedUser?.role === 'super_admin') {
-        // Admin request - fetch all orders
-        const allOrders = await prisma.order.findMany({
-          take: 200,
-          orderBy: { createdAt: 'desc' },
-          include: {
-            user: {
-              select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true }
-            }
-          }
-        });
-
-        const enriched = await enrichOrdersWithProviderData(allOrders);
-        return res.json({ success: true, orders: enriched });
-    } else {
-      targetUserId = authenticatedUser?.id;
+    if (!authenticatedUser) {
+      return res.status(401).json({ error: 'الرجاء تسجيل الدخول أولاً' });
     }
 
-    // Customer request - fetch user's orders
+    const isAdminUser = authenticatedUser.role === 'admin' || authenticatedUser.role === 'super_admin';
+
+    // 1. Admin Dashboard request: Only return all orders if the user is admin AND explicitly requesting all orders
+    // (e.g. from admin panel where all=true or no specific user is targeted AND neither userId nor email is supplied)
+    const isExplicitAdminAllRequest = isAdminUser && (all === 'true' || all === '1' || (!userId && !email));
+
+    if (isExplicitAdminAllRequest) {
+      const allOrders = await prisma.order.findMany({
+        take: 300,
+        orderBy: { createdAt: 'desc' },
+        include: {
+          user: {
+            select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true }
+          }
+        }
+      });
+
+      const enriched = await enrichOrdersWithProviderData(allOrders);
+      return res.json({ success: true, orders: enriched });
+    }
+
+    // 2. Customer Order History request:
+    // Non-admin users are strictly forced to their OWN user ID and email (cannot spy on other users).
+    // Admin users in customer portal scope strictly to their own ID unless specifically inspecting another user.
+    const targetUserId = !isAdminUser
+      ? authenticatedUser.id
+      : (userId ? String(userId).trim() : authenticatedUser.id);
+    const targetEmail = !isAdminUser
+      ? authenticatedUser.email
+      : (email ? String(email).trim().toLowerCase() : authenticatedUser.email);
+
+    if (!targetUserId && !targetEmail) {
+      return res.json({ success: true, orders: [] });
+    }
+
+    const orClauses: any[] = [];
+    if (targetUserId) {
+      orClauses.push({ userId: targetUserId });
+    }
+    if (targetEmail) {
+      orClauses.push({ user: { email: targetEmail } });
+    }
+
+    // Customer request - fetch strictly this user's orders
     const userOrders = await prisma.order.findMany({
-      where: { userId: targetUserId },
+      where: {
+        OR: orClauses
+      },
       orderBy: { createdAt: 'desc' },
       include: {
         user: {

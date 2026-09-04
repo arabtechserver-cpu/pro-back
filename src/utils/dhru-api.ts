@@ -60,10 +60,15 @@ export function dhruApiRequest(
     data.append("action", action);
     data.append("requestformat", "JSON");
 
-    // Format parameters
+    // Format parameters in all standard formats expected by different Dhru Fusion versions:
+    // 1. parameters[KEY] = VALUE
+    // 2. top-level KEY = VALUE
+    // 3. parameters = JSON string
     Object.entries(parameters).forEach(([key, value]) => {
       data.append(`parameters[${key}]`, value);
+      data.append(key, value);
     });
+    data.append("parameters", JSON.stringify(parameters));
 
     try {
       const postData = data.toString();
@@ -103,22 +108,22 @@ export function dhruApiRequest(
         });
       });
 
-      req.on("error", (error: any) => {
-        console.error(`[Dhru API Request Failed] URL: ${targetUrl}:`, error);
-        resolve({ error: true, message: (error as Error).message });
+      req.on("error", (err) => {
+        console.error(`[Dhru API Exception] URL: ${targetUrl} | Error:`, err.message);
+        resolve({ error: err.message, SUCCESS: false });
       });
 
       req.on("timeout", () => {
         req.destroy();
         console.error(`[Dhru API Timeout] URL: ${targetUrl}`);
-        resolve({ error: true, message: "API request timed out" });
+        resolve({ error: "Request timeout", SUCCESS: false });
       });
 
       req.write(postData);
       req.end();
-    } catch (error: any) {
-      console.error(`[Dhru API Sync Error] URL: ${targetUrl}:`, error);
-      resolve({ error: true, message: (error as Error).message });
+    } catch (err: any) {
+      console.error(`[Dhru API Init Exception]:`, err.message);
+      resolve({ error: err.message, SUCCESS: false });
     }
   });
 }
@@ -135,48 +140,49 @@ export async function getServerServiceList(provider?: ProviderConfig) {
   return dhruApiRequest("serverservicelist", {}, provider);
 }
 
-export function normalizeProviderCustomFields(
-  customFields: Record<string, string> = {},
-  requiredFields: unknown = null
-): Record<string, string> {
-  let parsedFields: any = requiredFields;
-  if (typeof parsedFields === "string") {
-    try {
-      parsedFields = JSON.parse(parsedFields);
-    } catch {
-      parsedFields = null;
-    }
-  }
+export async function getRemoteServiceList(provider?: ProviderConfig) {
+  return dhruApiRequest("remoteservicelist", {}, provider);
+}
 
-  const definitions = Array.isArray(parsedFields)
-    ? parsedFields
-    : parsedFields && typeof parsedFields === "object"
-      ? Object.entries(parsedFields).map(([key, value]) => ({
-          ...(value && typeof value === "object" ? value : {}),
-          field_id: (value as any)?.field_id || (value as any)?.reqid || key
-        }))
-      : [];
+export function normalizeProviderCustomFields(
+  customFields: Record<string, any> = {},
+  requiresCustom?: string | null
+): Record<string, string> {
+  if (!customFields || typeof customFields !== "object") return {};
+
+  let requiredMeta: any[] = [];
+  try {
+    if (requiresCustom) {
+      const parsed = JSON.parse(requiresCustom);
+      if (Array.isArray(parsed)) requiredMeta = parsed;
+    }
+  } catch {}
 
   const normalized: Record<string, string> = {};
-  for (const [inputKey, value] of Object.entries(customFields || {})) {
-    const matchingField = definitions.find((field: any) => {
-      const aliases = [
-        field?.id,
-        field?.field_id,
-        field?.reqid,
-        field?.REQID,
-        field?.api_name,
-        field?.name,
-        field?.label
-      ]
-        .filter(Boolean)
-        .map((alias) => String(alias).toLowerCase());
-      return aliases.includes(String(inputKey).toLowerCase());
+  for (const [rawKey, rawVal] of Object.entries(customFields)) {
+    if (rawVal === undefined || rawVal === null) continue;
+    const value = typeof rawVal === "string" ? rawVal.trim() : String(rawVal);
+    if (!value) continue;
+
+    const inputKey = String(rawKey).trim();
+    const cleanKey = inputKey.replace(/^custom_/i, "").trim().toLowerCase();
+
+    const matchingField = requiredMeta.find((meta: any) => {
+      const fieldId = String(meta?.id || meta?.field_id || "").toLowerCase();
+      const fieldName = String(meta?.name || meta?.field_name || "").toLowerCase();
+      const fieldApiName = String(meta?.api_name || meta?.field_api_name || "").toLowerCase();
+      return (
+        fieldId === cleanKey ||
+        fieldName === cleanKey ||
+        fieldApiName === cleanKey ||
+        fieldId === inputKey.toLowerCase() ||
+        fieldName === inputKey.toLowerCase()
+      );
     });
 
-    const providerKey = matchingField?.field_id
-      || matchingField?.reqid
-      || matchingField?.REQID
+    const providerKey =
+      matchingField?.field_id
+      || matchingField?.id
       || matchingField?.api_name
       || inputKey;
     normalized[String(providerKey)] = String(value);
@@ -194,18 +200,30 @@ export async function placeImeiOrder(
   const params: Record<string, string> = {
     SERVICEID: serviceId,
     ID: serviceId,
-    IMEI: imei
+    serviceid: serviceId,
+    id: serviceId,
+    IMEI: imei,
+    imei: imei
   };
 
   if (customFields && Object.keys(customFields).length > 0) {
     params["CUSTOMFIELD"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
-    // Also include custom field parameters directly for compatibility
+    params["customfield"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
     Object.entries(customFields).forEach(([k, v]) => {
       params[`customfield[${k}]`] = v;
+      params[k] = v;
     });
   }
 
-  return dhruApiRequest("placeimeiorder", params, provider);
+  let res = await dhruApiRequest("placeimeiorder", params, provider);
+
+  // Fallback if provider expects placeserverorder
+  if (res?.ERROR?.[0]?.MESSAGE === 'Command Not Found' || res?.error?.includes?.('Command Not Found')) {
+    console.log('[Dhru API] placeimeiorder returned Command Not Found, attempting fallback placeserverorder...');
+    res = await dhruApiRequest("placeserverorder", params, provider);
+  }
+
+  return res;
 }
 
 export async function placeServerOrder(
@@ -218,39 +236,69 @@ export async function placeServerOrder(
   const params: Record<string, string> = {
     SERVICEID: serviceId,
     ID: serviceId,
-    QNT: String(quantity)
+    serviceid: serviceId,
+    id: serviceId,
+    QNT: String(quantity),
+    qnt: String(quantity)
   };
 
-  if (imei) {
-    params["IMEI"] = imei;
+  const targetIdentifier = (imei && imei.trim())
+    ? imei.trim()
+    : (customFields.email || customFields.username || customFields.account || customFields.custom_email || customFields.custom_username || "");
+
+  if (targetIdentifier) {
+    params["IMEI"] = targetIdentifier;
+    params["imei"] = targetIdentifier;
   }
 
   if (customFields && Object.keys(customFields).length > 0) {
     params["CUSTOMFIELD"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
+    params["customfield"] = Buffer.from(JSON.stringify(customFields)).toString("base64");
     Object.entries(customFields).forEach(([k, v]) => {
       params[`customfield[${k}]`] = v;
+      params[k] = v;
     });
   }
 
-  return dhruApiRequest("placeserverorder", params, provider);
+  // Standard Dhru command for placing orders is placeimeiorder
+  let res = await dhruApiRequest("placeimeiorder", params, provider);
+
+  // If provider returns Command Not Found, fallback to placeserverorder
+  if (res?.ERROR?.[0]?.MESSAGE === 'Command Not Found' || res?.error?.includes?.('Command Not Found')) {
+    console.log('[Dhru API] placeimeiorder returned Command Not Found, attempting fallback placeserverorder...');
+    res = await dhruApiRequest("placeserverorder", params, provider);
+  }
+
+  return res;
 }
 
 export async function getImeiOrder(orderId: string, provider?: ProviderConfig) {
-  return dhruApiRequest("getimeiorder", {
+  const params = {
     ID: orderId,
     id: orderId,
     REFERENCEID: orderId,
     referenceid: orderId,
     orderid: orderId
-  }, provider);
+  };
+  let res = await dhruApiRequest("getimeiorder", params, provider);
+  if (res?.ERROR?.[0]?.MESSAGE === 'Command Not Found') {
+    res = await dhruApiRequest("getserverorder", params, provider);
+  }
+  return res;
 }
 
 export async function getServerOrder(orderId: string, provider?: ProviderConfig) {
-  return dhruApiRequest("getserverorder", {
+  const params = {
     ID: orderId,
     id: orderId,
     REFERENCEID: orderId,
     referenceid: orderId,
     orderid: orderId
-  }, provider);
+  };
+  // In Dhru, getimeiorder is the standard query for all orders
+  let res = await dhruApiRequest("getimeiorder", params, provider);
+  if (res?.ERROR?.[0]?.MESSAGE === 'Command Not Found') {
+    res = await dhruApiRequest("getserverorder", params, provider);
+  }
+  return res;
 }

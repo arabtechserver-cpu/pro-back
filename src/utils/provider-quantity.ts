@@ -165,6 +165,12 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   let minQty = parseQuantityNumber(rawMin);
   let maxQty = parseQuantityNumber(rawMax);
 
+  // Older selective imports left DB defaults while keeping real limits in QNT.
+  if (s.supportsQty === false) {
+    if (rawMin === s.minQty && s.minQty === 1) minQty = null;
+    if (rawMax === s.maxQty && s.maxQty === 0) maxQty = null;
+  }
+
   // 2. Check custom fields if passed or embedded in service
   let fieldsList: any[] = [];
   if (Array.isArray(customFields) && customFields.length > 0) {
@@ -188,7 +194,7 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   }
 
   // Filter out any artificial custom_QNT
-  fieldsList = fieldsList.filter((f) => f && f.id !== "custom_QNT" && f.field_id !== "custom_QNT");
+  fieldsList = fieldsList.filter((f) => f && f.synthetic_quantity !== true && f.field_id !== "custom_QNT");
 
   let hasExplicitQuantityField = false;
 
@@ -221,7 +227,7 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   if (!hasExplicitQuantityField && typeof s.requiresCustom === "string") {
     try {
       const parsed = JSON.parse(s.requiresCustom);
-      if (Array.isArray(parsed) && parsed.some(f => f && f.id !== "custom_QNT" && f.field_id !== "custom_QNT" && isQuantityField(f))) {
+      if (Array.isArray(parsed) && parsed.some(f => f && f.synthetic_quantity !== true && f.field_id !== "custom_QNT" && isQuantityField(f))) {
         hasExplicitQuantityField = true;
       }
     } catch {}
@@ -230,8 +236,9 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
   // 4. Check name patterns for dynamic quantity (Credits, Any Qnt/Qty, Min Pcs, Social media, E-wallets)
   const isWithoutCredit = /\b(?:without|no|0)\s*credits?\b|بدون\s*(?:كريدت|رصيد)/i.test(combinedText);
 
+  const hasFixedCreditPack = /\b\d+\s*credits?\b/i.test(sName);
   const hasCreditPattern =
-    !isWithoutCredit &&
+    !isWithoutCredit && !hasFixedCreditPack &&
     (
       /\bcredits?\b/i.test(sName) ||
       /\bcredits?\b/i.test(sInfo) ||
@@ -276,10 +283,17 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
     s.QNT === "0" ||
     s.QNT === 0 ||
     s.REQUIRES_QUANTITY === "0" ||
-    s.REQUIRES_QUANTITY === false;
+    s.REQUIRES_QUANTITY === false ||
+    s.QNT === false ||
+    s.requires_quantity === false ||
+    s.requires_quantity === 0 ||
+    s.requires_quantity === "0";
 
   // 5. Explicit provider or DB quantity attributes
   const hasExplicitProviderQuantityAttr =
+    hasExplicitQuantityField ||
+    (minQty !== null && minQty > 1) ||
+    (maxQty !== null && maxQty > 1) ||
     s.supportsQty === true ||
     s.supports_quantity === true ||
     s.QNT === "1" ||
@@ -336,7 +350,10 @@ export function extractQuantityLimits(service: any, customFields?: any[]): Quant
  * Formats full service quantity configuration for serialization in APIs
  */
 export function getServiceQuantityConfig(service: any): ServiceQuantityConfig {
-  const limits = extractQuantityLimits(service);
+  // Stored local services must never inherit provider quantity from text hints.
+  const limits = service && Object.prototype.hasOwnProperty.call(service, "providerId") && !service.providerId
+    ? { supportsQty: false, minQty: 1, maxQty: 0 }
+    : extractQuantityLimits(service);
   return {
     ...limits,
     min_quantity: limits.minQty,
@@ -358,6 +375,7 @@ export function enrichCustomFieldsWithQuantity(
     if (quantityLimits.supportsQty) {
       return [
         {
+          synthetic_quantity: true,
           id: "custom_QNT",
           field_id: "QNT",
           name: "QNT",
@@ -406,6 +424,7 @@ export function enrichCustomFieldsWithQuantity(
 
   if (!foundQuantity) {
     enriched.push({
+      synthetic_quantity: true,
       id: "custom_QNT",
       field_id: "QNT",
       name: "QNT",

@@ -38,7 +38,7 @@ export function serializeAdminServiceCategories(
         try {
           const parsed = typeof sanitizedCustom === 'string' ? JSON.parse(sanitizedCustom) : sanitizedCustom;
           if (Array.isArray(parsed)) {
-            const filtered = parsed.filter((f: any) => f && f.id !== 'custom_QNT' && f.field_id !== 'custom_QNT');
+            const filtered = parsed.filter((f: any) => f && f.synthetic_quantity !== true && f.field_id !== 'custom_QNT');
             sanitizedCustom = typeof service.requiresCustom === 'string' ? JSON.stringify(filtered) : filtered;
           }
         } catch {}
@@ -106,7 +106,7 @@ export function serializePricingServiceCategories(
         try {
           const parsed = typeof sanitizedCustom === 'string' ? JSON.parse(sanitizedCustom) : sanitizedCustom;
           if (Array.isArray(parsed)) {
-            const filtered = parsed.filter((f: any) => f && f.id !== 'custom_QNT' && f.field_id !== 'custom_QNT');
+            const filtered = parsed.filter((f: any) => f && f.synthetic_quantity !== true && f.field_id !== 'custom_QNT');
             sanitizedCustom = typeof service.requiresCustom === 'string' ? JSON.stringify(filtered) : filtered;
           }
         } catch {}

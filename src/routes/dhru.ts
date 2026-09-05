@@ -257,7 +257,7 @@ router.get('/services/:id', async (req, res) => {
       try {
         const parsed = typeof sanitizedRequiresCustom === "string" ? JSON.parse(sanitizedRequiresCustom) : sanitizedRequiresCustom;
         if (Array.isArray(parsed)) {
-          const filtered = parsed.filter((f: any) => f && f.id !== "custom_QNT" && f.field_id !== "custom_QNT");
+          const filtered = parsed.filter((f: any) => f && f.synthetic_quantity !== true && f.field_id !== "custom_QNT");
           sanitizedRequiresCustom = JSON.stringify(filtered);
         }
       } catch {}

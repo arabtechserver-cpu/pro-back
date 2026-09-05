@@ -204,6 +204,7 @@ export function extractCustomFields(service: any): any[] {
       }
 
       const parsed = Object.entries(raw).map(([key, value]: [string, any]) => ({
+        ...(value && typeof value === "object" ? value : {}),
         field_id: (value && (value.reqid || value.REQID || value.field_id || value.id || value.ID)) || key,
         fieldname: (value && (value.FIELDNAME || value.fieldname || value.field_name || value.name || value.NAME || value.label)) || key,
         fieldtype: (value && (value.FIELDTYPE || value.fieldtype || value.type)) || "text",
@@ -306,7 +307,7 @@ export function normalizeCustomField(cf: any): any {
   const isQty = isQuantityField(field, name);
   const resolvedType = isQty ? "quantity" : (fieldoptions.length > 0 && normalizedType === "text" ? "select" : normalizedType);
 
-  const rawFieldId = String(field.field_id || field.reqid || field.REQID || field.id || name).trim();
+  const rawFieldId = String(field.field_id || field.reqid || field.REQID || field.ID || (field.id ? String(field.id).replace(/^custom_/i, "") : name)).trim();
   const isRequired = isQty ? true : (field.allow !== undefined ? isRequiredField(field.allow) : isRequiredField(field.required ?? field.REQUIRED));
 
   return {
@@ -317,13 +318,14 @@ export function normalizeCustomField(cf: any): any {
     type: resolvedType,
     fieldtype: resolvedType,
     is_quantity: isQty,
+    synthetic_quantity: field.synthetic_quantity === true,
     required: isRequired,
     description,
     placeholder: description || (isQty ? "أدخل الكمية المطلوبة" : `أدخل ${name}`),
     options: fieldoptions,
     fieldoptions,
-    min_quantity: field.min_quantity ?? field.minQty ?? field.min ?? undefined,
-    max_quantity: field.max_quantity ?? field.maxQty ?? field.max ?? undefined
+    min_quantity: field.min_quantity ?? field.minQty ?? field.min ?? field.MIN ?? field.MINQNT ?? undefined,
+    max_quantity: field.max_quantity ?? field.maxQty ?? field.max ?? field.MAX ?? field.MAXQNT ?? undefined
   };
 }
 
@@ -792,12 +794,11 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           });
 
           if (existingImeiIndex !== -1) {
-            normalizedFields[existingImeiIndex].required = false;
             if (existingImeiIndex > 0) {
               const [imeiField] = normalizedFields.splice(existingImeiIndex, 1);
               normalizedFields.unshift(imeiField);
             }
-          } else if (!hasHardwareId) {
+          } else if (!hasHardwareId && normalizedFields.length === 0) {
             normalizedFields.unshift({
               id: "custom_IMEI",
               field_id: "IMEI",
@@ -1510,6 +1511,9 @@ router.post("/:id/import-services", async (req, res) => {
           providerId: provider.id,
           apiServiceType,
           requiresCustom: requiresCustomStr,
+          supportsQty: qtyLimits.supportsQty,
+          minQty: qtyLimits.minQty,
+          maxQty: qtyLimits.maxQty,
           isActive: true,
           margin
         },
@@ -1524,6 +1528,9 @@ router.post("/:id/import-services", async (req, res) => {
           providerId: provider.id,
           apiServiceType,
           requiresCustom: requiresCustomStr,
+          supportsQty: qtyLimits.supportsQty,
+          minQty: qtyLimits.minQty,
+          maxQty: qtyLimits.maxQty,
           isActive: true,
           margin
         }

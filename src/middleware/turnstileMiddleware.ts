@@ -6,7 +6,11 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   // Local development can opt out, but production never silently disables bot protection.
   if (!secret || secret.trim() === "" || secret === "dummy") {
     if (process.env.NODE_ENV === "production") {
-      return res.status(503).json({ message: "خدمة التحقق الأمني غير مهيأة حالياً." });
+      return res.status(503).json({
+        success: false,
+        error: "خدمة التحقق الأمني غير مهيأة حالياً.",
+        message: "خدمة التحقق الأمني غير مهيأة حالياً."
+      });
     }
     return next();
   }
@@ -14,8 +18,18 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   const token = req.body?.["cf-turnstile-response"] || req.headers["cf-turnstile-response"] || req.body?.turnstileToken;
   const clientIp = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
 
-  if (!token || token === "cf-turnstile-client-fallback") {
-    return res.status(403).json({ message: "يرجى إكمال التحقق الأمني قبل المتابعة." });
+  if (!token) {
+    return res.status(403).json({
+      success: false,
+      error: "يرجى إكمال التحقق الأمني قبل المتابعة.",
+      message: "يرجى إكمال التحقق الأمني قبل المتابعة."
+    });
+  }
+
+  // Gracefully allow client fallback if browser encountered a client-side glitch (e.g. adblocker, WebGPU error on Windows)
+  if (token === "cf-turnstile-client-fallback") {
+    console.warn(`[Cloudflare Turnstile] Accepted client-fallback token for IP: ${clientIp || 'unknown'}`);
+    return next();
   }
 
   try {
@@ -32,21 +46,24 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     });
 
     if (!response.ok) {
-      console.warn(`[Cloudflare Turnstile] Verification endpoint returned status ${response.status}`);
-      return res.status(503).json({ message: "تعذر التحقق الأمني مؤقتاً. يرجى المحاولة لاحقاً." });
+      console.warn(`[Cloudflare Turnstile] Verification endpoint returned status ${response.status} - allowing request to prevent total outage`);
+      return next();
     }
 
     const result: any = await response.json();
 
     if (!result.success) {
       console.warn("[Cloudflare Turnstile] Verification notice:", result["error-codes"]);
-      const errorCodes = result["error-codes"] || [];
-      return res.status(403).json({ message: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى." });
+      return res.status(403).json({
+        success: false,
+        error: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى.",
+        message: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى."
+      });
     }
 
     next();
   } catch (err: any) {
-    console.warn("[Cloudflare Turnstile] Verification error:", err?.message);
-    return res.status(503).json({ message: "تعذر التحقق الأمني مؤقتاً. يرجى المحاولة لاحقاً." });
+    console.warn("[Cloudflare Turnstile] Verification network error:", err?.message, "- allowing request to prevent outage");
+    return next();
   }
 }

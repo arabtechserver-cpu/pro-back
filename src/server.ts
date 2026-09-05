@@ -12,6 +12,8 @@ const allowedOrigins = (process.env.FRONTEND_URL || '')
 app.set('trust proxy', 1);
 
 app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginOpenerPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
   crossOriginEmbedderPolicy: false,
 }));

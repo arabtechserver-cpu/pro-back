@@ -129,7 +129,8 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
         apiEnabled: u.apiEnabled,
         apiKey: u.apiKey,
         apiSiteName: u.apiSiteName,
-        apiSiteUrl: u.apiSiteUrl
+        apiSiteUrl: u.apiSiteUrl,
+        createdAt: u.createdAt
       }
     });
   } catch (error: any) {
@@ -137,13 +138,13 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
   }
 });
 
-// POST /api/users/update-credentials - Update self profile credentials (username, email, password, phone)
+// POST /api/users/update-credentials - Update self profile credentials (username, email, password, phone, fullName)
 router.post("/update-credentials", authenticateToken, async (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
 
-    const { username, email, phone, newPassword, currentPassword } = req.body;
+    const { fullName, username, email, phone, newPassword, currentPassword } = req.body;
     if (!currentPassword) {
       return res.status(400).json({ error: "الرجاء إدخال كلمة المرور الحالية للتأكيد" });
     }
@@ -155,6 +156,10 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
     if (!isMatch) return res.status(400).json({ error: "كلمة المرور الحالية غير صحيحة" });
 
     const updateData: any = {};
+
+    if (fullName && fullName.trim() && fullName.trim() !== currentUser.fullName) {
+      updateData.fullName = fullName.trim();
+    }
 
     if (username && username !== currentUser.username) {
       const existingUser = await prisma.user.findUnique({ where: { username } });
@@ -188,9 +193,10 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
 
     return res.json({
       success: true,
-      message: "تم تحديث بيانات الدخول بنجاح",
+      message: "تم تحديث بيانات الحساب بنجاح",
       user: {
         id: updatedUser.id,
+        fullName: updatedUser.fullName,
         username: updatedUser.username,
         email: updatedUser.email,
         phone: updatedUser.phone

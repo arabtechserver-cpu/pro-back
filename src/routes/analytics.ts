@@ -182,12 +182,58 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
       })
     ]);
 
+    // Check active providers from database
+    const activeProvider = await prisma.apiProvider.findFirst({
+      where: { isActive: true },
+      orderBy: { updatedAt: 'desc' }
+    });
+
     let dhruInfo: any = null;
-    try {
-      const { getAccountInfo } = require('../utils/dhru-api');
-      dhruInfo = await getAccountInfo();
-    } catch {
-      dhruInfo = null;
+    if (activeProvider) {
+      try {
+        const { makeProviderApiCall, extractProviderAccountInfo } = require('./providers');
+        const apiRes = await makeProviderApiCall(activeProvider.apiUrl, activeProvider.username, activeProvider.apiKey, "accountinfo");
+        const accountInfo = extractProviderAccountInfo(apiRes.data);
+        if (accountInfo) {
+          dhruInfo = {
+            providerName: activeProvider.name,
+            balance: accountInfo.balance,
+            currency: accountInfo.currency,
+            formattedBalance: `$${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`,
+            SUCCESS: [{ credit: `$${accountInfo.balance.toFixed(2)} ${accountInfo.currency}` }],
+            connected: true
+          };
+          await prisma.apiProvider.update({
+            where: { id: activeProvider.id },
+            data: { balance: accountInfo.balance, currency: accountInfo.currency }
+          }).catch(() => {});
+        } else {
+          dhruInfo = {
+            providerName: activeProvider.name,
+            balance: activeProvider.balance,
+            currency: activeProvider.currency || 'USD',
+            formattedBalance: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}`,
+            SUCCESS: [{ credit: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}` }],
+            connected: true
+          };
+        }
+      } catch {
+        dhruInfo = {
+          providerName: activeProvider.name,
+          balance: activeProvider.balance,
+          currency: activeProvider.currency || 'USD',
+          formattedBalance: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}`,
+          SUCCESS: [{ credit: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}` }],
+          connected: true
+        };
+      }
+    } else {
+      try {
+        const { getAccountInfo } = require('../utils/dhru-api');
+        dhruInfo = await getAccountInfo();
+      } catch {
+        dhruInfo = null;
+      }
     }
 
     return res.json({

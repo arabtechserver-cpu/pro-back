@@ -122,6 +122,8 @@ model Order {
   apiOrderId  String?
   reply       String?
   notes       String?
+  couponCode  String?
+  discount    Float    @default(0.0)
   createdAt        DateTime @default(now())
   updatedAt        DateTime @default(now()) @updatedAt
   user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -169,6 +171,7 @@ model User {
   apiSiteName      String?
   apiSiteUrl       String?
   apiMargin        Float           @default(0.0)
+  couponUsages     CouponUsage[]
 }
 
 model MembershipTier {
@@ -230,4 +233,30 @@ model Setting {
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
 }
+
+model Coupon {
+  id              String        @id @default(uuid())
+  code            String        @unique
+  discountPercent Float
+  durationDays    Int?
+  expiresAt       DateTime
+  maxUses         Int           @default(1)
+  usedCount       Int           @default(0)
+  isActive        Boolean       @default(true)
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @default(now()) @updatedAt
+  usages          CouponUsage[]
+}
+
+model CouponUsage {
+  id        String   @id @default(uuid())
+  couponId  String
+  userId    String
+  orderId   String?
+  discount  Float
+  createdAt DateTime @default(now())
+  coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+}
+
 

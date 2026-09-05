@@ -53,8 +53,10 @@ import membershipsRoutes from './routes/memberships';
 import aiRoutes from './routes/ai';
 import currenciesRoutes from './routes/currencies';
 import externalApiRoutes from './routes/externalApi';
+import couponsRoutes from './routes/coupons';
 
 app.use('/api/auth', authRoutes);
+app.use('/api/coupons', couponsRoutes);
 app.use('/api/ai', aiRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/currencies', currenciesRoutes);
@@ -87,10 +89,12 @@ app.get('/api/health', (req, res) => {
 import { initOrderSyncCron } from './cron/orderSync';
 import { initBackupCron } from './cron/backupDb';
 import { bootstrapDatabase } from './utils/bootstrap';
+import { restoreImagesToDisk } from './utils/uploads';
 
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
   initOrderSyncCron();
   initBackupCron();
   bootstrapDatabase();
+  restoreImagesToDisk(prisma).catch(() => {});
 });

@@ -47,12 +47,27 @@ export function ensureUploadDir(): string {
 }
 
 /**
- * Saves a binary buffer to the persistent upload volume.
+ * Saves a binary buffer to the persistent upload volume on the server.
  */
 export function saveBufferToUploads(filename: string, buffer: Buffer): string {
   const uploadDir = ensureUploadDir();
   const filePath = path.join(uploadDir, filename);
-  fs.writeFileSync(filePath, buffer);
+  try {
+    fs.writeFileSync(filePath, buffer);
+  } catch (err) {
+    console.error(`[Uploads] Error writing file to primary upload dir ${filePath}:`, err);
+  }
+
+  // Also write to local public/uploads if different, to ensure server static serving
+  try {
+    const pubDir = path.join(process.cwd(), 'public', 'uploads');
+    if (!fs.existsSync(pubDir)) fs.mkdirSync(pubDir, { recursive: true });
+    const pubPath = path.join(pubDir, filename);
+    if (pubPath !== filePath) {
+      fs.writeFileSync(pubPath, buffer);
+    }
+  } catch (_) {}
+
   return filePath;
 }
 
@@ -64,7 +79,7 @@ export function getUploadFilePath(filename: string): string | null {
   const primaryPath = path.join(uploadDir, filename);
   if (fs.existsSync(primaryPath)) return primaryPath;
 
-  // Secondary fallback checks (in case files were in old public/uploads)
+  // Secondary fallback checks
   const secondaryPath = path.join(process.cwd(), 'public/uploads', filename);
   if (fs.existsSync(secondaryPath)) return secondaryPath;
 
@@ -73,3 +88,40 @@ export function getUploadFilePath(filename: string): string | null {
 
   return null;
 }
+
+/**
+ * Automatically syncs & restores all stored images onto the server's disk.
+ * This guarantees that every image file physically exists in /uploads on the server even after server reboots!
+ */
+export async function restoreImagesToDisk(prismaClient: any): Promise<number> {
+  try {
+    const uploadDir = ensureUploadDir();
+    const images = await prismaClient.storedImage.findMany({
+      select: { filename: true, data: true }
+    });
+
+    let restoredCount = 0;
+    for (const img of images) {
+      if (!img.filename || !img.data) continue;
+      const targetPath = path.join(uploadDir, img.filename);
+      if (!fs.existsSync(targetPath)) {
+        try {
+          const buffer = Buffer.from(img.data, 'base64');
+          fs.writeFileSync(targetPath, buffer);
+          restoredCount++;
+        } catch (e) {
+          console.error(`[Uploads] Error restoring image ${img.filename}:`, e);
+        }
+      }
+    }
+
+    if (restoredCount > 0) {
+      console.log(`[Uploads] ✅ Restored ${restoredCount} image(s) to server disk at: ${uploadDir}`);
+    }
+    return restoredCount;
+  } catch (err: any) {
+    console.error('[Uploads] restoreImagesToDisk error:', err.message);
+    return 0;
+  }
+}
+

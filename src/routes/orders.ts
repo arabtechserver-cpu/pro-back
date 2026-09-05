@@ -163,7 +163,7 @@ router.get('/', authenticateToken, async (req, res) => {
 // POST /api/orders - Create & Save New Order (Saved as PENDING - waiting for admin approval)
 router.post('/', authenticateToken, async (req, res) => {
   try {
-    const { serviceId, serviceName, targetInput, rawImei, quantity, notes, customFields } = req.body;
+    const { serviceId, serviceName, targetInput, rawImei, quantity, notes, customFields, couponCode } = req.body;
 
     const finalTargetInput = (targetInput && String(targetInput).trim()) || (rawImei && String(rawImei).trim()) || 'طلب فوري';
 
@@ -223,11 +223,51 @@ router.post('/', authenticateToken, async (req, res) => {
     if (discountPercent > 0) {
       unitPrice = Number((unitPrice * (1 - discountPercent / 100)).toFixed(2));
     }
-    const totalPrice = Number((unitPrice * finalQty).toFixed(2));
+    const rawTotalPrice = Number((unitPrice * finalQty).toFixed(2));
 
-    if (dbUser.balance < totalPrice) {
+    // Process & validate coupon if provided
+    let appliedCoupon: any = null;
+    let couponDiscountAmount = 0;
+
+    if (couponCode && typeof couponCode === 'string' && couponCode.trim()) {
+      const cleanCode = couponCode.trim().toUpperCase();
+      const foundCoupon = await prisma.coupon.findUnique({
+        where: { code: cleanCode }
+      });
+
+      if (!foundCoupon) {
+        return res.status(400).json({ error: 'كود الخصم المدخل غير موجود' });
+      }
+      if (!foundCoupon.isActive) {
+        return res.status(400).json({ error: 'كود الخصم غير مفعّل حالياً' });
+      }
+      if (new Date() > foundCoupon.expiresAt) {
+        return res.status(400).json({ error: 'لقد انتهت صلاحية كود الخصم هذا' });
+      }
+      if (foundCoupon.usedCount >= foundCoupon.maxUses) {
+        return res.status(400).json({ error: 'تم استنفاد الحد الأقصى لاستخدام كود الخصم هذا' });
+      }
+
+      // Check single use per customer
+      const priorUsage = await prisma.couponUsage.findFirst({
+        where: {
+          couponId: foundCoupon.id,
+          userId: targetUserId
+        }
+      });
+      if (priorUsage) {
+        return res.status(400).json({ error: 'لقد استفدت من كود الخصم هذا مسبقاً' });
+      }
+
+      appliedCoupon = foundCoupon;
+      couponDiscountAmount = Number(((rawTotalPrice * foundCoupon.discountPercent) / 100).toFixed(2));
+    }
+
+    const finalTotalPrice = Math.max(0, Number((rawTotalPrice - couponDiscountAmount).toFixed(2)));
+
+    if (dbUser.balance < finalTotalPrice) {
       return res.status(400).json({
-        error: `رصيد محفظتك غير كافٍ! التكلفة الإجمالية: $${totalPrice.toFixed(2)} USD ورصيدك الحالي: $${dbUser.balance.toFixed(2)} USD. يرجى شحن المحفظة أولاً.`
+        error: `رصيد محفظتك غير كافٍ! التكلفة الإجمالية: $${finalTotalPrice.toFixed(2)} USD ورصيدك الحالي: $${dbUser.balance.toFixed(2)} USD. يرجى شحن المحفظة أولاً.`
       });
     }
 
@@ -237,9 +277,18 @@ router.post('/', authenticateToken, async (req, res) => {
         time: now.toISOString(),
         action: 'ORDER_CREATED',
         title: 'إنشاء الطلب وخصم الرصيد',
-        desc: `تم استلام الطلب من العميل (${dbUser.fullName}) وخصم $${totalPrice.toFixed(2)} USD من رصيد المحفظة.`
+        desc: `تم استلام الطلب من العميل (${dbUser.fullName}) وخصم $${finalTotalPrice.toFixed(2)} USD من رصيد المحفظة.`
       }
     ];
+
+    if (appliedCoupon) {
+      timelineEvents.push({
+        time: now.toISOString(),
+        action: 'COUPON_APPLIED',
+        title: 'تطبيق كود الخصم',
+        desc: `تم تفعيل كود الخصم (${appliedCoupon.code}) بنسبة ${appliedCoupon.discountPercent}% وتوفير $${couponDiscountAmount.toFixed(2)} USD.`
+      });
+    }
 
     if (dhruService?.apiProvider) {
       timelineEvents.push({
@@ -260,10 +309,14 @@ router.post('/', authenticateToken, async (req, res) => {
       userNote: notes ? String(notes).trim() : null,
       rawImei: rawImei ? String(rawImei).trim() : null,
       customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : null,
+      couponCode: appliedCoupon ? appliedCoupon.code : null,
+      discountAmount: couponDiscountAmount,
+      originalPrice: rawTotalPrice,
+      finalPrice: finalTotalPrice,
       events: timelineEvents
     });
 
-    // 1. Create Order in DB with status: 'pending' (Does NOT auto-send to provider)
+    // 1. Create Order in DB with status: 'pending'
     const newOrder = await prisma.order.create({
       data: {
         userId: targetUserId,
@@ -271,7 +324,9 @@ router.post('/', authenticateToken, async (req, res) => {
         serviceName: String(serviceName).trim(),
         targetInput: finalTargetInput,
         quantity: finalQty,
-        price: totalPrice,
+        price: finalTotalPrice,
+        couponCode: appliedCoupon ? appliedCoupon.code : null,
+        discount: couponDiscountAmount,
         status: 'pending',
         notes: structuredNotes,
         apiOrderId: null
@@ -281,22 +336,39 @@ router.post('/', authenticateToken, async (req, res) => {
     // 2. Deduct Balance from User
     const updatedUser = await prisma.user.update({
       where: { id: targetUserId },
-      data: { balance: { decrement: totalPrice } }
+      data: { balance: { decrement: finalTotalPrice } }
     });
 
-    // 3. Create Deduction Transaction Record
+    // 3. Record Coupon Usage in DB if coupon was used
+    if (appliedCoupon) {
+      await prisma.coupon.update({
+        where: { id: appliedCoupon.id },
+        data: { usedCount: { increment: 1 } }
+      });
+
+      await prisma.couponUsage.create({
+        data: {
+          couponId: appliedCoupon.id,
+          userId: targetUserId,
+          orderId: newOrder.id,
+          discount: couponDiscountAmount
+        }
+      });
+    }
+
+    // 4. Create Deduction Transaction Record
     await prisma.transaction.create({
       data: {
         userId: targetUserId,
-        type: `خصم خدمة: ${serviceName.slice(0, 35)}`,
-        amount: totalPrice,
+        type: appliedCoupon ? `خصم خدمة (كود: ${appliedCoupon.code}): ${serviceName.slice(0, 30)}` : `خصم خدمة: ${serviceName.slice(0, 35)}`,
+        amount: finalTotalPrice,
         method: 'رصيد المحفظة',
         refNo: `ORD-#${newOrder.id.slice(-6)}`,
         status: 'completed'
       }
     });
 
-    console.log(`[Order Created (Pending Approval)] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${totalPrice} - Remaining Balance: $${updatedUser.balance}`);
+    console.log(`[Order Created (Pending Approval)] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${finalTotalPrice} (Discount: $${couponDiscountAmount}) - Remaining Balance: $${updatedUser.balance}`);
 
     // 4. Send Telegram Alert to Admin
     const providerName = dhruService?.apiProvider?.name || 'سيرفر محلي / يدوي';

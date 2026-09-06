@@ -55,7 +55,7 @@ async function run() {
           };
         }
         requiresCustom = JSON.stringify(customObj);
-      } catch {}
+      } catch { }
     }
 
     // تحقق هل موجود أصلاً

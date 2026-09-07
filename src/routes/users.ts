@@ -425,10 +425,6 @@ router.post("/request-api", authenticateToken, async (req: any, res) => {
     });
     if (!currentUser) return res.status(404).json({ error: "المستخدم غير موجود" });
 
-    if (currentUser.role === 'admin') {
-      return res.status(403).json({ error: "حسابات الإدارة محمية بالكامل ولا يُسمح بربطها بالـ API أو استخراج مفاتيح لها. يرجى استخدام حساب عميل عادي." });
-    }
-
     let activationData;
     try {
       activationData = prepareApiActivation(
@@ -471,14 +467,6 @@ router.post("/regenerate-api-key", authenticateToken, async (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
-
-    const currentUser = await prisma.user.findUnique({
-      where: { id: userId },
-      select: { role: true }
-    });
-    if (currentUser?.role === 'admin') {
-      return res.status(403).json({ error: "حسابات الإدارة محمية ولا يمكنها توليد مفاتيح API." });
-    }
 
     const apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
 

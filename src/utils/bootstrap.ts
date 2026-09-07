@@ -64,6 +64,12 @@ export async function bootstrapDatabase() {
       await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
     } catch (_) { /* already exists */ }
     try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "source" TEXT DEFAULT 'website';`);
+    } catch (_) { /* already exists */ }
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "lastNotifiedAt" TIMESTAMP(3);`);
+    } catch (_) { /* already exists */ }
+    try {
       await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "membershipTierId" TEXT;`);
     } catch (_) { /* already exists */ }
     try {

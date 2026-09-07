@@ -90,12 +90,14 @@ model StoredImage {
 }
 
 model Subscriber {
-  id        String   @id @default(uuid())
-  email     String   @unique
-  name      String?
-  isActive  Boolean  @default(true)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @default(now()) @updatedAt
+  id             String    @id @default(uuid())
+  email          String    @unique
+  name           String?
+  source         String?   @default("website")
+  lastNotifiedAt DateTime?
+  isActive       Boolean   @default(true)
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @default(now()) @updatedAt
 }
 
 model NewsletterBroadcast {

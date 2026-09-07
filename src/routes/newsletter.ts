@@ -66,11 +66,24 @@ export async function broadcastNewItemToSubscribers({
 
     await Promise.allSettled(emailPromises);
 
-    // Update lastNotifiedAt
-    await prisma.subscriber.updateMany({
-      where: { isActive: true },
-      data: { lastNotifiedAt: new Date() }
-    });
+    // Update lastNotifiedAt & updatedAt safely
+    try {
+      await prisma.subscriber.updateMany({
+        where: { isActive: true },
+        data: {
+          lastNotifiedAt: new Date(),
+          updatedAt: new Date()
+        } as any
+      });
+    } catch (updateErr) {
+      console.warn("Could not update lastNotifiedAt on subscribers:", updateErr);
+      try {
+        await prisma.subscriber.updateMany({
+          where: { isActive: true },
+          data: { updatedAt: new Date() }
+        });
+      } catch (_) {}
+    }
 
     // Also notify Admin on Telegram
     const adminChatIds = getAdminChatIds();

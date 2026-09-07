@@ -376,7 +376,7 @@ router.post("/update-balance", isAdmin, async (req, res) => {
 });
 
 // POST /api/users/update-api-settings - Admin update user API settings
-router.post("/update-api-settings", isAdmin, async (req, res) => {
+router.post("/update-api-settings", isAdmin, async (req: any, res) => {
   try {
     const { userId, apiEnabled, apiSiteName, apiSiteUrl, apiMargin } = req.body;
     if (!userId) return res.status(400).json({ error: "معرف المستخدم مطلوب" });
@@ -387,13 +387,17 @@ router.post("/update-api-settings", isAdmin, async (req, res) => {
       apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
     }
 
+    const marginValue = apiMargin !== undefined && apiMargin !== null && !isNaN(parseFloat(apiMargin))
+      ? parseFloat(apiMargin)
+      : 8.0;
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
         apiEnabled: Boolean(apiEnabled),
-        apiSiteName: apiSiteName || null,
-        apiSiteUrl: apiSiteUrl || null,
-        apiMargin: parseFloat(apiMargin) || 0.0,
+        apiSiteName: apiSiteName !== undefined ? (apiSiteName ? String(apiSiteName).trim() : null) : undefined,
+        apiSiteUrl: apiSiteUrl !== undefined ? (apiSiteUrl ? String(apiSiteUrl).trim() : null) : undefined,
+        apiMargin: marginValue,
         ...(apiKey && { apiKey })
       }
     });
@@ -434,55 +438,27 @@ router.post("/request-api", authenticateToken, async (req: any, res) => {
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: activationData,
+      data: {
+        ...activationData,
+        apiMargin: 8.0
+      },
       select: {
         apiEnabled: true,
         apiKey: true,
         apiSiteName: true,
-        apiSiteUrl: true
+        apiSiteUrl: true,
+        apiMargin: true
       }
     });
 
     return res.json({
       success: true,
-      message: "تم تأكيد وتفعيل API فوراً بنجاح",
+      message: "تم تأكيد وتفعيل API فوراً بنجاح بنسبة ربح 8%",
       user: updatedUser
     });
   } catch (error: any) {
     console.error("Error activating API:", error);
     return res.status(500).json({ error: "حدث خطأ أثناء تفعيل API" });
-  }
-});
-
-// POST /api/users/update-api-settings - Admin update user API settings
-router.post("/update-api-settings", authenticateToken, isAdmin, async (req: any, res) => {
-  try {
-    const { userId, apiEnabled, apiMargin } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ error: "User ID is required" });
-    }
-
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: {
-        apiEnabled: Boolean(apiEnabled),
-        apiMargin: parseFloat(apiMargin) || 0
-      }
-    });
-
-    return res.json({
-      success: true,
-      message: "تم تحديث إعدادات API بنجاح",
-      user: {
-        apiEnabled: updatedUser.apiEnabled,
-        apiMargin: updatedUser.apiMargin,
-        apiKey: updatedUser.apiKey
-      }
-    });
-  } catch (error: any) {
-    console.error("Error updating API settings:", error);
-    return res.status(500).json({ error: "حدث خطأ أثناء تحديث إعدادات API" });
   }
 });
 

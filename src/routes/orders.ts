@@ -63,6 +63,7 @@ async function enrichOrdersWithProviderData(orders: any[]) {
     return {
       ...order,
       notes: metadata.visibleNote,
+      apiDetails: metadata.apiDetails || null,
       provider: srv?.apiProvider
         ? {
             id: srv.apiProvider.id,
@@ -108,7 +109,19 @@ router.get('/', authenticateToken, async (req, res) => {
         orderBy: { createdAt: 'desc' },
         include: {
           user: {
-            select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true }
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              username: true,
+              phone: true,
+              balance: true,
+              apiEnabled: true,
+              apiSiteName: true,
+              apiSiteUrl: true,
+              apiKey: true,
+              apiMargin: true
+            }
           }
         }
       });
@@ -147,7 +160,19 @@ router.get('/', authenticateToken, async (req, res) => {
       orderBy: { createdAt: 'desc' },
       include: {
         user: {
-          select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true }
+          select: {
+            id: true,
+            fullName: true,
+            email: true,
+            username: true,
+            phone: true,
+            balance: true,
+            apiEnabled: true,
+            apiSiteName: true,
+            apiSiteUrl: true,
+            apiKey: true,
+            apiMargin: true
+          }
         }
       }
     });

@@ -3,6 +3,15 @@ export type OrderMetadata = {
   events: any[];
   rawImei: string | null;
   visibleNote: string | null;
+  apiDetails?: {
+    username?: string;
+    email?: string;
+    fullName?: string;
+    siteName?: string | null;
+    siteUrl?: string | null;
+    apiKey?: string | null;
+    margin?: number;
+  } | null;
 };
 
 export type OrderFieldDetail = {
@@ -98,21 +107,21 @@ export function buildOrderFieldDetails(
     const value = submitted ? String(submitted[1] ?? "") : "";
     const required = field?.required === true
       || field?.required === 1
-      || ["1", "true", "on", "yes"].includes(String(field?.required || "").toLowerCase());
+      || String(field?.required).toLowerCase() === "true"
+      || String(field?.required).toLowerCase() === "on";
 
-    const normLabel = providerFieldId.toLowerCase().replace(/^custom_/i, "").trim() || id.toLowerCase();
-    if (!seenNormLabels.has(normLabel)) {
-      seenNormLabels.add(normLabel);
-      details.push({
-        id,
-        providerFieldId,
-        label: providerFieldId.replace(/^custom_/i, "").trim() || id,
-        type: String(field?.type || field?.fieldtype || "text"),
-        required,
-        value,
-        missing: required && !value.trim()
-      });
-    }
+    const label = String(field?.label || field?.name || field?.fieldname || field?.FIELDNAME || providerFieldId);
+    seenNormLabels.add(label.toLowerCase().trim());
+
+    details.push({
+      id,
+      providerFieldId,
+      label,
+      type: String(field?.type || field?.fieldtype || "text"),
+      required,
+      value,
+      missing: required && !value
+    });
   });
 
   for (const [key, rawValue] of submittedEntries) {
@@ -141,7 +150,8 @@ export function parseOrderMetadata(notes: unknown): OrderMetadata {
     customFields: null,
     events: [],
     rawImei: null,
-    visibleNote: null
+    visibleNote: null,
+    apiDetails: null
   };
 
   if (typeof notes !== "string" || !notes.trim()) return empty;
@@ -162,6 +172,9 @@ export function parseOrderMetadata(notes: unknown): OrderMetadata {
         : null,
       visibleNote: typeof parsed.userNote === "string" && parsed.userNote.trim()
         ? parsed.userNote.trim()
+        : null,
+      apiDetails: parsed.apiDetails && typeof parsed.apiDetails === "object"
+        ? parsed.apiDetails
         : null
     };
   } catch {

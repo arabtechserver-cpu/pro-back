@@ -33,9 +33,9 @@ router.get('/services', (req, res, next) => {
 }, async (req, res) => {
   try {
     const { all } = req.query;
-    const isPricingView = req.query.view === "pricing";
+    const isPricingView = req.query.view === "pricing" || all !== 'true';
 
-    // Instant in-memory cache check for pricing view
+    // Instant in-memory cache check for pricing/public view
     if (isPricingView && all !== 'true' && pricingCache && (Date.now() - pricingCache.timestamp < PRICING_CACHE_TTL)) {
       const clientEtag = req.headers['if-none-match'];
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');

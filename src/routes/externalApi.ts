@@ -52,14 +52,6 @@ const authenticateApi = async (req: any, res: any, next: any) => {
       });
     }
 
-    if (user.role === 'admin') {
-      return res.status(403).json({
-        SUCCESS: [{
-          ERROR: "Admin accounts cannot be used for API access. Reseller API is restricted to client accounts only."
-        }]
-      });
-    }
-
     req.apiUser = user;
     next();
   } catch (error) {
@@ -71,8 +63,9 @@ const authenticateApi = async (req: any, res: any, next: any) => {
   }
 };
 
-router.post('/', authenticateApi, async (req: any, res: any) => {
-  const { action, parameters } = req.body;
+router.all('/', authenticateApi, async (req: any, res: any) => {
+  const action = req.body?.action || req.query?.action || req.headers?.['x-action'];
+  const parameters = req.body?.parameters || req.query?.parameters;
   const user = req.apiUser;
 
   try {
@@ -92,8 +85,9 @@ router.post('/', authenticateApi, async (req: any, res: any) => {
       }
     }
 
-    // Also pick up flat fields from req.body (e.g. ID, IMEI, customfield, etc.)
-    for (const [key, value] of Object.entries(req.body)) {
+    // Also pick up flat fields from req.body and req.query (e.g. ID, IMEI, customfield, format, etc.)
+    const combinedInput = { ...(req.query || {}), ...(req.body || {}) };
+    for (const [key, value] of Object.entries(combinedInput)) {
       if (['username', 'apiaccesskey', 'key', 'apiKey', 'action', 'parameters'].includes(key)) continue;
       const match = key.match(/^parameters\[(.+)\]$/);
       if (match) {
@@ -126,11 +120,16 @@ router.post('/', authenticateApi, async (req: any, res: any) => {
       }
 
       // ----------------------------------------------------
-      // 2. Service Lists (IMEI, Server, Remote)
+      // 2. Service Lists (IMEI, Server, Remote, All)
       // ----------------------------------------------------
       case 'imeiservicelist':
       case 'serverservicelist':
-      case 'remoteservicelist': {
+      case 'remoteservicelist':
+      case 'servicelist':
+      case 'serviceslist':
+      case 'getservicelist':
+      case 'getservices':
+      case 'services': {
         const isImei = normalizedAction === 'imeiservicelist';
         const isRemote = normalizedAction === 'remoteservicelist';
         const isServer = normalizedAction === 'serverservicelist';
@@ -173,18 +172,30 @@ router.post('/', authenticateApi, async (req: any, res: any) => {
           ? user.apiMargin
           : 8.0;
 
-        // Group services by their actual package name (groupName)
-        const serviceList: Record<string, any> = {};
+        // Group services strictly by their actual package name (groupName)
+        const groupsMap = new Map<string, any>();
+        const groupsObject: Record<string, any> = {};
 
         for (const srv of filteredServices) {
-          const groupName = (srv.groupName || 'General Services').trim();
-          const groupKey = srv.categoryId || groupName.replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, '_');
+          const rawGroupName = (srv.groupName && srv.groupName.trim() !== ''
+            ? srv.groupName
+            : (srv.dhruCategory?.name || (isImei ? 'IMEI Services' : 'Server Services'))).trim();
+          const groupName = rawGroupName;
 
-          if (!serviceList[groupKey]) {
-            serviceList[groupKey] = {
+          if (!groupsMap.has(groupName)) {
+            const groupData = {
               GROUPNAME: groupName,
-              SERVICES: []
+              group_name: groupName,
+              GroupName: groupName,
+              name: groupName,
+              package_name: groupName,
+              package: groupName,
+              category: srv.dhruCategory?.name || (isImei ? 'IMEI Services' : 'Server Services'),
+              SERVICES: [] as any[],
+              services: [] as any[]
             };
+            groupsMap.set(groupName, groupData);
+            groupsObject[groupName] = groupData;
           }
 
           // Provider base price (cost)
@@ -218,27 +229,55 @@ router.post('/', authenticateApi, async (req: any, res: any) => {
             requiresFields.push("IMEI");
           }
 
-          serviceList[groupKey].SERVICES.push({
+          const srvItem = {
             SERVICEID: srv.dhruId || srv.id,
+            service_id: srv.dhruId || srv.id,
             ID: srv.id,
+            id: srv.id,
             SERVICENAME: srv.name,
+            service_name: srv.name,
+            name: srv.name,
             CREDIT: finalPrice.toFixed(2),
+            credit: finalPrice.toFixed(2),
             PRICE: finalPrice.toFixed(2),
+            price: finalPrice.toFixed(2),
             TIME: srv.time || "1-24 Hours",
+            time: srv.time || "1-24 Hours",
             INFO: srv.info || "",
+            info: srv.info || "",
             GROUPNAME: groupName,
+            group_name: groupName,
+            GroupName: groupName,
+            group: groupName,
+            package: groupName,
+            PACKAGE: groupName,
+            category: srv.dhruCategory?.name || (isImei ? "IMEI Service" : "Server Service"),
             Requires: requiresFields.join(","),
             RequiresCustom: customReq.length > 0 ? customReq : undefined,
             CUSTOM: customReq.length > 0 ? customReq : undefined,
             SupportsQty: srv.supportsQty,
+            supports_quantity: srv.supportsQty,
             MIN_QNT: srv.minQty || 1,
             MAX_QNT: srv.maxQty || 0
-          });
+          };
+
+          const targetGroup = groupsMap.get(groupName);
+          targetGroup.SERVICES.push(srvItem);
+          targetGroup.services.push(srvItem);
         }
+
+        const groupsList = Array.from(groupsMap.values());
+        const isObjectFormat = req.query.format === 'object' || parsedParams.format === 'object';
+        const listPayload = isObjectFormat ? groupsObject : groupsList;
 
         return res.json({
           SUCCESS: [{
-            LIST: serviceList
+            LIST: listPayload,
+            GROUPS: groupsList,
+            PACKAGES: groupsList,
+            serviceList: groupsList,
+            total_groups: groupsList.length,
+            total_services: filteredServices.length
           }]
         });
       }

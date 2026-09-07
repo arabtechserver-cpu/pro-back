@@ -82,6 +82,9 @@ app.use('/api/app-events', analyticsRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/newsletter', newsletterRoutes);
 app.use('/api/v1/provider', externalApiRoutes); // Dhru compatible API endpoint
+app.use('/api/reseller', externalApiRoutes);
+app.use('/api/external', externalApiRoutes);
+app.use('/api/dhru/api', externalApiRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

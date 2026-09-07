@@ -36,15 +36,23 @@ export async function bootstrapDatabase() {
       });
       console.log('[Bootstrap] Default Admin created (Email: admin@admin.com / Password: 123456)');
     } else {
-      // Force ensure admin account is ACTIVE and has admin role
-      await prisma.user.update({
-        where: { id: adminUser.id },
+      // Force ensure admin account is ACTIVE and has admin role, with NO API access allowed
+      await prisma.user.updateMany({
+        where: {
+          OR: [
+            { role: 'admin' },
+            { username: 'admin' },
+            { email: 'admin@admin.com' }
+          ]
+        },
         data: {
           status: 'active',
-          role: 'admin'
+          role: 'admin',
+          apiKey: null,
+          apiEnabled: false
         }
       });
-      console.log('[Bootstrap] Admin account status restored to ACTIVE.');
+      console.log('[Bootstrap] Admin account status restored to ACTIVE (API access permanently blocked for admin accounts).');
     }
 
     // Auto-migrate User table to add phone column if missing

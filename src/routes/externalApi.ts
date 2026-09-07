@@ -52,6 +52,14 @@ const authenticateApi = async (req: any, res: any, next: any) => {
       });
     }
 
+    if (user.role === 'admin') {
+      return res.status(403).json({
+        SUCCESS: [{
+          ERROR: "Admin accounts cannot be used for API access. Reseller API is restricted to client accounts only."
+        }]
+      });
+    }
+
     req.apiUser = user;
     next();
   } catch (error) {

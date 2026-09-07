@@ -45,8 +45,17 @@ function extractCandidateTokens(req: Request): string[] {
     }
   }
 
+  const isClientUserRoute = req.originalUrl && (
+    req.originalUrl.includes('/users/profile') ||
+    req.originalUrl.includes('/users/request-api') ||
+    req.originalUrl.includes('/users/regenerate-api-key') ||
+    req.originalUrl.includes('/users/balance') ||
+    req.originalUrl.includes('/orders/my-orders') ||
+    req.originalUrl.includes('/wallet')
+  );
+
   // If request explicitly asks for all orders or admin operations, prioritize admin_token cookie!
-  const isExplicitAdminQuery =
+  const isExplicitAdminQuery = !isClientUserRoute && (
     req.query.all === 'true' ||
     req.query.all === '1' ||
     Boolean(req.headers['x-admin-token']) ||
@@ -56,24 +65,25 @@ function extractCandidateTokens(req: Request): string[] {
       req.originalUrl.includes('/admin') ||
       req.originalUrl.includes('/providers') ||
       req.originalUrl.includes('/settings') ||
-      req.originalUrl.includes('/currencies') ||
-      req.originalUrl.includes('/users')
-    ));
+      req.originalUrl.includes('/currencies')
+    ))
+  );
 
   if (isExplicitAdminQuery && cookieAdminToken) {
     tokens.push(cookieAdminToken);
   }
 
+  // Explicit Authorization header (e.g. from client app) takes precedence for client operations
   if (headerToken && !tokens.includes(headerToken)) {
     tokens.push(headerToken);
   }
 
-  if (cookieAdminToken && !tokens.includes(cookieAdminToken)) {
-    tokens.push(cookieAdminToken);
-  }
-
   if (cookieUserToken && !tokens.includes(cookieUserToken)) {
     tokens.push(cookieUserToken);
+  }
+
+  if (cookieAdminToken && !tokens.includes(cookieAdminToken)) {
+    tokens.push(cookieAdminToken);
   }
 
   return tokens;

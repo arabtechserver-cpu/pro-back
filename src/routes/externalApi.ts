@@ -35,7 +35,10 @@ const authenticateApi = async (req: any, res: any, next: any) => {
 
     const user = await prisma.user.findFirst({
       where: {
-        username: username,
+        OR: [
+          { username: { equals: username, mode: 'insensitive' } },
+          { email: { equals: username, mode: 'insensitive' } }
+        ],
         apiKey: apiKey,
         apiEnabled: true
       }

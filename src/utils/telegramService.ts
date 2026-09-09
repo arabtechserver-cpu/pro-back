@@ -233,8 +233,12 @@ async function handleIncomingTelegramUpdate(update: any) {
         }
 
         if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
-          const errMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || 'خطأ غير معروف من المزود';
-          await sendTelegramMessage(chatId, `❌ <b>فشل إرسال الطلب للمزود:</b>\n<code>${errMsg}</code>`);
+          const rawErrMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION || 'خطأ غير معروف من المزود';
+          const isCredit = JSON.stringify(dhruResponse || {}).toLowerCase().includes('credit');
+          const finalErrMsg = isCredit
+            ? '⚠️ رصيد حسابك لدى المزود الخارجي غير كافٍ (You have not enough credit). يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
+            : rawErrMsg;
+          await sendTelegramMessage(chatId, `❌ <b>فشل إرسال الطلب للمزود:</b>\n<code>${finalErrMsg}</code>`);
           return;
         }
 

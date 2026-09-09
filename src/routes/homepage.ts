@@ -2,6 +2,7 @@ import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
 import { isAdmin } from '../middleware/auth';
+import { prisma } from '../utils/prisma';
 
 const router = Router();
 const CONFIG_FILE = path.join(__dirname, '../../data/homepage_config.json');
@@ -126,36 +127,117 @@ function ensureDirectoryExistence(filePath: string) {
   fs.mkdirSync(dirname);
 }
 
-function loadConfig() {
+function normalizeCampaigns(c: any): any[] {
+  if (Array.isArray(c) && c.length > 0) {
+    return c.map((item: any) => ({
+      tagEn: item.tagEn || "",
+      tagAr: item.tagAr || "",
+      titleEn: item.titleEn || "",
+      titleAr: item.titleAr || "",
+      descEn: item.descEn || "",
+      descAr: item.descAr || "",
+      image: item.image || "",
+      url: item.url || "/pricing"
+    }));
+  }
+  if (c && typeof c === "object") {
+    const list: any[] = [];
+    if (c.promo1TitleAr || c.promo1Image || c.promo1TitleEn) {
+      list.push({
+        tagEn: c.promo1TagEn || "Hot Offer",
+        tagAr: c.promo1TagAr || "عرض خاص",
+        titleEn: c.promo1TitleEn || "Samsung FRP Remove",
+        titleAr: c.promo1TitleAr || "حذف حساب جوجل لسامسونج",
+        descEn: c.promo1DescEn || "Instant via IMEI. Support all models.",
+        descAr: c.promo1DescAr || "فك فوري لجميع موديلات سامسونج.",
+        image: c.promo1Image || "/images/promo_samsung.png",
+        url: c.promo1Url || "/pricing"
+      });
+    }
+    if (c.promo2TitleAr || c.promo2Image || c.promo2TitleEn) {
+      list.push({
+        tagEn: c.promo2TagEn || "Official Reseller",
+        tagAr: c.promo2TagAr || "ترخيص رسمي",
+        titleEn: c.promo2TitleEn || "Chimera Tool",
+        titleAr: c.promo2TitleAr || "أداة شيميراChimera",
+        descEn: c.promo2DescEn || "Activations and credits available instantly.",
+        descAr: c.promo2DescAr || "تراخيص وأرصدة سريعة ومتاحة فوراً.",
+        image: c.promo2Image || "/images/promo_chimera.png",
+        url: c.promo2Url || "/pricing"
+      });
+    }
+    if (list.length > 0) return list;
+  }
+  return defaultConfig.campaigns;
+}
+
+async function loadConfig() {
+  try {
+    const dbSetting = await prisma.setting.findUnique({ where: { key: 'homepage_config' } });
+    if (dbSetting?.value) {
+      const parsed = JSON.parse(dbSetting.value);
+      const merged = { ...defaultConfig, ...parsed };
+      merged.campaigns = normalizeCampaigns(parsed.campaigns || defaultConfig.campaigns);
+      return merged;
+    }
+  } catch (dbErr) {
+    console.warn("Could not read homepage config from DB, falling back to file:", dbErr);
+  }
+
   try {
     if (fs.existsSync(CONFIG_FILE)) {
       const data = fs.readFileSync(CONFIG_FILE, 'utf-8');
-      return { ...defaultConfig, ...JSON.parse(data) };
+      const parsed = JSON.parse(data);
+      const merged = { ...defaultConfig, ...parsed };
+      merged.campaigns = normalizeCampaigns(parsed.campaigns || defaultConfig.campaigns);
+      return merged;
     }
   } catch (err) {
-    console.error("Error reading homepage config:", err);
+    console.error("Error reading homepage config from file:", err);
   }
   return defaultConfig;
 }
 
-function saveConfig(config: any) {
-  ensureDirectoryExistence(CONFIG_FILE);
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), 'utf-8');
+async function saveConfig(config: any) {
+  if (config && config.campaigns) {
+    config.campaigns = normalizeCampaigns(config.campaigns);
+  }
+  const serialized = JSON.stringify(config, null, 2);
+
+  // 1. Save to File
+  try {
+    ensureDirectoryExistence(CONFIG_FILE);
+    fs.writeFileSync(CONFIG_FILE, serialized, 'utf-8');
+  } catch (fileErr) {
+    console.error("Error writing homepage config to file:", fileErr);
+  }
+
+  // 2. Save to DB Setting for permanent persistence
+  try {
+    await prisma.setting.upsert({
+      where: { key: 'homepage_config' },
+      update: { value: serialized },
+      create: { key: 'homepage_config', value: serialized },
+    });
+  } catch (dbErr) {
+    console.error("Error saving homepage config to DB:", dbErr);
+  }
 }
 
 // GET homepage config
-router.get('/', (req, res) => {
-  const config = loadConfig();
+router.get('/', async (req, res) => {
+  const config = await loadConfig();
   res.json(config);
 });
 
 // POST update homepage config
-router.post('/', isAdmin, (req, res) => {
+router.post('/', isAdmin, async (req, res) => {
   try {
     const updatedConfig = req.body;
-    saveConfig(updatedConfig);
+    await saveConfig(updatedConfig);
     res.json({ success: true, message: "تم تحديث محتوى الصفحة الرئيسية بنجاح!", config: updatedConfig });
   } catch (error) {
+    console.error("Failed to save homepage config:", error);
     res.status(500).json({ error: "فشل حفظ إعدادات الصفحة الرئيسية" });
   }
 });

@@ -205,6 +205,24 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'الرجاء تسجيل الدخول أولاً لإرسال الطلب' });
     }
 
+    // Prevent rapid duplicate order submissions (same user, same service, same target within 20 seconds)
+    const twentySecondsAgo = new Date(Date.now() - 20 * 1000);
+    const duplicateOrder = await prisma.order.findFirst({
+      where: {
+        userId: targetUserId,
+        serviceId: String(serviceId),
+        targetInput: finalTargetInput,
+        createdAt: { gte: twentySecondsAgo },
+        status: { in: ['pending', 'processing'] }
+      }
+    });
+
+    if (duplicateOrder) {
+      return res.status(429).json({
+        error: '⚠️ تم استلام طلب مماثل لهذا المعرّف/الخدمة للتو وهو قيد المعالجة، يُرجى الانتظار لتجنب الخصم المزدوج.'
+      });
+    }
+
     const qty = Math.max(1, parseInt(quantity || 1));
     // Look up Dhru service and provider
     const dhruService = await prisma.dhruService.findFirst({
@@ -520,8 +538,58 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
 
     if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
       console.error('[Dispatch Provider Error]:', dhruResponse);
-      const errMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || 'رفض المزود الطلب';
-      return res.status(400).json({ error: `فشل الإرسال: ${errMsg}` });
+      const rawErrMsg =
+        dhruResponse?.Error ||
+        dhruResponse?.ERROR?.[0]?.MESSAGE ||
+        dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION ||
+        'رفض المزود الطلب';
+
+      const responseStr = JSON.stringify(dhruResponse || {}).toLowerCase();
+      const isCreditError =
+        responseStr.includes('creditprocesserror') ||
+        responseStr.includes('not enough credit') ||
+        responseStr.includes('insufficient credit') ||
+        responseStr.includes('low credit');
+
+      const userFacingMsg = isCreditError
+        ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
+        : `رفض المزود الطلب: ${rawErrMsg}`;
+
+      // Record dispatch failure in order timeline
+      const now = new Date();
+      const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
+      events.push({
+        time: now.toISOString(),
+        action: 'DISPATCH_FAILED',
+        title: isCreditError ? 'فشل الإرسال: رصيد المزود غير كافٍ ⚠️' : 'فشل الإرسال للمزود ❌',
+        desc: userFacingMsg
+      });
+      parsedNotes.events = events;
+
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { notes: JSON.stringify(parsedNotes) }
+      });
+
+      // Send immediate Telegram alert to Admin if provider balance is exhausted
+      if (isCreditError) {
+        try {
+          const providerName = dhruService.apiProvider?.name || 'سيرفر المزود';
+          await sendTelegramPhotoNotification({
+            caption:
+              `🚨 <b>تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي!</b>\n\n` +
+              `📦 <b>رقم الطلب:</b> #${order.id.slice(-6)}\n` +
+              `📱 <b>اسم الخدمة:</b> ${dhruService.name}\n` +
+              `🌐 <b>المزود المربوط:</b> ${providerName}\n` +
+              `⚠️ <b>سبب الرفض:</b> <code>رصيد حسابك لدى المزود غير كافٍ (You have not enough credit)</code>\n\n` +
+              `💡 <b>الإجراء المطلوب:</b> يرجى شحن رصيد حسابك في موقع المزود ثم فتح لوحة الإدارة وإعادة إرسال الطلب.`
+          });
+        } catch (tgErr) {
+          console.error('[Dispatch Provider Telegram Alert Error]:', tgErr);
+        }
+      }
+
+      return res.status(400).json({ error: `فشل الإرسال: ${userFacingMsg}` });
     }
 
     if (dhruResponse.SUCCESS && dhruResponse.SUCCESS[0] && dhruResponse.SUCCESS[0].REFERENCEID) {

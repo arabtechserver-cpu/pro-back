@@ -146,7 +146,51 @@ router.post('/', optionalAuth, async (req, res) => {
       return res.status(401).json({ error: 'يُرجى تسجيل الدخول بحسابك أولاً لإتمام طلب الشحن' });
     }
 
-    // 2. Handle receipt image: save full uncompressed original buffer to persistent volume on disk
+    const cleanRefNo = String(refNo).trim();
+    const cleanMethod = String(method).trim();
+    const parsedAmount = parseFloat(amount);
+
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ error: 'المبلغ غير صالح، يرجى إدخال قيمة صحيحة' });
+    }
+
+    // 1. Check duplicate reference number (same refNo already pending or completed)
+    const existingSameRef = await prisma.transaction.findFirst({
+      where: {
+        refNo: { equals: cleanRefNo, mode: 'insensitive' },
+        status: { in: ['pending', 'completed'] }
+      }
+    });
+
+    if (existingSameRef) {
+      if (existingSameRef.status === 'pending') {
+        return res.status(400).json({
+          error: `⚠️ رقم المعاملة أو الإشعار (${cleanRefNo}) مسجل مسبقاً وهو قيد المراجعة حالياً من قِبل الإدارة. يُرجى الانتظار لتفادي التكرار.`
+        });
+      } else {
+        return res.status(400).json({
+          error: `⚠️ تم اعتماد هذا الإشعار/الرقم المرجعي (${cleanRefNo}) مسبقاً وشحن الرصيد به. لا يمكن إعادة استخدامه.`
+        });
+      }
+    }
+
+    // 2. Prevent spam / rapid consecutive deposit requests from the same user (within 30 seconds)
+    const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
+    const recentPendingTx = await prisma.transaction.findFirst({
+      where: {
+        userId: targetUserId,
+        status: 'pending',
+        createdAt: { gte: thirtySecondsAgo }
+      }
+    });
+
+    if (recentPendingTx) {
+      return res.status(429).json({
+        error: '⚠️ تم إرسال طلب إيداع من حسابك قبل قليل وهو قيد المراجعة. يُرجى الانتظار بضع لحظات قبل إرسال طلب جديد لتجنب التكرار.'
+      });
+    }
+
+    // 3. Handle receipt image: save full uncompressed original buffer to persistent volume on disk
     let savedReceiptUrl = receiptImage || null;
     let localDiskPath: string | null = null;
     if (receiptImage && typeof receiptImage === 'string' && receiptImage.startsWith('data:image/')) {

@@ -118,13 +118,13 @@ const tools = [
 // Helper to format order status in Arabic
 function formatOrderStatus(status: string) {
   const labels: Record<string, string> = {
-    pending: 'قيد الانتظار ⏳',
-    processing: 'قيد التنفيذ 🚀',
-    completed: 'مكتمل ✅',
-    rejected: 'مرفوض ❌',
-    cancelled: 'ملغي ⚠️',
-    canceled: 'ملغي ⚠️',
-    refunded: 'تم استرجاع الرصيد 💰'
+    pending: 'قيد الانتظار',
+    processing: 'قيد التنفيذ',
+    completed: 'مكتمل',
+    rejected: 'مرفوض',
+    cancelled: 'ملغي',
+    canceled: 'ملغي',
+    refunded: 'تم استرجاع الرصيد'
   };
   return labels[String(status || '').toLowerCase()] || status || 'غير محدد';
 }

@@ -1,8 +1,10 @@
 import express from 'express';
 import cors from 'cors';
 import helmet from 'helmet';
+import compression from 'compression';
 import { prisma } from './utils/prisma';
 const app = express();
+app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
 const allowedOrigins = (process.env.FRONTEND_URL || '')
   .split(',')

@@ -29,14 +29,14 @@
     "badge2Ar": "مدفوعات آمنة",
     "badge3En": "Direct support",
     "badge3Ar": "دعم على مدار الساعة",
-    "heroImage": "/images/promo_hero.png"
+    "heroImage": "/images/promo_hero.webp"
   },
   "sidebarPromos": {
     "featuredTitleEn": "Borneo Schematics",
     "featuredTitleAr": "مخططات بورنيو الرسمية",
     "featuredSubtitleEn": "Official reseller promotion",
     "featuredSubtitleAr": "تفعيل فوري بأفضل الأسعار",
-    "featuredImage": "/images/promo_borneo.png",
+    "featuredImage": "/images/promo_borneo.webp",
     "supportTitleEn": "Need a fast answer?",
     "supportTitleAr": "هل تحتاج إجابة سريعة؟",
     "supportBtnEn": "Chat with GSM Team",
@@ -95,7 +95,7 @@
       "titleAr": "حذف حساب جوجل لسامسونج",
       "descEn": "Instant via IMEI. Support all models.",
       "descAr": "فك فوري لجميع موديلات سامسونج.",
-      "image": "/images/promo_samsung.png",
+      "image": "/images/promo_samsung.webp",
       "url": "/pricing"
     },
     {
@@ -105,7 +105,7 @@
       "titleAr": "أداة شيميراChimera",
       "descEn": "Activations and credits available instantly.",
       "descAr": "تراخيص وأرصدة سريعة ومتاحة فوراً.",
-      "image": "/images/promo_chimera.png",
+      "image": "/images/promo_chimera.webp",
       "url": "/pricing"
     }
   ]

@@ -8,7 +8,7 @@ export const tenArticles = [
     excerptAr: "تعرف على كل ما يخص أداة UnlockTool الأشهر عالمياً: مدة التفعيلات (3، 6، 12 شهر)، الموديلات والمعالجات المدعومة (MTK, Qualcomm, Apple Ramdisk)، وكيفية التفعيل الفوري عبر السيرفر.",
     excerptEn: "Everything you need to know about UnlockTool: license durations (3, 6, 12 months), supported chipsets (MTK, Qualcomm, Apple Ramdisk), and instant server activation.",
     category: "UnlockTool / Multi-Brand",
-    imageUrl: "/images/promo_hero.png",
+    imageUrl: "/images/promo_hero.webp",
     contentAr: `
       <h2>ما هي أداة UnlockTool ولماذا هي الأداة رقم 1 لكل فني سوفت وير؟</h2>
       <p>تعتبر <strong>UnlockTool</strong> اليوم الأداة الرقمية الأكثر انتشاراً وطلباً بين مهندسي وفنيي صيانة المحمول حول العالم، وذلك بفضل قدرتها على معالجة آلاف الهواتف الذكية بنقرة زر واحدة دون الحاجة إلى بوكسات أو دونجلات فيزيائية.</p>
@@ -81,7 +81,7 @@ export const tenArticles = [
     excerptAr: "دليل شامل لأداة Chimera Tool العملاقة: الفرق بين باقة Samsung وباقة PRO الشاملة، طريقة شراء الكريدتس، وإصلاح شبكات ومعالجات Exynos و Snapdragon.",
     excerptEn: "Detailed masterclass on Chimera Tool: comparing Samsung vs PRO All-Modules licenses, server credits system, and network repairs.",
     category: "Chimera / Multi-Brand",
-    imageUrl: "/images/promo_chimera.png",
+    imageUrl: "/images/promo_chimera.webp",
     contentAr: `
       <h2>العملاق الأوروبي في صيانة وبرمجة الهواتف الذكية: Chimera Tool</h2>
       <p>تعتبر أداة <strong>Chimera Tool</strong> المرجع الأول عالمياً في عمليات التفليش المتقدمة، وتغيير وإصلاح أرقام IMEI لهواتف سامسونج الأصلية، وفك شفرات الشبكات لهواتف هواوي وشاومي وبلاك بيري وال جي.</p>
@@ -133,7 +133,7 @@ export const tenArticles = [
     excerptAr: "تعرف على أداة Borneo Schematics الرائدة في مخططات الهاردوير ومسارات الشحن والإضاءة وتتبع أعطال البوردات لهواتف آيفون، سامسونج، وشاومي.",
     excerptEn: "Explore Borneo Schematics: the essential hardware schematics, bitmap layers, voltage points, and diode value guide for micro-soldering technicians.",
     category: "Hardware & Schematics",
-    imageUrl: "/images/promo_borneo.png",
+    imageUrl: "/images/promo_borneo.webp",
     contentAr: `
       <h2>السلاح السري لفنيي الهاردوير والمايكرو سولدرينج: Borneo Schematics</h2>
       <p>إذا كنت تعمل في صيانة الهاردوير وتغيير الآيسيات والتعامل مع أعطال البوردات، فإن <strong>Borneo Schematics</strong> هي الأداة التي لا يمكن الاستغناء عنها داخل أي ورشة صيانة محترفة.</p>
@@ -181,7 +181,7 @@ export const tenArticles = [
     excerptAr: "مقارنة تفصيلية لاختيار الأداة المناسبة لمركز الصيانة الخاص بك: نقاط القوة، التكلفة، ودعم الحمايات والموديلات لكل أداة.",
     excerptEn: "In-depth breakdown comparing the top three GSM software suites: strengths, operational costs, and supported chipset coverage.",
     category: "GSM Tools Comparison",
-    imageUrl: "/images/promo_store.png",
+    imageUrl: "/images/promo_store.webp",
     contentAr: `
       <h2>أي أداة سوفت وير يجب أن تشتريها أولاً لمركز الصيانة الخاص بك؟</h2>
       <p>يواجه الكثير من الفنيين وأصحاب المحلات حيرة كبيرة عند اختيار أدوات السوفت وير. في هذا المقال نقوم بمقارنة شاملة بين عمالقة السوق:</p>
@@ -250,7 +250,7 @@ export const tenArticles = [
     excerptAr: "طرق تخطي حساب جوجل بعد الفورمات لهواتف سامسونج أندرويد 13، 14، 15: السيرفر الأوتوماتيكي، ثغرة وضع الاختبار MTP، وخدمات IMEI المباشرة.",
     excerptEn: "Definitive guide on removing Samsung Factory Reset Protection (FRP) on Android 13, 14, and 15 using instant auto-server APIs.",
     category: "Samsung / FRP",
-    imageUrl: "/images/promo_samsung.png",
+    imageUrl: "/images/promo_samsung.webp",
     contentAr: `
       <h2>حل مشكلة 'تمت إعادة ضبط الهاتف' وقفل حساب جوجل في هواتف سامسونج</h2>
       <p>تعتبر حماية <strong>FRP (Factory Reset Protection)</strong> من أكثر المشاكل التي تواجه المستخدمين وفنيي الصيانة عند عمل فورمات للهاتف ونسيان بيانات حساب Google المرتبط به.</p>
@@ -298,7 +298,7 @@ export const tenArticles = [
     excerptAr: "دليل فك وإزالة حسابات آبل FMI OFF من السيرفر الرسمي، والفرق بين الفك الدائم (Clean IMEI) وتخطي الـ Ramdisk مع تفعيل المكالمات.",
     excerptEn: "Explore permanent Apple ID removal (FMI OFF Server) vs instant Ramdisk signal bypass for iPhone and iPad devices.",
     category: "Apple / iOS",
-    imageUrl: "/images/promo_imei.png",
+    imageUrl: "/images/promo_imei.webp",
     contentAr: `
       <h2>كيف تعمل خدمات فك وتخطي iCloud لأجهزة آبل؟</h2>
       <p>قفل تنشيط <strong>iCloud Activation Lock</strong> هو نظام الأمان الأكثر قوة في أجهزة iPhone و iPad. ومع ذلك، تتوفر اليوم حلول رسمية وتقنية فعالة للتعامل مع مختلف الحالات:</p>
@@ -389,7 +389,7 @@ export const tenArticles = [
     excerptAr: "دليل فك تشفير شبكات الهواتف الأمريكية والأوروبية رسمياً لتشغيل جميع شرائح الاتصال المحلية والدولية مدى الحياة بدون شرائح توربو.",
     excerptEn: "Permanent factory SIM unlock for US and European iPhones: AT&T, T-Mobile, Verizon, Sprint, and O2 via official IMEI whitelist.",
     category: "Network & Carrier Unlock",
-    imageUrl: "/images/promo_remote.png",
+    imageUrl: "/images/promo_remote.webp",
     contentAr: `
       <h2>تشغيل جميع الشرائح على هواتف الآيفون المقفلة دولياً</h2>
       <p>عند شراء هاتف وارد من الولايات المتحدة أو أوروبا (مثل شبكات AT&T, T-Mobile, Verizon, Vodafone)، تجد رسالة "SIM Not Supported" أو "SIM مقفلة".</p>
@@ -432,7 +432,7 @@ export const tenArticles = [
     excerptAr: "كيف تتجنب شراء هواتف مسروقة أو مقفولة شبكة أو عليها أقساط عبر خدمات الفحص المباشر والسريع بالسيرفر خلال ثوانٍ معدودة.",
     excerptEn: "Protect your business from blacklisted, financed, or iCloud locked devices with high-speed automated GSX IMEI check reports.",
     category: "IMEI Check & Security",
-    imageUrl: "/images/promo_server.png",
+    imageUrl: "/images/promo_server.webp",
     contentAr: `
       <h2>فحص الـ IMEI: الخطوة الأولى والأهم لكل تاجر وفني هواتف</h2>
       <p>قبل شراء أي هاتف مستعمل أو البدء في عملية فك شفرات أو صيانة، فإن إجراء <strong>فحص IMEI سريع</strong> يحميك من خسارة الأموال والمشاكل القانونية.</p>

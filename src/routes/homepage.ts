@@ -40,14 +40,14 @@ const defaultConfig = {
     badge2Ar: "مدفوعات آمنة",
     badge3En: "Direct support",
     badge3Ar: "دعم على مدار الساعة",
-    heroImage: "/images/promo_hero.png"
+    heroImage: "/images/promo_hero.webp"
   },
   sidebarPromos: {
     featuredTitleEn: "Borneo Schematics",
     featuredTitleAr: "مخططات بورنيو الرسمية",
     featuredSubtitleEn: "Official reseller promotion",
     featuredSubtitleAr: "تفعيل فوري بأفضل الأسعار",
-    featuredImage: "/images/promo_borneo.png",
+    featuredImage: "/images/promo_borneo.webp",
     featuredUrl: "/pricing",
     supportTitleEn: "Need a fast answer?",
     supportTitleAr: "هل تحتاج إجابة سريعة؟",
@@ -102,7 +102,7 @@ const defaultConfig = {
       titleAr: "حذف حساب جوجل لسامسونج",
       descEn: "Instant via IMEI. Support all models.",
       descAr: "فك فوري لجميع موديلات سامسونج.",
-      image: "/images/promo_samsung.png",
+      image: "/images/promo_samsung.webp",
       url: "/pricing"
     },
     {
@@ -112,7 +112,7 @@ const defaultConfig = {
       titleAr: "أداة شيميراChimera",
       descEn: "Activations and credits available instantly.",
       descAr: "تراخيص وأرصدة سريعة ومتاحة فوراً.",
-      image: "/images/promo_chimera.png",
+      image: "/images/promo_chimera.webp",
       url: "/pricing"
     }
   ]
@@ -150,7 +150,7 @@ function normalizeCampaigns(c: any): any[] {
         titleAr: c.promo1TitleAr || "حذف حساب جوجل لسامسونج",
         descEn: c.promo1DescEn || "Instant via IMEI. Support all models.",
         descAr: c.promo1DescAr || "فك فوري لجميع موديلات سامسونج.",
-        image: c.promo1Image || "/images/promo_samsung.png",
+        image: c.promo1Image || "/images/promo_samsung.webp",
         url: c.promo1Url || "/pricing"
       });
     }
@@ -162,7 +162,7 @@ function normalizeCampaigns(c: any): any[] {
         titleAr: c.promo2TitleAr || "أداة شيميراChimera",
         descEn: c.promo2DescEn || "Activations and credits available instantly.",
         descAr: c.promo2DescAr || "تراخيص وأرصدة سريعة ومتاحة فوراً.",
-        image: c.promo2Image || "/images/promo_chimera.png",
+        image: c.promo2Image || "/images/promo_chimera.webp",
         url: c.promo2Url || "/pricing"
       });
     }

@@ -502,31 +502,39 @@ async function handleIncomingTelegramUpdate(update: any) {
 
   // 1. Admin credential verification: [username_or_email] [password]
   // Allow unauthorized users to authenticate and register their Chat ID
-  const parts = text.split(/\s+/);
-  if (parts.length === 2) {
-    const [identifier, password] = parts;
-    try {
-      const user = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { email: identifier },
-            { username: identifier }
-          ],
-          role: 'admin'
-        }
-      });
+  if (!isAuthorized && lowerText !== '/start' && lowerText !== '/admin') {
+    const parts = text.split(/\s+/);
+    if (parts.length === 2) {
+      const [identifier, password] = parts;
+      try {
+        const user = await prisma.user.findFirst({
+          where: {
+            OR: [
+              { email: identifier },
+              { username: identifier }
+            ],
+            role: 'admin'
+          }
+        });
 
-      if (user && await bcrypt.compare(password, user.password)) {
-        addAdminChatId(chatId);
-        isAuthorized = true; // Mark as authorized for subsequent checks in this execution
-        await sendTelegramMessage(
-          chatId,
-          `✅ <b>تم تسجيل الدخول بنجاح!</b>\n\nتم ربط حساب التلجرام الخاص بك (Chat ID: <code>${chatId}</code>) بصلاحيات الإدارة.\n\nأرسل /start لعرض خيارات التحكم.`
-        );
-        return;
+        if (user && await bcrypt.compare(password, user.password)) {
+          addAdminChatId(chatId);
+          isAuthorized = true; // Mark as authorized for subsequent checks in this execution
+          await sendTelegramMessage(
+            chatId,
+            `✅ <b>تم تسجيل الدخول بنجاح!</b>\n\nتم ربط حساب التلجرام الخاص بك (Chat ID: <code>${chatId}</code>) بصلاحيات الإدارة.\n\nأرسل /start لعرض خيارات التحكم.`
+          );
+          return;
+        } else {
+          await sendTelegramMessage(chatId, `❌ <b>بيانات الدخول خاطئة.</b>\nيرجى التأكد من اسم المستخدم وكلمة المرور وإعادة المحاولة.`);
+          return;
+        }
+      } catch (err) {
+        console.error('[Telegram Bot] DB auth error:', err);
       }
-    } catch (err) {
-      console.error('[Telegram Bot] DB auth error:', err);
+    } else {
+      await sendTelegramMessage(chatId, `🔒 <b>صيغة غير صحيحة.</b>\n\nلتسجيل الدخول كمسؤول، يرجى إرسال <b>اسم المستخدم</b> و <b>كلمة المرور</b> في رسالة واحدة (مفصولين بمسافة).\n\nمثال:\n<code>admin mypassword123</code>`);
+      return;
     }
   }
 

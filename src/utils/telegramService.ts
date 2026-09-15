@@ -429,16 +429,51 @@ async function handleIncomingTelegramUpdate(update: any) {
   const text = (message.text || message.caption || '').trim();
   const lowerText = text.toLowerCase();
 
-  // 1. Block all unauthorized users - no self-registration allowed via bot
+  // 1. Handle unauthorized users
   if (!isAuthorized) {
-    if (lowerText === '/start' || lowerText === '/admin') {
-      await sendTelegramMessage(
-        chatId,
-        `🔒 <b>غير مصرح!</b>\n\nهذا البوت مخصص للمسؤولين المعتمدين فقط. إذا كنت صاحب النظام، يرجى إضافة Chat ID الخاص بك في إعدادات السيرفر.`
-      );
-      console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
+    // Only the primary admin's chat ID (from env var) can log in via password
+    if (chatId === DEFAULT_ADMIN_CHAT_ID) {
+      // They are the owner but not yet "linked" in memory - let them login with dashboard credentials
+      const parts = text.split(/\s+/);
+      if (parts.length === 2 && lowerText !== '/start' && lowerText !== '/admin') {
+        const [identifier, password] = parts;
+        try {
+          const user = await prisma.user.findFirst({
+            where: {
+              OR: [{ email: identifier }, { username: identifier }],
+              role: 'admin'
+            }
+          });
+          if (user && await bcrypt.compare(password, user.password)) {
+            adminChatIds = normalizeAdminChatIds([DEFAULT_ADMIN_CHAT_ID]);
+            isAuthorized = true;
+            await sendTelegramMessage(
+              chatId,
+              `✅ <b>تم تسجيل الدخول بنجاح!</b>\n\nأرسل /start لعرض خيارات التحكم.`
+            );
+            return;
+          } else {
+            await sendTelegramMessage(chatId, `❌ <b>بيانات الدخول خاطئة.</b>\nتأكد من اسم المستخدم وكلمة المرور.`);
+            return;
+          }
+        } catch (err) {
+          console.error('[Telegram Bot] DB auth error:', err);
+          return;
+        }
+      }
+      // Show login prompt for the primary admin
+      if (lowerText === '/start' || lowerText === '/admin') {
+        await sendTelegramMessage(
+          chatId,
+          `🔐 <b>مرحباً!</b>\n\nأرسل <b>اسم المستخدم</b> و<b>كلمة المرور</b> في رسالة واحدة مفصولين بمسافة:\n\n<code>admin mypassword123</code>`
+        );
+      }
+    } else {
+      // Completely ignore any other user
+      if (lowerText === '/start' || lowerText === '/admin') {
+        console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
+      }
     }
-    // Silently ignore all other messages from unauthorized users
     return;
   }
 

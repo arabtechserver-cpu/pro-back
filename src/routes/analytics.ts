@@ -64,44 +64,76 @@ router.get('/summary', isAdmin, async (req, res) => {
       dailyMap.set(day, current);
     });
 
-    // 3. Most Viewed Services
+    // 3. Most Viewed Services and detailed audit logs
     const serviceViews: Record<string, number> = {};
-    recentEvents.forEach((row) => {
-      if (row.eventName === 'service_view' && row.metadata) {
-        try {
-          const meta = JSON.parse(row.metadata);
-          if (meta.serviceId) {
-            serviceViews[meta.serviceId] = (serviceViews[meta.serviceId] || 0) + 1;
-          }
-        } catch (e) {
-          // ignore parsing error
-        }
-      }
+    const serviceViewLogs: any[] = [];
+    const visitorLogs: any[] = [];
+    const seenVisitorSessions = new Set<string>();
+
+    const allDbServices = await prisma.dhruService.findMany({
+      select: { id: true, dhruId: true, name: true }
     });
-    
-    // Sort and get top 5 services
-    const topServiceIds = Object.entries(serviceViews)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 5);
-      
-    const topServices = await Promise.all(
-      topServiceIds.map(async ([id, count]) => {
+    const serviceNameMap = new Map<string, string>();
+    for (const s of allDbServices) {
+      serviceNameMap.set(s.id, s.name);
+      if (s.dhruId) serviceNameMap.set(s.dhruId, s.name);
+    }
+
+    for (const row of recentEvents) {
+      let meta: any = null;
+      if (row.metadata) {
         try {
-          const service = await prisma.dhruService.findFirst({
-            where: {
-              OR: [{ id: String(id) }, { dhruId: String(id) }]
-            }
-          });
-          return {
-            id,
-            name: service?.name || 'Unknown Service',
-            views: count
-          };
-        } catch {
-          return { id, name: 'Unknown Service', views: count };
+          meta = JSON.parse(row.metadata);
+        } catch {}
+      }
+
+      if (row.eventName === 'service_view') {
+        const srvId = meta?.serviceId || '';
+        const srvName = serviceNameMap.get(srvId) || meta?.serviceName || (srvId ? `خدمة #${srvId}` : 'خدمة غير محددة');
+
+        if (srvId) {
+          serviceViews[srvId] = (serviceViews[srvId] || 0) + 1;
         }
-      })
-    );
+
+        serviceViewLogs.push({
+          id: row.id,
+          serviceId: srvId,
+          serviceName: srvName,
+          sessionId: row.sessionId || 'زائر مجهول',
+          path: row.path || '/purchase',
+          createdAt: row.createdAt,
+          userAgent: meta?.userAgent || null,
+          userName: meta?.userName || null,
+          userEmail: meta?.userEmail || null
+        });
+      }
+
+      if (row.sessionId && !seenVisitorSessions.has(row.sessionId)) {
+        seenVisitorSessions.add(row.sessionId);
+        visitorLogs.push({
+          id: row.id,
+          sessionId: row.sessionId,
+          path: row.path || '/',
+          createdAt: row.createdAt,
+          userAgent: meta?.userAgent || null,
+          userName: meta?.userName || null,
+          userEmail: meta?.userEmail || null
+        });
+      }
+    }
+
+    // Top 10 most viewed services
+    const topServices = Object.entries(serviceViews)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map(([id, count]) => ({
+        id,
+        name: serviceNameMap.get(id) || `خدمة #${id}`,
+        views: count
+      }));
+
+    serviceViewLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    visitorLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
     return res.json({
       success: true,
@@ -112,6 +144,8 @@ router.get('/summary', isAdmin, async (req, res) => {
         uniqueSessions: sessions.size,
         counts,
         topServices,
+        serviceViewLogs: serviceViewLogs.slice(0, 100),
+        visitorLogs: visitorLogs.slice(0, 100),
         daily: [...dailyMap.values()].sort((a, b) => a.day.localeCompare(b.day)),
       }
     });

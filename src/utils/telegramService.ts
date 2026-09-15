@@ -231,6 +231,13 @@ async function handleIncomingTelegramUpdate(update: any) {
         return;
       }
 
+      if (data === 'admin_logout') {
+        removeAdminChatId(chatId);
+        await answerCallbackQuery(cbId, '🚪 تم تسجيل الخروج بنجاح!', true);
+        await sendTelegramMessage(chatId, '🚪 <b>تم إلغاء ربط حسابك.</b>\nلم تعد تستلم إشعارات ولن تتمكن من التحكم بالبوت.');
+        return;
+      }
+
       // 1. Send Order to Dhru Provider API: send_dhru_{orderId}
       if (data.startsWith('send_dhru_')) {
         const orderId = data.replace('send_dhru_', '').trim();
@@ -532,7 +539,8 @@ async function handleIncomingTelegramUpdate(update: any) {
         {
           inline_keyboard: [
             [{ text: "👥 عدد المشرفين المسجلين", callback_data: "admin_count" }],
-            [{ text: "🗑️ طرد جميع المشرفين", callback_data: "admin_kick_all" }]
+            [{ text: "🗑️ طرد جميع المشرفين", callback_data: "admin_kick_all" }],
+            [{ text: "🚪 تسجيل الخروج (إلغاء الربط)", callback_data: "admin_logout" }]
           ]
         }
       );
@@ -551,6 +559,16 @@ async function handleIncomingTelegramUpdate(update: any) {
     await sendTelegramMessage(
       chatId,
       `🟢 <b>حسابك مسجل كـ أدمن معتمد (Chat ID: <code>${chatId}</code>) وتصلك الإشعارات والأزرار التفاعلية فورياً.</b>`
+    );
+    return;
+  }
+
+  // 4. Logout / Unlink
+  if (isAuthorized && (lowerText === '/logout' || lowerText === '/unlink' || lowerText === 'الغاء ربط الحساب' || lowerText === 'الغاء الربط' || lowerText === 'تسجيل خروج')) {
+    removeAdminChatId(chatId);
+    await sendTelegramMessage(
+      chatId,
+      `🚪 <b>تم تسجيل الخروج وإلغاء الربط بنجاح!</b>\nلن تصلك إشعارات بعد الآن. أرسل /start لتسجيل الدخول مجدداً.`
     );
     return;
   }

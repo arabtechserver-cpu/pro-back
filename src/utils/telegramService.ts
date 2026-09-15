@@ -192,7 +192,7 @@ async function handleIncomingTelegramUpdate(update: any) {
 
   // Security: Only process commands from authorized admins
   const currentAdminIds = getAdminChatIds();
-  const isAuthorized = currentAdminIds.includes(incomingChatId);
+  let isAuthorized = currentAdminIds.includes(incomingChatId);
 
   // -------------------------------------------------------------
   // A. Handle Interactive Inline Button Clicks (callback_query)
@@ -211,6 +211,26 @@ async function handleIncomingTelegramUpdate(update: any) {
     }
 
     try {
+      // 0. Admin Management Commands
+      if (data === 'admin_count') {
+        const count = getAdminChatIds().length;
+        await answerCallbackQuery(cbId, `👥 عدد المشرفين المسجلين حالياً: ${count}`, true);
+        return;
+      }
+
+      if (data === 'admin_kick_all') {
+        // Keep only the current admin and the default admin
+        const currentAdmins = getAdminChatIds();
+        for (const id of currentAdmins) {
+          if (id !== chatId && id !== DEFAULT_ADMIN_CHAT_ID) {
+            removeAdminChatId(id);
+          }
+        }
+        await answerCallbackQuery(cbId, '🗑️ تم طرد جميع المشرفين الآخرين بنجاح!', true);
+        await sendTelegramMessage(chatId, '✅ <b>تم طرد جميع المشرفين الآخرين.</b>\nأنت المشرف الوحيد المسجل الآن (بالإضافة للمشرف الافتراضي).');
+        return;
+      }
+
       // 1. Send Order to Dhru Provider API: send_dhru_{orderId}
       if (data.startsWith('send_dhru_')) {
         const orderId = data.replace('send_dhru_', '').trim();
@@ -473,57 +493,66 @@ async function handleIncomingTelegramUpdate(update: any) {
   const text = (message.text || message.caption || '').trim();
   const lowerText = text.toLowerCase();
 
-  // 1. /start or /admin — only inform authorized admins
+  // 1. Admin credential verification: [username_or_email] [password]
+  // Allow unauthorized users to authenticate and register their Chat ID
+  const parts = text.split(/\s+/);
+  if (parts.length === 2) {
+    const [identifier, password] = parts;
+    try {
+      const user = await prisma.user.findFirst({
+        where: {
+          OR: [
+            { email: identifier },
+            { username: identifier }
+          ],
+          role: 'admin'
+        }
+      });
+
+      if (user && await bcrypt.compare(password, user.password)) {
+        addAdminChatId(chatId);
+        isAuthorized = true; // Mark as authorized for subsequent checks in this execution
+        await sendTelegramMessage(
+          chatId,
+          `✅ <b>تم تسجيل الدخول بنجاح!</b>\n\nتم ربط حساب التلجرام الخاص بك (Chat ID: <code>${chatId}</code>) بصلاحيات الإدارة.\n\nأرسل /start لعرض خيارات التحكم.`
+        );
+        return;
+      }
+    } catch (err) {
+      console.error('[Telegram Bot] DB auth error:', err);
+    }
+  }
+
+  // 2. /start or /admin
   if (lowerText === '/start' || lowerText === '/admin') {
     if (isAuthorized) {
       await sendTelegramMessage(
         chatId,
-        `🟢 <b>أهلاً بك في بوت الإدارة التفاعلي!</b>\n\nحسابك مسجل كـ <b>أدمن معتمد</b> (Chat ID: <code>${chatId}</code>) وتصلك جميع الإشعارات مع أزرار التحكم الفورية.`
+        `🟢 <b>أهلاً بك في بوت الإدارة التفاعلي!</b>\n\nحسابك مسجل كـ <b>أدمن معتمد</b> (Chat ID: <code>${chatId}</code>) وتصلك جميع الإشعارات مع أزرار التحكم الفورية.`,
+        {
+          inline_keyboard: [
+            [{ text: "👥 عدد المشرفين المسجلين", callback_data: "admin_count" }],
+            [{ text: "🗑️ طرد جميع المشرفين", callback_data: "admin_kick_all" }]
+          ]
+        }
       );
     } else {
-      // Do not reveal anything to unauthorized users
+      await sendTelegramMessage(
+        chatId,
+        `🔒 <b>غير مصرح!</b>\n\nأنت غير مسجل كمسؤول. يرجى إرسال <b>اسم المستخدم</b> و <b>كلمة المرور</b> الخاصة بلوحة التحكم (مفصولين بمسافة) لتفعيل حسابك.`
+      );
       console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
     }
     return;
   }
 
-  // 2. Admin credential verification: [username_or_email] [password]
-  // Allowed only if chatId is already in the authorized list (to avoid brute-force via Telegram)
-  if (isAuthorized) {
-    const parts = text.split(/\s+/);
-    if (parts.length === 2) {
-      const [identifier, password] = parts;
-      try {
-        const user = await prisma.user.findFirst({
-          where: {
-            OR: [
-              { email: identifier },
-              { username: identifier }
-            ],
-            role: 'admin'
-          }
-        });
-
-        if (user && await bcrypt.compare(password, user.password)) {
-          await sendTelegramMessage(
-            chatId,
-            `✅ <b>تم التحقق بنجاح!</b>\n\nChat ID: <code>${chatId}</code> مؤكد كأدمن معتمد.`
-          );
-          return;
-        }
-      } catch (err) {
-        console.error('[Telegram Bot] DB auth error:', err);
-      }
-    }
-
-    // 3. Status check
-    if (lowerText === '/status') {
-      await sendTelegramMessage(
-        chatId,
-        `🟢 <b>حسابك مسجل كـ أدمن معتمد (Chat ID: <code>${chatId}</code>) وتصلك الإشعارات والأزرار التفاعلية فورياً.</b>`
-      );
-      return;
-    }
+  // 3. Status check
+  if (isAuthorized && lowerText === '/status') {
+    await sendTelegramMessage(
+      chatId,
+      `🟢 <b>حسابك مسجل كـ أدمن معتمد (Chat ID: <code>${chatId}</code>) وتصلك الإشعارات والأزرار التفاعلية فورياً.</b>`
+    );
+    return;
   }
 }
 

@@ -10,6 +10,13 @@
     "instructionsEn": "Transfer in Sudanese Pounds via Bankak app to account # 6302273 (Hassan) then upload the transfer receipt image.",
     "isActive": true
   },
+  "fawry": {
+    "accountNumber": "51589889",
+    "accountName": "الرقم البنكي الموحد",
+    "instructionsAr": "حول المبلغ بالجنيه السوداني عبر تطبيق فوري (بنك فيصل الإسلامي) إلى الرقم البنكي الموحد (51589889) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
+    "instructionsEn": "Transfer in Sudanese Pounds via Fawri app to Unified Banking ID # 51589889 then upload the transfer receipt image.",
+    "isActive": true
+  },
   "vodafone": {
     "walletNumber": "01097160605",
     "instructionsAr": "حول المبلغ إلى رقم المحفظة (01097160605) واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",

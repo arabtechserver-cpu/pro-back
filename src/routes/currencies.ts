@@ -19,6 +19,13 @@ export interface CurrencyConfig {
     instructionsEn: string;
     isActive: boolean;
   };
+  fawry?: {
+    accountNumber: string;
+    accountName: string;
+    instructionsAr: string;
+    instructionsEn: string;
+    isActive: boolean;
+  };
   vodafone: {
     walletNumber: string;
     instructionsAr: string;
@@ -55,6 +62,13 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     accountName: "حسن",
     instructionsAr: "حول المبلغ بالجنيه السوداني عبر تطبيق بنكك إلى رقم الحساب ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
     instructionsEn: "Transfer in Sudanese Pounds via Bankak app then upload the transfer receipt image.",
+    isActive: true
+  },
+  fawry: {
+    accountNumber: "51589889",
+    accountName: "الرقم البنكي الموحد",
+    instructionsAr: "حول المبلغ بالجنيه السوداني عبر تطبيق فوري (بنك فيصل الإسلامي) إلى الرقم البنكي الموحد (51589889) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
+    instructionsEn: "Transfer in Sudanese Pounds via Fawri app to Unified Banking ID # 51589889 then upload the transfer receipt image.",
     isActive: true
   },
   vodafone: {
@@ -158,6 +172,7 @@ router.post('/', isAdmin, async (req, res) => {
       usdToSar,
       usdToAed,
       bankak,
+      fawry,
       vodafone,
       binance,
       cryptoBnb,
@@ -170,6 +185,7 @@ router.post('/', isAdmin, async (req, res) => {
       usdToSar: usdToSar !== undefined ? Number(usdToSar) : current.usdToSar,
       usdToAed: usdToAed !== undefined ? Number(usdToAed) : current.usdToAed,
       bankak: bankak ? { ...current.bankak, ...bankak } : current.bankak,
+      fawry: fawry ? { ...(current.fawry || DEFAULT_CONFIG.fawry), ...fawry } : current.fawry,
       vodafone: vodafone ? { ...current.vodafone, ...vodafone } : current.vodafone,
       binance: binance ? { ...current.binance, ...binance } : current.binance,
       cryptoBnb: cryptoBnb ? { ...current.cryptoBnb, ...cryptoBnb } : current.cryptoBnb,

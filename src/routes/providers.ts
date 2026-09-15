@@ -1592,6 +1592,8 @@ router.get("/:id/services", async (req, res) => {
         const qtyConfig = getServiceQuantityConfig(service);
         return {
           ...service,
+          price: service.credit,
+          providerPrice: service.credit,
           category_name: service.dhruCategory?.name || null,
           service_type: service.apiServiceType || getProviderServiceType(service.dhruCategory?.name),
           api_service_type: service.apiServiceType || null,
@@ -1679,13 +1681,31 @@ router.post("/:id/toggle-all", async (req, res) => {
 // POST /api/providers/:id/toggle-service - Toggle a single service
 router.post("/:id/toggle-service", async (req, res) => {
   try {
+    const { id: providerId } = req.params;
     const { serviceId, isActive } = req.body;
     if (!serviceId) {
-      return res.status(400).json({ error: "serviceId is required" });
+      return res.status(400).json({ error: "معرف الخدمة مطلوب" });
+    }
+
+    const cleanServiceId = String(serviceId).trim();
+
+    // Look up service by database UUID, dhruId, or scoped provider::dhruId
+    const existing = await prisma.dhruService.findFirst({
+      where: {
+        OR: [
+          { id: cleanServiceId },
+          { dhruId: cleanServiceId },
+          { dhruId: `${providerId}::${cleanServiceId}` }
+        ]
+      }
+    });
+
+    if (!existing) {
+      return res.status(404).json({ error: "الخدمة غير موجودة في قاعدة البيانات. يرجى استيرادها أولاً." });
     }
 
     const updated = await prisma.dhruService.update({
-      where: { id: serviceId },
+      where: { id: existing.id },
       data: { isActive: Boolean(isActive) }
     });
 
@@ -1693,7 +1713,7 @@ router.post("/:id/toggle-service", async (req, res) => {
     return res.json({
       success: true,
       service: updated,
-      message: updated.isActive ? "تم إظهار الخدمة للعملاء" : "تم إخفاء الخدمة عن العملاء"
+      message: updated.isActive ? "تم إظهار الخدمة للعملاء بنجاح" : "تم إخفاء الخدمة عن العملاء بنجاح"
     });
   } catch (error: any) {
     console.error("Toggle service error:", error);

@@ -213,8 +213,21 @@ async function handleIncomingTelegramUpdate(update: any) {
     try {
       // 0. Admin Management Commands
       if (data === 'admin_count') {
-        const count = getAdminChatIds().length;
-        await answerCallbackQuery(cbId, `👥 عدد المشرفين المسجلين حالياً: ${count}`, true);
+        const admins = getAdminChatIds();
+        const otherAdminsCount = admins.filter(id => id !== chatId && id !== DEFAULT_ADMIN_CHAT_ID).length;
+        
+        let msg = `👥 <b>إحصائيات المشرفين المسجلين</b>\n\n`;
+        msg += `العدد الإجمالي: <b>${admins.length}</b>\n`;
+        msg += `<i>(هذا العدد يشمل حسابك الحالي وحساب النظام الافتراضي)</i>\n\n`;
+        
+        if (otherAdminsCount > 0) {
+          msg += `⚠️ <b>تنبيه:</b> يوجد <b>${otherAdminsCount}</b> مشرف/مشرفين آخرين غيرك مسجلين في البوت!`;
+        } else {
+          msg += `✅ <b>الوضع آمن:</b> أنت المشرف الوحيد المسجل حالياً (بالإضافة للنظام).`;
+        }
+
+        await answerCallbackQuery(cbId, `تم جلب الإحصائيات!`, false);
+        await sendTelegramMessage(chatId, msg);
         return;
       }
 

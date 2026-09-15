@@ -65,6 +65,7 @@ import aiRoutes from './routes/ai';
 import currenciesRoutes from './routes/currencies';
 import externalApiRoutes from './routes/externalApi';
 import couponsRoutes from './routes/coupons';
+import settingsRoutes from './routes/settings';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/coupons', couponsRoutes);
@@ -96,6 +97,7 @@ app.use('/api/v1/provider', externalApiRoutes); // Dhru compatible API endpoint
 app.use('/api/reseller', externalApiRoutes);
 app.use('/api/external', externalApiRoutes);
 app.use('/api/dhru/api', externalApiRoutes);
+app.use('/api/settings', settingsRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

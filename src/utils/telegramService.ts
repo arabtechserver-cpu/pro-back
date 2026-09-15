@@ -15,8 +15,7 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const DEFAULT_ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '';
 
-// Admin Chat IDs - loaded exclusively from TELEGRAM_ADMIN_CHAT_ID env var.
-// No file persistence, no self-registration. Only the env var is the source of truth.
+// Admin Chat IDs - env var is the primary source, DB extends it.
 let adminChatIds: string[] = normalizeTelegramAdminChatIds([], DEFAULT_ADMIN_CHAT_ID);
 const pendingNotificationsQueue: Array<{ imageSource?: string; caption: string; replyMarkup?: any }> = [];
 
@@ -24,8 +23,29 @@ function normalizeAdminChatIds(ids: unknown): string[] {
   return normalizeTelegramAdminChatIds(ids, DEFAULT_ADMIN_CHAT_ID);
 }
 
+// Load admin IDs from DB and merge with env var
+async function loadAdminChatIdsFromDb(): Promise<string[]> {
+  try {
+    const setting = await prisma.setting.findUnique({ where: { key: 'telegram_admin_chat_ids' } });
+    if (setting) {
+      const parsed = JSON.parse(setting.value);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return normalizeAdminChatIds(parsed);
+      }
+    }
+  } catch {
+    // DB not ready yet, use env var only
+  }
+  return normalizeAdminChatIds([]);
+}
+
 export function getAdminChatIds(): string[] {
-  return normalizeAdminChatIds(adminChatIds);
+  return adminChatIds;
+}
+
+// Refresh from DB (called before every notification)
+async function refreshAdminIds() {
+  adminChatIds = await loadAdminChatIdsFromDb();
 }
 
 // Flush pending deposit notifications to registered admins
@@ -575,6 +595,7 @@ export async function sendTelegramMessage(chatId: string, text: string, replyMar
 // Broadcast Alert to all Admin Chat IDs
 export async function sendTelegramAlert(text: string) {
   try {
+    await refreshAdminIds();
     const chatIds = getAdminChatIds();
     for (const id of chatIds) {
       await sendTelegramMessage(id, text);
@@ -713,6 +734,7 @@ export async function sendTelegramPhotoNotification({
   replyMarkup?: any;
 }) {
   try {
+    await refreshAdminIds();
     const targetChatIds = getAdminChatIds();
     if (targetChatIds.length === 0) {
       throw new Error('No Telegram admin chat IDs are configured');
@@ -809,6 +831,7 @@ export async function sendTelegramPhotoNotification({
 // Send Document (e.g., Backup ZIP) to Telegram Admins
 export async function sendDocumentToAdmins(filePath: string, caption: string) {
   try {
+    await refreshAdminIds();
     const targetChatIds = getAdminChatIds();
 
     for (const chatId of targetChatIds) {

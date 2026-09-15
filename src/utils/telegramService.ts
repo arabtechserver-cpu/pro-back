@@ -48,7 +48,7 @@ function loadAdminChatIds(silent = false) {
       const data = fs.readFileSync(filePath, 'utf-8');
       const parsed = JSON.parse(data);
       if (Array.isArray(parsed) && parsed.length > 0) {
-        adminChatIds = normalizeAdminChatIds([...adminChatIds, ...parsed]);
+        adminChatIds = normalizeAdminChatIds(parsed);
         if (!silent) {
           console.log(`[Telegram Bot] Loaded ${adminChatIds.length} registered Admin Chat ID(s):`, adminChatIds);
         }

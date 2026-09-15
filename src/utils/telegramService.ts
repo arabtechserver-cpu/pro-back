@@ -513,43 +513,19 @@ async function handleIncomingTelegramUpdate(update: any) {
   const text = (message.text || message.caption || '').trim();
   const lowerText = text.toLowerCase();
 
-  // 1. Admin credential verification: [username_or_email] [password]
-  // Allow unauthorized users to authenticate and register their Chat ID
-  if (!isAuthorized && lowerText !== '/start' && lowerText !== '/admin') {
-    const parts = text.split(/\s+/);
-    if (parts.length === 2) {
-      const [identifier, password] = parts;
-      try {
-        const user = await prisma.user.findFirst({
-          where: {
-            OR: [
-              { email: identifier },
-              { username: identifier }
-            ],
-            role: 'admin'
-          }
-        });
-
-        if (user && await bcrypt.compare(password, user.password)) {
-          addAdminChatId(chatId);
-          isAuthorized = true; // Mark as authorized for subsequent checks in this execution
-          await sendTelegramMessage(
-            chatId,
-            `✅ <b>تم تسجيل الدخول بنجاح!</b>\n\nتم ربط حساب التلجرام الخاص بك (Chat ID: <code>${chatId}</code>) بصلاحيات الإدارة.\n\nأرسل /start لعرض خيارات التحكم.`
-          );
-          return;
-        } else {
-          await sendTelegramMessage(chatId, `❌ <b>بيانات الدخول خاطئة.</b>\nيرجى التأكد من اسم المستخدم وكلمة المرور وإعادة المحاولة.`);
-          return;
-        }
-      } catch (err) {
-        console.error('[Telegram Bot] DB auth error:', err);
-      }
-    } else {
-      await sendTelegramMessage(chatId, `🔒 <b>صيغة غير صحيحة.</b>\n\nلتسجيل الدخول كمسؤول، يرجى إرسال <b>اسم المستخدم</b> و <b>كلمة المرور</b> في رسالة واحدة (مفصولين بمسافة).\n\nمثال:\n<code>admin mypassword123</code>`);
-      return;
+  // 1. Block all unauthorized users - no self-registration allowed via bot
+  if (!isAuthorized) {
+    if (lowerText === '/start' || lowerText === '/admin') {
+      await sendTelegramMessage(
+        chatId,
+        `🔒 <b>غير مصرح!</b>\n\nهذا البوت مخصص للمسؤولين المعتمدين فقط. إذا كنت صاحب النظام، يرجى إضافة Chat ID الخاص بك في إعدادات السيرفر.`
+      );
+      console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
     }
+    // Silently ignore all other messages from unauthorized users
+    return;
   }
+
 
   // 2. /start or /admin
   if (lowerText === '/start' || lowerText === '/admin') {

@@ -168,7 +168,7 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
         });
 
         // Margin calculation: Default is strictly 8% profit margin added to provider base cost
-        const marginPercent = typeof user.apiMargin === 'number' && user.apiMargin > 0
+        const marginPercent = typeof user.apiMargin === 'number' && user.apiMargin >= 0
           ? user.apiMargin
           : 8.0;
 
@@ -323,7 +323,7 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
 
         // Base provider cost + 8% margin
         const baseCost = Math.max(0, service.credit || 0);
-        const marginPercent = typeof user.apiMargin === 'number' && user.apiMargin > 0
+        const marginPercent = typeof user.apiMargin === 'number' && user.apiMargin >= 0
           ? user.apiMargin
           : 8.0;
 
@@ -434,40 +434,56 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
         });
 
         // Deduct balance, record transaction, and create order with status: 'pending'
-        const order = await prisma.$transaction(async (tx: any) => {
-          const updatedUser = await tx.user.update({
-            where: { id: user.id },
-            data: { balance: { decrement: finalTotalPrice } }
-          });
+        let order;
+        try {
+          order = await prisma.$transaction(async (tx: any) => {
+            const updatedUserResult = await tx.user.updateMany({
+              where: { id: user.id, balance: { gte: finalTotalPrice } },
+              data: { balance: { decrement: finalTotalPrice } }
+            });
 
-          await tx.transaction.create({
-            data: {
-              userId: user.id,
-              type: `طلب API: ${service.name.slice(0, 35)}`,
-              amount: finalTotalPrice,
-              method: 'رصيد API',
-              status: 'completed',
-              refNo: `API-${Date.now()}`
+            if (updatedUserResult.count === 0) {
+              throw new Error('INSUFFICIENT_BALANCE_RACE');
             }
-          });
 
-          const newOrder = await tx.order.create({
-            data: {
-              userId: user.id,
-              serviceId: service.id,
-              serviceName: service.name,
-              targetInput: finalTargetInput,
-              quantity: finalQty,
-              price: finalTotalPrice,
-              status: 'pending',
-              source: 'api',
-              notes: structuredNotes,
-              apiClientOrderId: parsedParams.clientorderid || parsedParams.apiClientOrderId || null
-            }
-          });
+            await tx.transaction.create({
+              data: {
+                userId: user.id,
+                type: `طلب API: ${service.name.slice(0, 35)}`,
+                amount: finalTotalPrice,
+                method: 'رصيد API',
+                status: 'completed',
+                refNo: `API-${Date.now()}`
+              }
+            });
 
-          return newOrder;
-        });
+            const newOrder = await tx.order.create({
+              data: {
+                userId: user.id,
+                serviceId: service.id,
+                serviceName: service.name,
+                targetInput: finalTargetInput,
+                quantity: finalQty,
+                price: finalTotalPrice,
+                status: 'pending',
+                source: 'api',
+                notes: structuredNotes,
+                apiClientOrderId: parsedParams.clientorderid || parsedParams.apiClientOrderId || null
+              }
+            });
+
+            return newOrder;
+          });
+        } catch (err: any) {
+          if (err.message === 'INSUFFICIENT_BALANCE_RACE') {
+            return res.json({
+              SUCCESS: [{
+                ERROR: `Insufficient balance during transaction. Your balance may have changed. Please try again.`
+              }]
+            });
+          }
+          throw err;
+        }
 
         // Send Telegram alert to admin for manual approval
         const providerName = service.apiProvider?.name || 'سيرفر محلي / يدوي';

@@ -179,16 +179,36 @@ async function answerCallbackQuery(callbackQueryId: string, text?: string, showA
 
 // Handle Incoming Telegram Commands, Text, & Interactive Button Clicks
 async function handleIncomingTelegramUpdate(update: any) {
+  // Determine the chat ID for all incoming updates
+  const incomingChatId: string = (
+    update?.callback_query?.message?.chat?.id ||
+    update?.message?.chat?.id ||
+    update?.channel_post?.chat?.id ||
+    update?.edited_message?.chat?.id ||
+    ''
+  ).toString();
+
+  if (!incomingChatId) return;
+
+  // Security: Only process commands from authorized admins
+  const currentAdminIds = getAdminChatIds();
+  const isAuthorized = currentAdminIds.includes(incomingChatId);
+
   // -------------------------------------------------------------
   // A. Handle Interactive Inline Button Clicks (callback_query)
   // -------------------------------------------------------------
   if (update?.callback_query) {
     const cb = update.callback_query;
     const cbId = cb.id;
-    const chatId = cb.message?.chat?.id ? String(cb.message.chat.id) : DEFAULT_ADMIN_CHAT_ID;
+    const chatId = incomingChatId || DEFAULT_ADMIN_CHAT_ID;
     const data: string = cb.data || '';
 
-    addAdminChatId(chatId);
+    // Block unauthorized callback executions
+    if (!isAuthorized) {
+      await answerCallbackQuery(cbId, 'غير مصرح', true);
+      console.warn(`[Telegram Bot] Unauthorized callback from chat ID: ${chatId} — blocked.`);
+      return;
+    }
 
     try {
       // 1. Send Order to Dhru Provider API: send_dhru_{orderId}
@@ -236,7 +256,7 @@ async function handleIncomingTelegramUpdate(update: any) {
           const rawErrMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION || 'خطأ غير معروف من المزود';
           const isCredit = JSON.stringify(dhruResponse || {}).toLowerCase().includes('credit');
           const finalErrMsg = isCredit
-            ? '⚠️ رصيد حسابك لدى المزود الخارجي غير كافٍ (You have not enough credit). يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
+            ? '⚠️ رصيد حسابك لدى المزود الخارجي غير كافٍ. يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
             : rawErrMsg;
           await sendTelegramMessage(chatId, `❌ <b>فشل إرسال الطلب للمزود:</b>\n<code>${finalErrMsg}</code>`);
           return;
@@ -281,24 +301,39 @@ async function handleIncomingTelegramUpdate(update: any) {
           return;
         }
 
-        if (tx.status === 'completed') {
-          await sendTelegramMessage(chatId, `⚠️ <b>تم اعتماد هذه العملية مسبقاً!</b>`);
-          return;
+        // Atomic Status Update & Balance Increment
+        let updatedUser: any;
+        let uTx: any;
+        
+        try {
+          [uTx, updatedUser] = await prisma.$transaction(async (t) => {
+            const updatedTxResult = await t.transaction.updateMany({
+              where: { id: txId, status: { not: 'completed' } },
+              data: { status: 'completed' }
+            });
+
+            if (updatedTxResult.count === 0) {
+              throw new Error('ALREADY_PROCESSED');
+            }
+
+            const userRes = await t.user.update({
+              where: { id: tx.userId },
+              data: { balance: { increment: tx.amount } }
+            });
+            
+            return [tx, userRes];
+          });
+        } catch (txError: any) {
+          if (txError.message === 'ALREADY_PROCESSED') {
+            await sendTelegramMessage(chatId, `⚠️ <b>تم اعتماد أو معالجة هذه العملية مسبقاً!</b>`);
+            return;
+          }
+          throw txError;
         }
-
-        const updatedUser = await prisma.user.update({
-          where: { id: tx.userId },
-          data: { balance: { increment: tx.amount } }
-        });
-
-        await prisma.transaction.update({
-          where: { id: txId },
-          data: { status: 'completed' }
-        });
 
         const upgradedUser = await checkAndAutoUpgradeMembership(tx.userId, tx.amount);
 
-        const tierInfo = upgradedUser?.membershipTier 
+        const tierInfo = upgradedUser?.membershipTier
           ? `🎖️ <b>العضوية الحالية:</b> ${upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name} (-${upgradedUser.membershipTier.discountPercentage}% خصم)`
           : '';
 
@@ -323,10 +358,15 @@ async function handleIncomingTelegramUpdate(update: any) {
         const txId = data.replace('reject_tx_', '').trim();
         await answerCallbackQuery(cbId, 'تم رفض الإيداع', false);
 
-        await prisma.transaction.update({
-          where: { id: txId },
+        const updatedTxResult = await prisma.transaction.updateMany({
+          where: { id: txId, status: { notIn: ['failed', 'completed'] } },
           data: { status: 'failed' }
         });
+
+        if (updatedTxResult.count === 0) {
+           await sendTelegramMessage(chatId, `⚠️ <b>هذه العملية تمت معالجتها مسبقاً!</b>`);
+           return;
+        }
 
         await sendTelegramMessage(chatId, `❌ <b>تم رفض طلب الإيداع رقم #${txId.slice(-6)} بنجاح.</b>`);
         return;
@@ -337,13 +377,19 @@ async function handleIncomingTelegramUpdate(update: any) {
         const orderId = data.replace('complete_order_', '').trim();
         await answerCallbackQuery(cbId, 'تم إكمال الطلب', false);
 
-        const updatedOrder = await prisma.order.update({
-          where: { id: orderId },
-          data: { status: 'completed' },
-          include: { user: true }
+        const updatedOrderResult = await prisma.order.updateMany({
+          where: { id: orderId, status: { not: 'completed' } },
+          data: { status: 'completed' }
         });
 
-        await sendTelegramMessage(chatId, `✅ <b>تم إكمال الطلب #${updatedOrder.id.slice(-6)} بنجاح!</b> (${updatedOrder.serviceName})`);
+        if (updatedOrderResult.count === 0) {
+          await sendTelegramMessage(chatId, `⚠️ <b>تم إكمال هذا الطلب مسبقاً!</b>`);
+          return;
+        }
+
+        const updatedOrder = await prisma.order.findUnique({ where: { id: orderId } });
+
+        await sendTelegramMessage(chatId, `✅ <b>تم إكمال الطلب #${orderId.slice(-6)} بنجاح!</b> (${updatedOrder?.serviceName || ''})`);
         return;
       }
 
@@ -358,31 +404,49 @@ async function handleIncomingTelegramUpdate(update: any) {
           return;
         }
 
-        if (order.status === 'rejected') {
-          await sendTelegramMessage(chatId, `⚠️ <b>تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً!</b>`);
-          return;
-        }
+        // Atomic Order Rejection & Refund
+        let refundedUser: any;
+        
+        try {
+          refundedUser = await prisma.$transaction(async (t) => {
+            const updatedOrderResult = await t.order.updateMany({
+              where: { id: orderId, status: { notIn: ['rejected', 'cancelled'] } },
+              data: { status: 'rejected' }
+            });
 
-        const refundedUser = await prisma.user.update({
-          where: { id: order.userId },
-          data: { balance: { increment: order.price } }
-        });
+            if (updatedOrderResult.count === 0) {
+              throw new Error('ALREADY_PROCESSED');
+            }
 
-        await prisma.order.update({
-          where: { id: orderId },
-          data: { status: 'rejected' }
-        });
+            if (!order.userId) {
+              throw new Error('NO_USER_ID');
+            }
 
-        await prisma.transaction.create({
-          data: {
-            userId: order.userId,
-            type: `استرجاع رصيد طلب ملغي: #${order.id.slice(-6)}`,
-            amount: order.price,
-            method: 'استرجاع للمحفظة',
-            refNo: `REFUND-#${order.id.slice(-6)}`,
-            status: 'completed'
+            const userRes = await t.user.update({
+              where: { id: order.userId },
+              data: { balance: { increment: order.price } }
+            });
+
+            await t.transaction.create({
+              data: {
+                userId: order.userId,
+                type: `استرجاع رصيد طلب ملغي: #${order.id.slice(-6)}`,
+                amount: order.price,
+                method: 'استرجاع للمحفظة',
+                refNo: `REFUND-#${order.id.slice(-6)}`,
+                status: 'completed'
+              }
+            });
+            
+            return userRes;
+          });
+        } catch (txError: any) {
+          if (txError.message === 'ALREADY_PROCESSED') {
+            await sendTelegramMessage(chatId, `⚠️ <b>تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً!</b>`);
+            return;
           }
-        });
+          throw txError;
+        }
 
         await sendTelegramMessage(
           chatId,
@@ -403,80 +467,64 @@ async function handleIncomingTelegramUpdate(update: any) {
   const message = update?.message || update?.channel_post || update?.edited_message;
   if (!message) return;
 
-  const chatId = message.chat?.id ? message.chat.id.toString() : '';
+  const chatId = incomingChatId;
   if (!chatId) return;
 
   const text = (message.text || message.caption || '').trim();
   const lowerText = text.toLowerCase();
 
-  // Always register sender chat ID to guarantee notifications reach them
-  addAdminChatId(chatId);
-
-  // 1. Secret / Special Mina Keyword trigger
-  if (
-    lowerText === 'mina' ||
-    lowerText === '/mina' ||
-    lowerText.includes('mina') ||
-    text === 'مينا' ||
-    text.includes('مينا')
-  ) {
-    await sendTelegramMessage(
-      chatId,
-      `👑 <b>أهلاً بك يا مينا!</b>\n\n✅ <b>تم تسجيل وتفعيل حسابك بنجاح كأدمن رئيسي معتمد</b> (Chat ID: <code>${chatId}</code>) 🚀\n\nمن الآن فصاعداً:\n• أي طلب خدمة يرسله العميل سيصلك فوراً مع زر <b>[إرسال للمزود]</b>.\n• أي صورة إيصال شحن ستصلك مع زر <b>[موافقة وشحن الرصيد]</b>.\n• يمكنك إدارة كل شيء من التلجرام مباشرة بضغطة واحدة! 🎉`
-    );
-    return;
-  }
-
-  // 2. Command: /start or /admin
+  // 1. /start or /admin — only inform authorized admins
   if (lowerText === '/start' || lowerText === '/admin') {
-    await sendTelegramMessage(
-      chatId,
-      `🟢 <b>أهلاً بك في بوت الإدارة التفاعلي المطور!</b>\n\nحسابك مسجل كـ <b>أدمن معتمد</b> (Chat ID: <code>${chatId}</code>) 🚀 وتصلك جميع الإشعارات مع أزرار التحكم الفورية.`
-    );
+    if (isAuthorized) {
+      await sendTelegramMessage(
+        chatId,
+        `🟢 <b>أهلاً بك في بوت الإدارة التفاعلي!</b>\n\nحسابك مسجل كـ <b>أدمن معتمد</b> (Chat ID: <code>${chatId}</code>) وتصلك جميع الإشعارات مع أزرار التحكم الفورية.`
+      );
+    } else {
+      // Do not reveal anything to unauthorized users
+      console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
+    }
     return;
   }
 
-  // 3. Check login credentials: [username_or_email] [password]
-  const parts = text.split(/\s+/);
-  if (parts.length === 2) {
-    const [identifier, password] = parts;
-    try {
-      const user = await prisma.user.findFirst({
-        where: {
-          OR: [
-            { email: identifier },
-            { username: identifier }
-          ],
-          role: 'admin'
-        }
-      });
+  // 2. Admin credential verification: [username_or_email] [password]
+  // Allowed only if chatId is already in the authorized list (to avoid brute-force via Telegram)
+  if (isAuthorized) {
+    const parts = text.split(/\s+/);
+    if (parts.length === 2) {
+      const [identifier, password] = parts;
+      try {
+        const user = await prisma.user.findFirst({
+          where: {
+            OR: [
+              { email: identifier },
+              { username: identifier }
+            ],
+            role: 'admin'
+          }
+        });
 
-      if (user && await bcrypt.compare(password, user.password)) {
-        await sendTelegramMessage(
-          chatId,
-          `✅ <b>تم التحقق والتسجيل بنجاح!</b>\n\nتم إضافة حسابك (Chat ID: <code>${chatId}</code>) لقائمة المدراء المعتمدين بنجاح. 🎉`
-        );
-        return;
+        if (user && await bcrypt.compare(password, user.password)) {
+          await sendTelegramMessage(
+            chatId,
+            `✅ <b>تم التحقق بنجاح!</b>\n\nChat ID: <code>${chatId}</code> مؤكد كأدمن معتمد.`
+          );
+          return;
+        }
+      } catch (err) {
+        console.error('[Telegram Bot] DB auth error:', err);
       }
-    } catch (err) {
-      console.error('[Telegram Bot] DB auth error:', err);
+    }
+
+    // 3. Status check
+    if (lowerText === '/status') {
+      await sendTelegramMessage(
+        chatId,
+        `🟢 <b>حسابك مسجل كـ أدمن معتمد (Chat ID: <code>${chatId}</code>) وتصلك الإشعارات والأزرار التفاعلية فورياً.</b>`
+      );
+      return;
     }
   }
-
-  // 4. Status check
-  if (lowerText === '/status') {
-    await sendTelegramMessage(
-      chatId,
-      `🟢 <b>حسابك مسجل كـ أدمن معتمد (Chat ID: <code>${chatId}</code>) وتصلك الإشعارات والأزرار التفاعلية فورياً.</b>`
-    );
-    return;
-  }
-
-  // 5. Default acknowledge response for any other incoming text
-  await sendTelegramMessage(
-    chatId,
-    `🟢 <b>تم تفعيل وتأكيد حسابك كـ أدمن لاستقبال صور الإيصالات وطلبات الشحن بنجاح!</b> (Chat ID: <code>${chatId}</code>)`
-  );
 }
 
 export function removeAdminChatId(chatId: string) {
@@ -573,8 +621,25 @@ async function resolveImageBuffer(imageSource?: string | null): Promise<{ buffer
       }
     }
 
-    // 2. HTTP/HTTPS URL
+    // 2. HTTP/HTTPS URL (SSRF Mitigated)
     if (imageSource.startsWith('http://') || imageSource.startsWith('https://')) {
+      const urlObj = new URL(imageSource);
+      const isPrivate = (
+        urlObj.hostname === 'localhost' ||
+        urlObj.hostname === '127.0.0.1' ||
+        urlObj.hostname === '::1' ||
+        urlObj.hostname === '0.0.0.0' ||
+        urlObj.hostname.startsWith('10.') ||
+        urlObj.hostname.startsWith('192.168.') ||
+        /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(urlObj.hostname) ||
+        urlObj.hostname.startsWith('169.254.') ||
+        urlObj.hostname.endsWith('.internal') ||
+        urlObj.hostname.endsWith('.local')
+      );
+      if (isPrivate) {
+        throw new Error('SSRF Attempt Detected: Blocked private network address');
+      }
+
       const res = await axios.get(imageSource, { responseType: 'arraybuffer', timeout: 15000 });
       const rawType = res.headers['content-type'];
       const contentType = typeof rawType === 'string' ? rawType : 'image/jpeg';
@@ -586,8 +651,23 @@ async function resolveImageBuffer(imageSource?: string | null): Promise<{ buffer
       };
     }
 
-    // 3. Direct local file path or persistent uploads volume
-    const checkPaths = [
+    // 3. Direct local file path or persistent uploads volume (LFI Mitigated)
+    if (imageSource.includes('../') || imageSource.includes('..\\')) {
+      throw new Error('Path Traversal Attempt Detected');
+    }
+
+    const allowedRoots = [
+      path.resolve(process.cwd(), 'backend', 'public'),
+      path.resolve(process.cwd(), 'public'),
+      path.resolve(__dirname, '../../public'),
+      path.resolve(__dirname, '../../../public')
+    ];
+    
+    try {
+      allowedRoots.push(path.resolve(getUploadDir()));
+    } catch {}
+
+    const rawCheckPaths = [
       imageSource,
       path.join(process.cwd(), imageSource),
       path.join(process.cwd(), 'backend', imageSource),
@@ -597,11 +677,13 @@ async function resolveImageBuffer(imageSource?: string | null): Promise<{ buffer
 
     try {
       if (imageSource.startsWith('/uploads/')) {
-        checkPaths.push(path.join(getUploadDir(), imageSource.replace('/uploads/', '')));
+        rawCheckPaths.push(path.join(getUploadDir(), imageSource.replace('/uploads/', '')));
       } else {
-        checkPaths.push(path.join(getUploadDir(), imageSource));
+        rawCheckPaths.push(path.join(getUploadDir(), imageSource));
       }
     } catch {}
+
+    const checkPaths = rawCheckPaths.map(p => path.resolve(p)).filter(p => allowedRoots.some(root => p.startsWith(root)));
 
     for (const p of checkPaths) {
       if (fs.existsSync(p) && fs.statSync(p).isFile()) {

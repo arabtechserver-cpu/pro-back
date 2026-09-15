@@ -259,6 +259,8 @@ model CouponUsage {
   createdAt DateTime @default(now())
   coupon    Coupon   @relation(fields: [couponId], references: [id], onDelete: Cascade)
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([couponId, userId])
 }
 
 

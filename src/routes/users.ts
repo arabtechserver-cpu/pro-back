@@ -178,7 +178,7 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
     }
 
     if (newPassword) {
-      if (newPassword.length < 4) return res.status(400).json({ error: "كلمة المرور الجديدة يجب أن لا تقل عن 4 أحرف" });
+      if (newPassword.length < 8) return res.status(400).json({ error: "كلمة المرور الجديدة يجب أن لا تقل عن 8 أحرف" });
       updateData.password = await bcrypt.hash(newPassword, 10);
     }
 
@@ -208,57 +208,8 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
   }
 });
 
-// POST Register new user
-router.post("/register", async (req, res) => {
-  try {
-    const { fullName, email, username, password, country, phone } = req.body;
-
-    if (!fullName || !email || !username || !password) {
-      return res.status(400).json({ error: "الرجاء تعبئة جميع الحقول المطلوبة" });
-    }
-
-    const existingEmail = await prisma.user.findUnique({ where: { email } });
-    if (existingEmail) {
-      return res.status(400).json({ error: "البريد الإلكتروني مسجل بالفعل" });
-    }
-
-    const existingUsername = await prisma.user.findUnique({ where: { username } });
-    if (existingUsername) {
-      return res.status(400).json({ error: "اسم المستخدم مسجل بالفعل" });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 10);
-
-    const newUser = await prisma.user.create({
-      data: {
-        fullName,
-        email,
-        username,
-        password: hashedPassword,
-        phone: phone ? String(phone).trim() : null,
-        country: country || "EG",
-        status: "active"
-      }
-    });
-
-    return res.json({
-      success: true,
-      message: "تم إنشاء الحساب بنجاح",
-      user: {
-        id: newUser.id,
-        fullName: newUser.fullName,
-        email: newUser.email,
-        username: newUser.username,
-        phone: newUser.phone,
-        country: newUser.country,
-        status: newUser.status
-      }
-    });
-  } catch (error: any) {
-    console.error("Registration error:", error);
-    return res.status(500).json({ error: "حدث خطأ أثناء إكمال التسجيل" });
-  }
-});
+// REMOVED: Duplicate /register endpoint (VULN-006)
+// Use /api/auth/register which includes Turnstile + rate limiting
 
 // POST Toggle User Status (Activate / Suspend)
 router.post("/toggle-status", isAdmin, async (req, res) => {
@@ -309,8 +260,8 @@ router.post("/change-password", isAdmin, async (req, res) => {
       return res.status(400).json({ error: "الرجاء إدخال معرف المستخدم وكلمة المرور الجديدة" });
     }
 
-    if (newPassword.length < 4) {
-      return res.status(400).json({ error: "كلمة المرور يجب أن لا تقل عن 4 أحرف" });
+    if (newPassword.length < 8) {
+      return res.status(400).json({ error: "كلمة المرور يجب أن لا تقل عن 8 أحرف" });
     }
 
     const hashedPassword = await bcrypt.hash(newPassword, 10);

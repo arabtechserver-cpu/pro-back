@@ -75,15 +75,16 @@ export function saveBufferToUploads(filename: string, buffer: Buffer): string {
  * Checks if a file exists in the uploads volume.
  */
 export function getUploadFilePath(filename: string): string | null {
+  const safeFilename = path.basename(filename);
   const uploadDir = getUploadDir();
-  const primaryPath = path.join(uploadDir, filename);
+  const primaryPath = path.join(uploadDir, safeFilename);
   if (fs.existsSync(primaryPath)) return primaryPath;
 
   // Secondary fallback checks
-  const secondaryPath = path.join(process.cwd(), 'public/uploads', filename);
+  const secondaryPath = path.join(process.cwd(), 'public/uploads', safeFilename);
   if (fs.existsSync(secondaryPath)) return secondaryPath;
 
-  const appUploadsFallback = path.join('/app/uploads', filename);
+  const appUploadsFallback = path.join('/app/uploads', safeFilename);
   if (fs.existsSync(appUploadsFallback)) return appUploadsFallback;
 
   return null;

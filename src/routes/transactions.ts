@@ -21,15 +21,19 @@ router.get('/', authenticateToken, async (req, res) => {
     const { userId, email } = req.query;
 
     let targetUserId = userId as string;
+    const authUser = (req as any).user;
+    const isAdminUser = authUser && (authUser.role === 'admin' || authUser.role === 'super_admin');
 
-    if (!targetUserId && email) {
+    // Prevent IDOR: force own user id if not an admin
+    if (!isAdminUser && authUser) {
+      targetUserId = authUser.id;
+    } else if (!targetUserId && email) {
       const u = await prisma.user.findUnique({ where: { email: (email as string).trim().toLowerCase() } });
       if (u) targetUserId = u.id;
     }
 
-    if (!targetUserId && (req as any).user) {
-      if ((req as any).user.role === 'admin' || (req as any).user.role === 'super_admin') {
-        const listQuery = normalizeTransactionListQuery(req.query as Record<string, unknown>);
+    if (!targetUserId && isAdminUser) {
+      const listQuery = normalizeTransactionListQuery(req.query as Record<string, unknown>);
         const pageQuery = buildAdminTransactionPageQuery(listQuery);
 
         const [rows, filteredTotal, statusCounts] = await Promise.all([
@@ -75,10 +79,8 @@ router.get('/', authenticateToken, async (req, res) => {
             nextCursor: hasMore ? pageRows[pageRows.length - 1]?.id || null : null
           }
         });
-      } else {
-        targetUserId = (req as any).user.id;
       }
-    }
+
 
     if (!targetUserId) {
       return res.json({ success: true, transactions: [] });
@@ -115,7 +117,7 @@ router.get('/:transactionId/receipt', isAdmin, async (req, res) => {
 });
 
 // POST /api/transactions - Submit New Deposit Transaction (SQLite DB & Telegram)
-router.post('/', optionalAuth, async (req, res) => {
+router.post('/', authenticateToken, async (req, res) => {
   try {
     const { userId, email, type, amount, method, refNo, receiptImage } = req.body;
 
@@ -124,23 +126,7 @@ router.post('/', optionalAuth, async (req, res) => {
     }
 
     // 1. Authenticated user from token has highest priority and is guaranteed to exist
-    let targetUserId = (req as any).user?.id;
-
-    if (!targetUserId && userId) {
-      const u = await prisma.user.findUnique({ where: { id: String(userId) } });
-      if (u) {
-        if (u.status === 'suspended') return res.status(403).json({ error: 'عذراً، هذا الحساب موقوف حالياً' });
-        targetUserId = u.id;
-      }
-    }
-
-    if (!targetUserId && email) {
-      const u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() } });
-      if (u) {
-        if (u.status === 'suspended') return res.status(403).json({ error: 'عذراً، هذا الحساب موقوف حالياً' });
-        targetUserId = u.id;
-      }
-    }
+    const targetUserId = (req as any).user?.id;
 
     if (!targetUserId) {
       return res.status(401).json({ error: 'يُرجى تسجيل الدخول بحسابك أولاً لإتمام طلب الشحن' });
@@ -191,9 +177,13 @@ router.post('/', optionalAuth, async (req, res) => {
     }
 
     // 3. Handle receipt image: save full uncompressed original buffer to persistent volume on disk
-    let savedReceiptUrl = receiptImage || null;
+    let savedReceiptUrl = null;
     let localDiskPath: string | null = null;
-    if (receiptImage && typeof receiptImage === 'string' && receiptImage.startsWith('data:image/')) {
+    
+    if (receiptImage && typeof receiptImage === 'string') {
+      if (!receiptImage.startsWith('data:image/')) {
+        return res.status(400).json({ error: 'صيغة الصورة غير صالحة. يجب أن تكون Base64 تبدأ بـ data:image/' });
+      }
       try {
         const match = receiptImage.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s);
         if (match) {
@@ -204,9 +194,12 @@ router.post('/', optionalAuth, async (req, res) => {
           const buffer = Buffer.from(base64Data, 'base64');
           localDiskPath = saveBufferToUploads(filename, buffer);
           savedReceiptUrl = `/uploads/${filename}`;
+        } else {
+          return res.status(400).json({ error: 'تنسيق الصورة (Base64) غير صالح أو معطوب.' });
         }
       } catch (saveErr) {
         console.error('[Transactions] Error saving receipt image to disk:', saveErr);
+        return res.status(500).json({ error: 'فشل في حفظ صورة الإيصال.' });
       }
     }
 
@@ -305,15 +298,36 @@ router.post('/approve', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'العملية مكتملة بالفعل' });
     }
 
-    const updatedUser = await prisma.user.update({
-      where: { id: tx.userId },
-      data: { balance: { increment: tx.amount } }
-    });
+    // Fix Race Condition & Lost Updates: Atomic update to prevent double-approving
+    let updatedUser: any;
+    let uTx: any;
 
-    const updatedTx = await prisma.transaction.update({
-      where: { id: transactionId },
-      data: { status: 'completed' }
-    });
+    try {
+      [uTx, updatedUser] = await prisma.$transaction(async (t) => {
+        const txResult = await t.transaction.updateMany({
+          where: { id: transactionId, status: 'pending' },
+          data: { status: 'completed' }
+        });
+
+        if (txResult.count === 0) {
+          throw new Error('ALREADY_PROCESSED');
+        }
+
+        const userResult = await t.user.update({
+          where: { id: tx.userId },
+          data: { balance: { increment: tx.amount } }
+        });
+
+        const txObj = await t.transaction.findUnique({ where: { id: transactionId } });
+        
+        return [txObj, userResult];
+      });
+    } catch (txError: any) {
+      if (txError.message === 'ALREADY_PROCESSED') {
+        return res.status(400).json({ error: 'تمت معالجة العملية مسبقاً ولا يمكن تكرارها' });
+      }
+      throw txError;
+    }
 
     // Automatically check and upgrade user VIP membership tier
     const upgradedUser = await checkAndAutoUpgradeMembership(tx.userId, tx.amount);
@@ -343,7 +357,7 @@ ${upgradedUser?.membershipTier ? `🎖️ <b>العضوية الحالية:</b> 
     return res.json({
       success: true,
       message: `تم اعتماد إيداع بقيمة $${tx.amount} وزيادة رصيد العميل بنجاح!`,
-      transaction: updatedTx,
+      transaction: { ...tx, status: 'completed' },
       newBalance: updatedUser.balance
     });
   } catch (error: any) {
@@ -365,15 +379,20 @@ router.post('/reject', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'العملية غير موجودة' });
     }
 
-    const updatedTx = await prisma.transaction.update({
-      where: { id: transactionId },
+    // Fix Race Condition: Atomic update for rejecting
+    const updatedTx = await prisma.transaction.updateMany({
+      where: { id: transactionId, status: 'pending' },
       data: { status: 'failed' }
     });
+
+    if (updatedTx.count === 0) {
+      return res.status(400).json({ error: 'العملية تمت معالجتها مسبقاً' });
+    }
 
     return res.json({
       success: true,
       message: 'تم رفض طلب الشحن',
-      transaction: updatedTx
+      transaction: { ...tx, status: 'failed' }
     });
   } catch (error: any) {
     console.error('Error rejecting transaction:', error);

@@ -4,13 +4,16 @@ import { authenticateToken } from '../middleware/auth';
 
 const router = Router();
 
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', authenticateToken, async (req: any, res) => {
   try {
+    const userId = req.user.id;
+
     const transactions = await prisma.walletTransaction.findMany({
+      where: { userId },
       orderBy: { createdAt: 'desc' }
     });
-    
-    const balance = transactions.reduce((acc, tx) => {
+
+    const balance = transactions.reduce((acc: number, tx: any) => {
       if (tx.status !== 'completed') return acc;
       return tx.type === 'deposit' ? acc + tx.amount : acc - tx.amount;
     }, 0);
@@ -21,15 +24,25 @@ router.get('/', authenticateToken, async (req, res) => {
   }
 });
 
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken, async (req: any, res) => {
   try {
+    const userId = req.user?.id;
+    if (!userId) {
+      return res.status(401).json({ error: 'Authentication required' });
+    }
+
     const { amount, type } = req.body;
+    const parsedAmount = parseFloat(amount);
+    if (isNaN(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ error: 'Invalid amount' });
+    }
+
     const tx = await prisma.walletTransaction.create({
       data: {
-        userId: (req as any).user?.id || 'admin_1',
-        amount: Number(amount),
-        type,
-        status: 'pending' // Admin can approve later
+        userId,
+        amount: parsedAmount,
+        type: String(type || 'deposit').trim(),
+        status: 'pending'
       }
     });
     res.status(201).json(tx);

@@ -28,7 +28,23 @@ async function generateBackupSnapshot() {
     newsletterBroadcasts,
     storedImages,
   ] = await Promise.all([
-    prisma.user.findMany(),
+    prisma.user.findMany({
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        username: true,
+        phone: true,
+        country: true,
+        role: true,
+        status: true,
+        balance: true,
+        membershipTierId: true,
+        createdAt: true,
+        updatedAt: true,
+        // password and apiKey deliberately excluded from backup
+      }
+    }),
     prisma.order.findMany(),
     prisma.transaction.findMany(),
     prisma.walletTransaction.findMany(),

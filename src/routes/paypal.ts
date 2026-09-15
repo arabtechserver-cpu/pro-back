@@ -7,6 +7,9 @@ import { authenticateToken } from '../middleware/auth';
 
 const router = Router();
 
+// Mutex (In-memory Lock) to prevent double-capture race condition exploits
+const captureMutex = new Set<string>();
+
 // POST /api/wallet/paypal/create-order
 router.post('/create-order', authenticateToken, async (req: any, res) => {
   try {
@@ -52,7 +55,14 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
 
     const cleanOrderId = orderId.trim();
 
-    // 1. Identify Target User
+    // 0. Race Condition Mutex Lock: Prevent concurrent requests from capturing the same order twice
+    if (captureMutex.has(cleanOrderId)) {
+      return res.status(429).json({ error: 'جاري معالجة طلب الدفع حالياً، يرجى الانتظار لحين اكتمال العملية...' });
+    }
+    captureMutex.add(cleanOrderId);
+
+    try {
+      // 1. Identify Target User
     const targetUser = req.user?.id
       ? await prisma.user.findUnique({ where: { id: req.user.id } })
       : null;
@@ -159,6 +169,10 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
       orderId: cleanOrderId,
       captureId
     });
+    } finally {
+      // Always release the mutex lock
+      captureMutex.delete(cleanOrderId);
+    }
   } catch (error: any) {
     console.error('Error capturing PayPal order:', error);
     return res.status(400).json({ error: error.message || 'فشل التحقق من صحة الدفع عبر PayPal' });

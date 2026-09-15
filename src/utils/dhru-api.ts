@@ -1,5 +1,21 @@
 import https from "https";
 import http from "http";
+import dns from "dns";
+import { promisify } from "util";
+
+const lookup = promisify(dns.lookup);
+
+function isPrivateIP(ip: string): boolean {
+  return (
+    ip === "127.0.0.1" ||
+    ip === "::1" ||
+    ip.startsWith("10.") ||
+    ip.startsWith("192.168.") ||
+    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
+    ip.startsWith("169.254.") ||
+    ip === "0.0.0.0"
+  );
+}
 
 export const DHRU_API_URL = process.env.DHRU_API_URL || "";
 export const DHRU_USERNAME = process.env.DHRU_USERNAME || "";
@@ -48,7 +64,7 @@ export function dhruApiRequest(
   parameters: Record<string, string> = {},
   provider?: ProviderConfig
 ): Promise<any> {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     const targetUrl = normalizeTargetApiUrl(provider?.apiUrl);
     const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
     const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
@@ -70,13 +86,34 @@ export function dhruApiRequest(
       const postData = data.toString();
       const urlObj = new URL(targetUrl);
       
+      // SSRF Mitigation: Block private IPs / localhost
+      if (urlObj.hostname === 'localhost' || isPrivateIP(urlObj.hostname)) {
+        console.error(`[SSRF BLOCK] Attempted to connect to local/private hostname: ${urlObj.hostname}`);
+        return resolve({ error: 'SSRF Attempt Detected: Blocked local/private network address' });
+      }
+
+      let safeAddress: string;
+      try {
+        const { address } = await lookup(urlObj.hostname);
+        if (isPrivateIP(address)) {
+          console.error(`[SSRF BLOCK] Hostname ${urlObj.hostname} resolved to private IP: ${address}`);
+          return resolve({ error: 'SSRF Attempt Detected: Resolved to local/private network address' });
+        }
+        safeAddress = address;
+      } catch (dnsErr) {
+        console.error(`[DNS Lookup Error] Failed to resolve ${urlObj.hostname}:`, dnsErr);
+        return resolve({ error: 'Failed to resolve provider hostname' });
+      }
+
       const options = {
-        hostname: urlObj.hostname,
+        hostname: safeAddress, // Mitigate DNS rebinding by connecting to the checked IP
         port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
         method: "POST",
-        family: 4, // Enforce IPv4 lookup
+        family: 4,
+        servername: urlObj.hostname, // SNI for TLS
         headers: {
+          "Host": urlObj.hostname, // Necessary for virtual hosting
           "Content-Type": "application/x-www-form-urlencoded",
           "Content-Length": Buffer.byteLength(postData),
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

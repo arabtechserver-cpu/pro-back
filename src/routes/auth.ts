@@ -267,6 +267,17 @@ router.post('/google', async (req, res) => {
     const payload = await verifyRes.json();
     const { email, name, sub: googleId, picture } = payload;
 
+    // Validate audience to prevent token reuse across applications
+    const expectedClientId = process.env.GOOGLE_CLIENT_ID;
+    if (expectedClientId && payload.aud !== expectedClientId) {
+      return res.status(401).json({ success: false, error: 'Invalid token: audience mismatch' });
+    }
+
+    // Validate token is not expired
+    if (payload.exp && Math.floor(Date.now() / 1000) > payload.exp) {
+      return res.status(401).json({ success: false, error: 'انتهت صلاحية جلسة Google' });
+    }
+
     if (!email) {
       return res.status(400).json({ success: false, error: 'لم يتم العثور على بريد إلكتروني مرتبط بحساب Google' });
     }

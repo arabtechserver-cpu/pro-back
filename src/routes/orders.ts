@@ -223,7 +223,11 @@ router.post('/', authenticateToken, async (req, res) => {
       });
     }
 
-    const qty = Math.max(1, parseInt(quantity || 1));
+    const parsedQuantity = parseInt(String(quantity || 1), 10);
+    if (Number.isNaN(parsedQuantity)) {
+      return res.status(400).json({ error: 'الكمية المدخلة غير صحيحة' });
+    }
+    const qty = Math.max(1, parsedQuantity);
     // Look up Dhru service and provider
     const dhruService = await prisma.dhruService.findFirst({
       where: {
@@ -268,150 +272,190 @@ router.post('/', authenticateToken, async (req, res) => {
     }
     const rawTotalPrice = Number((unitPrice * finalQty).toFixed(2));
 
-    // Process & validate coupon if provided
-    let appliedCoupon: any = null;
-    let couponDiscountAmount = 0;
+    // 1. Wrap all state changes and coupon validation in a single Prisma Transaction to prevent Race Conditions
+    let newOrder: any;
+    let updatedUser: any;
+    
+    try {
+      [newOrder, updatedUser] = await prisma.$transaction(async (tx) => {
+        let appliedCoupon: any = null;
+        let couponDiscountAmount = 0;
 
-    if (couponCode && typeof couponCode === 'string' && couponCode.trim()) {
-      const cleanCode = couponCode.trim().toUpperCase();
-      const foundCoupon = await prisma.coupon.findUnique({
-        where: { code: cleanCode }
-      });
+        if (couponCode && typeof couponCode === 'string' && couponCode.trim()) {
+          const cleanCode = couponCode.trim().toUpperCase();
+          const foundCoupon = await tx.coupon.findUnique({
+            where: { code: cleanCode }
+          });
 
-      if (!foundCoupon) {
-        return res.status(400).json({ error: 'كود الخصم المدخل غير موجود' });
-      }
-      if (!foundCoupon.isActive) {
-        return res.status(400).json({ error: 'كود الخصم غير مفعّل حالياً' });
-      }
-      if (new Date() > foundCoupon.expiresAt) {
-        return res.status(400).json({ error: 'لقد انتهت صلاحية كود الخصم هذا' });
-      }
-      if (foundCoupon.usedCount >= foundCoupon.maxUses) {
-        return res.status(400).json({ error: 'تم استنفاد الحد الأقصى لاستخدام كود الخصم هذا' });
-      }
+          if (!foundCoupon) {
+            throw new Error('COUPON_NOT_FOUND');
+          }
+          if (!foundCoupon.isActive) {
+            throw new Error('COUPON_INACTIVE');
+          }
+          if (new Date() > foundCoupon.expiresAt) {
+            throw new Error('COUPON_EXPIRED');
+          }
+          if (foundCoupon.usedCount >= foundCoupon.maxUses) {
+            throw new Error('COUPON_EXHAUSTED');
+          }
 
-      // Check single use per customer
-      const priorUsage = await prisma.couponUsage.findFirst({
-        where: {
-          couponId: foundCoupon.id,
-          userId: targetUserId
+          // Check single use per customer
+          const priorUsage = await tx.couponUsage.findFirst({
+            where: {
+              couponId: foundCoupon.id,
+              userId: targetUserId
+            }
+          });
+          if (priorUsage) {
+            throw new Error('COUPON_ALREADY_USED');
+          }
+
+          appliedCoupon = foundCoupon;
+          couponDiscountAmount = Number(((rawTotalPrice * foundCoupon.discountPercent) / 100).toFixed(2));
         }
-      });
-      if (priorUsage) {
-        return res.status(400).json({ error: 'لقد استفدت من كود الخصم هذا مسبقاً' });
-      }
 
-      appliedCoupon = foundCoupon;
-      couponDiscountAmount = Number(((rawTotalPrice * foundCoupon.discountPercent) / 100).toFixed(2));
-    }
+        const finalTotalPrice = Math.max(0, Number((rawTotalPrice - couponDiscountAmount).toFixed(2)));
 
-    const finalTotalPrice = Math.max(0, Number((rawTotalPrice - couponDiscountAmount).toFixed(2)));
-
-    if (dbUser.balance < finalTotalPrice) {
-      return res.status(400).json({
-        error: `رصيد محفظتك غير كافٍ! التكلفة الإجمالية: $${finalTotalPrice.toFixed(2)} USD ورصيدك الحالي: $${dbUser.balance.toFixed(2)} USD. يرجى شحن المحفظة أولاً.`
-      });
-    }
-
-    const now = new Date();
-    const timelineEvents = [
-      {
-        time: now.toISOString(),
-        action: 'ORDER_CREATED',
-        title: 'إنشاء الطلب وخصم الرصيد',
-        desc: `تم استلام الطلب من العميل (${dbUser.fullName}) وخصم $${finalTotalPrice.toFixed(2)} USD من رصيد المحفظة.`
-      }
-    ];
-
-    if (appliedCoupon) {
-      timelineEvents.push({
-        time: now.toISOString(),
-        action: 'COUPON_APPLIED',
-        title: 'تطبيق كود الخصم',
-        desc: `تم تفعيل كود الخصم (${appliedCoupon.code}) بنسبة ${appliedCoupon.discountPercent}% وتوفير $${couponDiscountAmount.toFixed(2)} USD.`
-      });
-    }
-
-    if (dhruService?.apiProvider) {
-      timelineEvents.push({
-        time: now.toISOString(),
-        action: 'PROVIDER_LINKED',
-        title: 'ربط المزود',
-        desc: `الخدمة مربوطة بالمزود (${dhruService.apiProvider.name}) برقم خدمة #${dhruService.dhruId}. الطلب في انتظار موافقة وإرسال الإدارة.`
-      });
-    }
-
-    const mergedCustomFields: Record<string, string> = { ...(customFields || {}) };
-    if (qtyConfig.supportsQty) {
-      mergedCustomFields['QNT'] = String(qty);
-      mergedCustomFields['custom_QNT'] = String(qty);
-    }
-
-    const structuredNotes = JSON.stringify({
-      userNote: notes ? String(notes).trim() : null,
-      rawImei: rawImei ? String(rawImei).trim() : null,
-      customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : null,
-      couponCode: appliedCoupon ? appliedCoupon.code : null,
-      discountAmount: couponDiscountAmount,
-      originalPrice: rawTotalPrice,
-      finalPrice: finalTotalPrice,
-      events: timelineEvents
-    });
-
-    // 1. Create Order in DB with status: 'pending'
-    const newOrder = await prisma.order.create({
-      data: {
-        userId: targetUserId,
-        serviceId: String(serviceId),
-        serviceName: String(serviceName).trim(),
-        targetInput: finalTargetInput,
-        quantity: finalQty,
-        price: finalTotalPrice,
-        couponCode: appliedCoupon ? appliedCoupon.code : null,
-        discount: couponDiscountAmount,
-        status: 'pending',
-        notes: structuredNotes,
-        apiOrderId: null
-      }
-    });
-
-    // 2. Deduct Balance from User
-    const updatedUser = await prisma.user.update({
-      where: { id: targetUserId },
-      data: { balance: { decrement: finalTotalPrice } }
-    });
-
-    // 3. Record Coupon Usage in DB if coupon was used
-    if (appliedCoupon) {
-      await prisma.coupon.update({
-        where: { id: appliedCoupon.id },
-        data: { usedCount: { increment: 1 } }
-      });
-
-      await prisma.couponUsage.create({
-        data: {
-          couponId: appliedCoupon.id,
-          userId: targetUserId,
-          orderId: newOrder.id,
-          discount: couponDiscountAmount
+        if (dbUser.balance < finalTotalPrice) {
+          throw new Error('INSUFFICIENT_BALANCE');
         }
+
+        const now = new Date();
+        const timelineEvents = [
+          {
+            time: now.toISOString(),
+            action: 'ORDER_CREATED',
+            title: 'إنشاء الطلب وخصم الرصيد',
+            desc: `تم استلام الطلب من العميل (${dbUser.fullName}) وخصم $${finalTotalPrice.toFixed(2)} USD من رصيد المحفظة.`
+          }
+        ];
+
+        if (appliedCoupon) {
+          timelineEvents.push({
+            time: now.toISOString(),
+            action: 'COUPON_APPLIED',
+            title: 'تطبيق كود الخصم',
+            desc: `تم تفعيل كود الخصم (${appliedCoupon.code}) بنسبة ${appliedCoupon.discountPercent}% وتوفير $${couponDiscountAmount.toFixed(2)} USD.`
+          });
+        }
+
+        if (dhruService?.apiProvider) {
+          timelineEvents.push({
+            time: now.toISOString(),
+            action: 'PROVIDER_LINKED',
+            title: 'ربط المزود',
+            desc: `الخدمة مربوطة بالمزود (${dhruService.apiProvider.name}) برقم خدمة #${dhruService.dhruId}. الطلب في انتظار موافقة وإرسال الإدارة.`
+          });
+        }
+
+        const mergedCustomFields: Record<string, string> = { ...(customFields || {}) };
+        if (qtyConfig.supportsQty) {
+          mergedCustomFields['QNT'] = String(qty);
+          mergedCustomFields['custom_QNT'] = String(qty);
+        }
+
+        const structuredNotes = JSON.stringify({
+          userNote: notes ? String(notes).trim() : null,
+          rawImei: rawImei ? String(rawImei).trim() : null,
+          customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : null,
+          couponCode: appliedCoupon ? appliedCoupon.code : null,
+          discountAmount: couponDiscountAmount,
+          originalPrice: rawTotalPrice,
+          finalPrice: finalTotalPrice,
+          events: timelineEvents
+        });
+
+        // A. Deduct Balance Atomically
+        const updatedUserResult = await tx.user.updateMany({
+          where: { id: targetUserId, balance: { gte: finalTotalPrice } },
+          data: { balance: { decrement: finalTotalPrice } }
+        });
+
+        if (updatedUserResult.count === 0) {
+          throw new Error('INSUFFICIENT_BALANCE_CONCURRENT');
+        }
+
+        const uUser = await tx.user.findUnique({ where: { id: targetUserId } });
+        if (!uUser) throw new Error('User not found after deduction');
+
+        // B. Create Order in DB with status: 'pending'
+        const createdOrder = await tx.order.create({
+          data: {
+            userId: targetUserId,
+            serviceId: String(serviceId),
+            serviceName: String(serviceName).trim(),
+            targetInput: finalTargetInput,
+            quantity: finalQty,
+            price: finalTotalPrice,
+            couponCode: appliedCoupon ? appliedCoupon.code : null,
+            discount: couponDiscountAmount,
+            status: 'pending',
+            notes: structuredNotes,
+            apiOrderId: null
+          }
+        });
+
+        // C. Record Coupon Usage in DB if coupon was used
+        if (appliedCoupon) {
+          await tx.coupon.update({
+            where: { id: appliedCoupon.id },
+            data: { usedCount: { increment: 1 } }
+          });
+
+          await tx.couponUsage.create({
+            data: {
+              couponId: appliedCoupon.id,
+              userId: targetUserId,
+              orderId: createdOrder.id,
+              discount: couponDiscountAmount
+            }
+          });
+        }
+
+        // D. Create Deduction Transaction Record
+        await tx.transaction.create({
+          data: {
+            userId: targetUserId,
+            type: appliedCoupon ? `خصم خدمة (كود: ${appliedCoupon.code}): ${serviceName.slice(0, 30)}` : `خصم خدمة: ${serviceName.slice(0, 35)}`,
+            amount: finalTotalPrice,
+            method: 'رصيد المحفظة',
+            refNo: `ORD-#${createdOrder.id.slice(-6)}`,
+            status: 'completed'
+          }
+        });
+
+        return [createdOrder, uUser];
       });
+    } catch (txError: any) {
+      if (txError.message === 'COUPON_NOT_FOUND') return res.status(400).json({ error: 'كود الخصم المدخل غير موجود' });
+      if (txError.message === 'COUPON_INACTIVE') return res.status(400).json({ error: 'كود الخصم غير مفعّل حالياً' });
+      if (txError.message === 'COUPON_EXPIRED') return res.status(400).json({ error: 'لقد انتهت صلاحية كود الخصم هذا' });
+      if (txError.message === 'COUPON_EXHAUSTED') return res.status(400).json({ error: 'تم استنفاد الحد الأقصى لاستخدام كود الخصم هذا' });
+      if (txError.message === 'COUPON_ALREADY_USED') return res.status(400).json({ error: 'لقد استفدت من كود الخصم هذا مسبقاً' });
+      
+      if (txError.message === 'INSUFFICIENT_BALANCE') {
+        return res.status(400).json({
+          error: `رصيد محفظتك غير كافٍ! يرجى شحن المحفظة أولاً.`
+        });
+      }
+      if (txError.message === 'INSUFFICIENT_BALANCE_CONCURRENT') {
+        return res.status(400).json({
+          error: `رصيد محفظتك غير كافٍ لإتمام الطلب أو تغير الرصيد أثناء المعالجة.`
+        });
+      }
+      
+      // If the error is a Prisma unique constraint violation on CouponUsage
+      if (txError.code === 'P2002' && txError.meta?.target?.includes('couponId_userId')) {
+        return res.status(400).json({
+          error: 'تم استخدام هذا الكوبون مسبقاً بطريقة متزامنة، لا يمكن استخدامه مرة أخرى.'
+        });
+      }
+      
+      throw txError; // re-throw to outer catch block
     }
 
-    // 4. Create Deduction Transaction Record
-    await prisma.transaction.create({
-      data: {
-        userId: targetUserId,
-        type: appliedCoupon ? `خصم خدمة (كود: ${appliedCoupon.code}): ${serviceName.slice(0, 30)}` : `خصم خدمة: ${serviceName.slice(0, 35)}`,
-        amount: finalTotalPrice,
-        method: 'رصيد المحفظة',
-        refNo: `ORD-#${newOrder.id.slice(-6)}`,
-        status: 'completed'
-      }
-    });
-
-    console.log(`[Order Created (Pending Approval)] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${finalTotalPrice} (Discount: $${couponDiscountAmount}) - Remaining Balance: $${updatedUser.balance}`);
+    console.log(`[Order Created (Pending Approval)] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${newOrder.price} - Remaining Balance: $${updatedUser.balance}`);
 
     // 4. Send Telegram Alert to Admin
     const providerName = dhruService?.apiProvider?.name || 'سيرفر محلي / يدوي';
@@ -716,34 +760,51 @@ router.post('/refund', isAdmin, async (req, res) => {
 
     parsedNotes.events = events;
 
-    // 1. Update Order Status
-    const updatedOrder = await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        status: 'rejected',
-        reply: `ملغي ومسترجع: ${cancelReason}`,
-        notes: JSON.stringify(parsedNotes)
-      }
-    });
+    // 1. Wrap in a single Prisma Transaction to prevent Lost Updates
+    let updatedOrder: any;
 
-    // 2. Refund User Balance if userId exists
-    if (order.userId && refundAmount > 0) {
-      await prisma.user.update({
-        where: { id: order.userId },
-        data: { balance: { increment: refundAmount } }
-      });
+    try {
+      updatedOrder = await prisma.$transaction(async (tx) => {
+        const orderResult = await tx.order.updateMany({
+          where: { id: orderId, status: { notIn: ['rejected', 'cancelled'] } },
+          data: {
+            status: 'rejected',
+            reply: `ملغي ومسترجع: ${cancelReason}`,
+            notes: JSON.stringify(parsedNotes)
+          }
+        });
 
-      // 3. Create Refund Transaction
-      await prisma.transaction.create({
-        data: {
-          userId: order.userId,
-          type: `استرجاع رصيد لطلب ملغي (#${order.id.slice(-6)})`,
-          amount: refundAmount,
-          method: 'استرجاع للمحفظة',
-          refNo: `REFUND-#${order.id.slice(-6)}`,
-          status: 'completed'
+        if (orderResult.count === 0) {
+          throw new Error('ALREADY_CANCELLED');
         }
+
+        const uOrder = await tx.order.findUnique({ where: { id: orderId } });
+
+        if (order.userId && refundAmount > 0) {
+          await tx.user.update({
+            where: { id: order.userId },
+            data: { balance: { increment: refundAmount } }
+          });
+
+          await tx.transaction.create({
+            data: {
+              userId: order.userId,
+              type: `استرجاع رصيد لطلب ملغي (#${order.id.slice(-6)})`,
+              amount: refundAmount,
+              method: 'استرجاع للمحفظة',
+              refNo: `REFUND-#${order.id.slice(-6)}`,
+              status: 'completed'
+            }
+          });
+        }
+        
+        return uOrder;
       });
+    } catch (txError: any) {
+      if (txError.message === 'ALREADY_CANCELLED') {
+        return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً' });
+      }
+      throw txError;
     }
 
     return res.json({
@@ -793,31 +854,51 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
 
     parsedNotes.events = events;
 
-    const updatedOrder = await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        status: 'rejected',
-        reply: `ملغي من المزود: ${cancelReason}`,
-        notes: JSON.stringify(parsedNotes)
-      }
-    });
+    // Fix Double Refund Race Condition & Lost Updates
+    let updatedOrder: any;
 
-    if (order.userId && refundAmount > 0) {
-      await prisma.user.update({
-        where: { id: order.userId },
-        data: { balance: { increment: refundAmount } }
-      });
+    try {
+      updatedOrder = await prisma.$transaction(async (tx) => {
+        const updatedOrderResult = await tx.order.updateMany({
+          where: { id: orderId, status: { notIn: ['rejected', 'cancelled'] } },
+          data: {
+            status: 'rejected',
+            reply: `ملغي من المزود: ${cancelReason}`,
+            notes: JSON.stringify(parsedNotes)
+          }
+        });
 
-      await prisma.transaction.create({
-        data: {
-          userId: order.userId,
-          type: `استرجاع رصيد (إلغاء من المزود #${order.id.slice(-6)})`,
-          amount: refundAmount,
-          method: 'استرجاع للمحفظة',
-          refNo: `REF-PROV-#${order.id.slice(-6)}`,
-          status: 'completed'
+        if (updatedOrderResult.count === 0) {
+          throw new Error('ALREADY_CANCELLED');
         }
+
+        const uOrder = await tx.order.findUnique({ where: { id: orderId } });
+
+        if (order.userId && refundAmount > 0) {
+          await tx.user.update({
+            where: { id: order.userId },
+            data: { balance: { increment: refundAmount } }
+          });
+
+          await tx.transaction.create({
+            data: {
+              userId: order.userId,
+              type: `استرجاع رصيد (إلغاء من المزود #${order.id.slice(-6)})`,
+              amount: refundAmount,
+              method: 'استرجاع للمحفظة',
+              refNo: `REF-PROV-#${order.id.slice(-6)}`,
+              status: 'completed'
+            }
+          });
+        }
+        
+        return uOrder;
       });
+    } catch (txError: any) {
+      if (txError.message === 'ALREADY_CANCELLED') {
+        return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً' });
+      }
+      throw txError;
     }
 
     return res.json({

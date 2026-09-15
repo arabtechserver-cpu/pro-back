@@ -14,7 +14,14 @@ const allowedOrigins = (process.env.FRONTEND_URL || '')
 app.set('trust proxy', 1);
 
 app.use(helmet({
-  contentSecurityPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'none'"],
+      objectSrc: ["'none'"],
+      frameAncestors: ["'none'"]
+    }
+  },
   crossOriginOpenerPolicy: false,
   crossOriginResourcePolicy: { policy: "cross-origin" },
   crossOriginEmbedderPolicy: false,
@@ -28,8 +35,8 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json({ limit: '100mb' }));
-app.use(express.urlencoded({ limit: '100mb', extended: true }));
+app.use(express.json({ limit: '5mb' }));
+app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
 import path from 'path';
 import { getUploadDir, ensureUploadDir } from './utils/uploads';
@@ -72,12 +79,14 @@ app.use('/api/providers', providersRoutes);
 app.use('/api/api-providers', providersRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/homepage', homepageRoutes);
-app.use('/api/upload', uploadRoutes);
-app.use('/api/media', uploadRoutes);
+// upload and transactions accept base64 images — allow larger body for those routes only
+const imageBodyParser = express.json({ limit: '15mb' });
+app.use('/api/upload', imageBodyParser, uploadRoutes);
+app.use('/api/media', imageBodyParser, uploadRoutes);
 app.use('/uploads', uploadRoutes);
+app.use('/api/transactions', imageBodyParser, transactionsRoutes);
 app.use('/api/users', usersRoutes);
 app.use('/api/memberships', membershipsRoutes);
-app.use('/api/transactions', transactionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/telemetry', analyticsRoutes);
 app.use('/api/app-events', analyticsRoutes);

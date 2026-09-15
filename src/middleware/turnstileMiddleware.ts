@@ -1,17 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 
-function isLocalhostRequest(req: Request): boolean {
-  const origin = String(req.headers.origin || req.headers.referer || "");
-  const host = String(req.headers.host || req.hostname || "");
-  return (
-    host.includes("localhost") ||
-    host.includes("127.0.0.1") ||
-    origin.includes("localhost") ||
-    origin.includes("127.0.0.1") ||
-    req.hostname === "localhost" ||
-    req.hostname === "127.0.0.1"
-  );
-}
+
 
 function getPublicClientIp(req: Request): string | null {
   const candidate = req.headers["cf-connecting-ip"] || req.headers["x-real-ip"];
@@ -36,12 +25,11 @@ function getPublicClientIp(req: Request): string | null {
 
 export async function turnstileMiddleware(req: Request, res: Response, next: NextFunction) {
   const secret = process.env.TURNSTILE_SECRET;
-  const isLocal = isLocalhostRequest(req);
-  const isDev = process.env.NODE_ENV !== "production";
+  const isDev = process.env.NODE_ENV === "development";
 
   // Local development can opt out, but production never silently disables bot protection.
   if (!secret || secret.trim() === "" || secret === "dummy") {
-    if (!isDev && !isLocal) {
+    if (!isDev) {
       return res.status(503).json({
         success: false,
         error: "خدمة التحقق الأمني غير مهيأة حالياً.",
@@ -55,8 +43,8 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   const clientIp = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
 
   if (!token) {
-    if (isDev || isLocal) {
-      console.warn(`[Cloudflare Turnstile] Bypassed missing token for development/localhost IP: ${clientIp || 'unknown'}`);
+    if (isDev) {
+      console.warn(`[Cloudflare Turnstile] Bypassed missing token for development IP: ${clientIp || 'unknown'}`);
       return next();
     }
     return res.status(403).json({
@@ -66,11 +54,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     });
   }
 
-  // Gracefully allow client fallback if browser encountered a client-side glitch (e.g. adblocker, WebGPU error on Windows)
-  if (token === "cf-turnstile-client-fallback") {
-    console.warn(`[Cloudflare Turnstile] Accepted client-fallback token for IP: ${clientIp || 'unknown'}`);
-    return next();
-  }
+  // Do not accept any hardcoded bypass strings
 
   try {
     const params = new URLSearchParams({
@@ -91,8 +75,13 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     });
 
     if (!response.ok) {
-      console.warn(`[Cloudflare Turnstile] Verification endpoint returned status ${response.status} - allowing request to prevent total outage`);
-      return next();
+      console.warn(`[Cloudflare Turnstile] Verification endpoint returned status ${response.status}`);
+      return res.status(403).json({
+        success: false,
+        error: "فشل التحقق الأمني من Cloudflare Turnstile (Network Error). يرجى المحاولة مرة أخرى.",
+        message: "فشل التحقق الأمني من Cloudflare Turnstile (Network Error). يرجى المحاولة مرة أخرى.",
+        code: "TURNSTILE_FAILED"
+      });
     }
 
     const result: any = await response.json();
@@ -101,9 +90,9 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
       const errorCodes: string[] = Array.isArray(result["error-codes"]) ? result["error-codes"] : [];
       console.warn("[Cloudflare Turnstile] Verification notice:", errorCodes);
 
-      // Handle hostname-mismatch gracefully in local/development or staging environments
+      // Handle hostname-mismatch gracefully in local/development environments
       if (errorCodes.includes("hostname-mismatch")) {
-        if (isDev || isLocal) {
+        if (isDev) {
           console.warn("[Cloudflare Turnstile] Accepted token despite hostname-mismatch for local/dev environment");
           return next();
         }
@@ -121,7 +110,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
 
       if (errorCodes.includes("invalid-input-secret")) {
         console.error("[Cloudflare Turnstile] CRITICAL: TURNSTILE_SECRET is invalid in environment variables!");
-        if (isDev || isLocal) {
+        if (isDev) {
           return next();
         }
       }
@@ -136,7 +125,12 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
 
     next();
   } catch (err: any) {
-    console.warn("[Cloudflare Turnstile] Verification network error:", err?.message, "- allowing request to prevent outage");
-    return next();
+    console.warn("[Cloudflare Turnstile] Verification network error:", err?.message);
+    return res.status(403).json({
+      success: false,
+      error: "تعذر الاتصال بخدمة التحقق الأمني. يرجى التحقق من اتصالك والمحاولة مرة أخرى.",
+      message: "تعذر الاتصال بخدمة التحقق الأمني. يرجى التحقق من اتصالك والمحاولة مرة أخرى.",
+      code: "TURNSTILE_NETWORK_ERROR"
+    });
   }
 }

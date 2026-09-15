@@ -431,9 +431,11 @@ async function handleIncomingTelegramUpdate(update: any) {
 
   // 1. Handle unauthorized users
   if (!isAuthorized) {
-    // Only the primary admin's chat ID (from env var) can log in via password
-    if (chatId === DEFAULT_ADMIN_CHAT_ID) {
-      // They are the owner but not yet "linked" in memory - let them login with dashboard credentials
+    // Only chat IDs listed in TELEGRAM_ADMIN_CHAT_ID env var can log in via password
+    const allowedIds = DEFAULT_ADMIN_CHAT_ID.split(',').map(s => s.trim()).filter(Boolean);
+    const isAllowedToLogin = allowedIds.includes(chatId);
+
+    if (isAllowedToLogin) {
       const parts = text.split(/\s+/);
       if (parts.length === 2 && lowerText !== '/start' && lowerText !== '/admin') {
         const [identifier, password] = parts;
@@ -445,7 +447,7 @@ async function handleIncomingTelegramUpdate(update: any) {
             }
           });
           if (user && await bcrypt.compare(password, user.password)) {
-            adminChatIds = normalizeAdminChatIds([DEFAULT_ADMIN_CHAT_ID]);
+            adminChatIds = normalizeAdminChatIds(allowedIds);
             isAuthorized = true;
             await sendTelegramMessage(
               chatId,
@@ -461,7 +463,6 @@ async function handleIncomingTelegramUpdate(update: any) {
           return;
         }
       }
-      // Show login prompt for the primary admin
       if (lowerText === '/start' || lowerText === '/admin') {
         await sendTelegramMessage(
           chatId,
@@ -469,7 +470,6 @@ async function handleIncomingTelegramUpdate(update: any) {
         );
       }
     } else {
-      // Completely ignore any other user
       if (lowerText === '/start' || lowerText === '/admin') {
         console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
       }

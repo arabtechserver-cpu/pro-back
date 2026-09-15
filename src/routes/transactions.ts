@@ -3,7 +3,6 @@ import { prisma } from "../utils/prisma";
 import {
   sendTelegramPhotoNotification,
   getAdminChatIds,
-  addAdminChatId,
   sendTelegramMessage,
   escapeHtml
 } from '../utils/telegramService';
@@ -410,28 +409,5 @@ router.get('/telegram-admin', isAdmin, async (req, res) => {
   });
 });
 
-router.post('/telegram-admin', isAdmin, async (req, res) => {
-  try {
-    const { chatId } = req.body;
-    if (!chatId) {
-      return res.status(400).json({ error: 'معرف الشات مطلوب' });
-    }
-
-    addAdminChatId(String(chatId).trim());
-
-    await sendTelegramMessage(
-      String(chatId).trim(),
-      `🎉 <b>تم ربط حسابك كـ أدمن في البوت بنجاح!</b>\n\nستصلك جميع إشعارات صور الإيصالات وطلبات الشحن فورياً على هذا الحساب.`
-    );
-
-    return res.json({
-      success: true,
-      message: `تم تسجيل معرف الشات (${chatId}) بنجاح وإرسال رسالة اختبار لـ تلجرام!`
-    });
-  } catch (error: any) {
-    console.error('Error setting telegram admin:', error);
-    return res.status(500).json({ error: 'حدث خطأ أثناء حفظ معرف الشات' });
-  }
-});
 
 export default router;

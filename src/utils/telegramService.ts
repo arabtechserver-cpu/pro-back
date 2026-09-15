@@ -15,116 +15,32 @@ const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const DEFAULT_ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '';
 
-// Determine all possible locations for telegram_admins.json
-function getAdminFilePath(): string {
-  const possiblePaths = [
-    path.join(__dirname, '../../telegram_admins.json'),
-    path.join(__dirname, '../telegram_admins.json'),
-    path.join(process.cwd(), 'telegram_admins.json'),
-    path.join(process.cwd(), 'backend/telegram_admins.json')
-  ];
-  for (const p of possiblePaths) {
-    if (fs.existsSync(p)) return p;
-  }
-  return possiblePaths[0];
-}
-
-const ADMIN_FILE_PATH = getAdminFilePath();
-
-// Memory & File Persistence for Telegram Admin Chat IDs
+// Admin Chat IDs - loaded exclusively from TELEGRAM_ADMIN_CHAT_ID env var.
+// No file persistence, no self-registration. Only the env var is the source of truth.
 let adminChatIds: string[] = normalizeTelegramAdminChatIds([], DEFAULT_ADMIN_CHAT_ID);
-let pendingNotificationsQueue: Array<{ imageSource?: string; caption: string; replyMarkup?: any }> = [];
-let isRefreshingAdminChatIds = false;
+const pendingNotificationsQueue: Array<{ imageSource?: string; caption: string; replyMarkup?: any }> = [];
 
 function normalizeAdminChatIds(ids: unknown): string[] {
   return normalizeTelegramAdminChatIds(ids, DEFAULT_ADMIN_CHAT_ID);
 }
 
-// Load persisted Admin Chat IDs from file
-function loadAdminChatIds(silent = false) {
-  try {
-    const filePath = getAdminFilePath();
-    if (fs.existsSync(filePath)) {
-      const data = fs.readFileSync(filePath, 'utf-8');
-      const parsed = JSON.parse(data);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        adminChatIds = normalizeAdminChatIds(parsed);
-        if (!silent) {
-          console.log(`[Telegram Bot] Loaded ${adminChatIds.length} registered Admin Chat ID(s):`, adminChatIds);
-        }
-      }
-    }
-  } catch (err) {
-    if (!silent) console.error('[Telegram Bot] Error reading telegram_admins.json:', err);
-  }
-
-  // Include env variable if set
-  adminChatIds = normalizeAdminChatIds(adminChatIds);
-}
-
-// Save Admin Chat IDs to file
-function saveAdminChatIds() {
-  try {
-    const targetPaths = [
-      path.join(__dirname, '../../telegram_admins.json'),
-      path.join(process.cwd(), 'telegram_admins.json')
-    ];
-    for (const p of targetPaths) {
-      try {
-        fs.writeFileSync(p, JSON.stringify(adminChatIds, null, 2), 'utf-8');
-      } catch {}
-    }
-  } catch (err) {
-    console.error('[Telegram Bot] Error saving telegram_admins.json:', err);
-  }
-}
-
-async function refreshAdminChatIds() {
-  if (isRefreshingAdminChatIds) return adminChatIds;
-  isRefreshingAdminChatIds = true;
-
-  try {
-    loadAdminChatIds(true);
-    return adminChatIds;
-  } finally {
-    isRefreshingAdminChatIds = false;
-  }
-}
-
-export function addAdminChatId(chatId: string) {
-  if (chatId) {
-    const cleanId = String(chatId).trim();
-    if (!adminChatIds.includes(cleanId)) {
-      adminChatIds.push(cleanId);
-      saveAdminChatIds();
-      console.log(`[Telegram Bot] Registered new Admin Chat ID: ${cleanId}`);
-    }
-    // Flush pending queued deposit notifications to registered admins
-    flushPendingNotifications();
-  }
-}
-
 export function getAdminChatIds(): string[] {
-  adminChatIds = normalizeAdminChatIds(adminChatIds);
-  return adminChatIds;
+  return normalizeAdminChatIds(adminChatIds);
 }
 
 // Flush pending deposit notifications to registered admins
 async function flushPendingNotifications() {
   if (pendingNotificationsQueue.length === 0) return;
 
-  console.log(`[Telegram Bot] Delivering ${pendingNotificationsQueue.length} pending deposit notification(s) to Admin...`);
   const queue = [...pendingNotificationsQueue];
-  pendingNotificationsQueue = [];
+  pendingNotificationsQueue.length = 0;
 
   for (const item of queue) {
     await sendTelegramPhotoNotification(item);
   }
 }
 
-// Initial load
-loadAdminChatIds();
-saveAdminChatIds();
+console.log(`[Telegram Bot] Active Admin Chat ID(s):`, adminChatIds);
 
 // Long Polling Telegram Bot Updates
 let lastUpdateId = 0;
@@ -572,16 +488,12 @@ async function handleIncomingTelegramUpdate(update: any) {
 }
 
 export function removeAdminChatId(chatId: string) {
-  // Only remove if it's not the default admin ID
   if (chatId === DEFAULT_ADMIN_CHAT_ID) return;
-  if (adminChatIds.includes(chatId)) {
-    adminChatIds = adminChatIds.filter(id => id !== chatId);
-    if (adminChatIds.length === 0) {
-      adminChatIds = [DEFAULT_ADMIN_CHAT_ID];
-    }
-    saveAdminChatIds();
-    console.log(`[Telegram Bot] Removed Admin Chat ID: ${chatId}`);
+  adminChatIds = adminChatIds.filter(id => id !== chatId);
+  if (adminChatIds.length === 0) {
+    adminChatIds = [DEFAULT_ADMIN_CHAT_ID];
   }
+  console.log(`[Telegram Bot] Removed Admin Chat ID from session: ${chatId}`);
 }
 
 export function escapeHtml(str: string): string {
@@ -628,7 +540,6 @@ export async function sendTelegramMessage(chatId: string, text: string, replyMar
 // Broadcast Alert to all Admin Chat IDs
 export async function sendTelegramAlert(text: string) {
   try {
-    await refreshAdminChatIds();
     const chatIds = getAdminChatIds();
     for (const id of chatIds) {
       await sendTelegramMessage(id, text);
@@ -767,7 +678,6 @@ export async function sendTelegramPhotoNotification({
   replyMarkup?: any;
 }) {
   try {
-    await refreshAdminChatIds();
     const targetChatIds = getAdminChatIds();
     if (targetChatIds.length === 0) {
       throw new Error('No Telegram admin chat IDs are configured');
@@ -864,7 +774,6 @@ export async function sendTelegramPhotoNotification({
 // Send Document (e.g., Backup ZIP) to Telegram Admins
 export async function sendDocumentToAdmins(filePath: string, caption: string) {
   try {
-    await refreshAdminChatIds();
     const targetChatIds = getAdminChatIds();
 
     for (const chatId of targetChatIds) {

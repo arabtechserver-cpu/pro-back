@@ -2,6 +2,7 @@ import { prisma } from "../utils/prisma";
 import bcrypt from 'bcryptjs';
 import { syncDhruServices } from '../scripts/syncDhruServices';
 import { extractQuantityLimits, enrichCustomFieldsWithQuantity } from './provider-quantity';
+import { refreshAdminIds } from './telegramService';
 
 export async function bootstrapDatabase() {
   try {
@@ -54,6 +55,22 @@ export async function bootstrapDatabase() {
       });
       console.log('[Bootstrap] Admin account status restored to ACTIVE (API access permanently blocked for admin accounts).');
     }
+
+    // Initialize or sync telegram_admin_chat_ids setting
+    try {
+      const defaultId = (process.env.TELEGRAM_ADMIN_CHAT_ID || '').trim();
+      const existing = await prisma.setting.findUnique({ where: { key: 'telegram_admin_chat_ids' } });
+      if (!existing && defaultId) {
+        const initial = defaultId.split(',').map(s => s.trim()).filter(Boolean);
+        await prisma.setting.create({
+          data: {
+            key: 'telegram_admin_chat_ids',
+            value: JSON.stringify(initial)
+          }
+        });
+      }
+      await refreshAdminIds();
+    } catch (_) {}
 
     // Auto-migrate User table to add phone column if missing
     try {

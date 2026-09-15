@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { prisma } from "../utils/prisma";
 import { generateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
-import { sendTelegramMessage } from '../utils/telegramService';
+import { sendTelegramMessage, sendTelegramAlert } from '../utils/telegramService';
 import { turnstileMiddleware } from '../middleware/turnstileMiddleware';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
@@ -70,17 +70,17 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
 
     // Notify Telegram Admins of new user registration
     const newRegMsg = `
-👤 <b>عميل جديد انضم للموقع! (New Registration)</b>
+<b>عميل جديد انضم للموقع (New Registration)</b>
 
-✨ <b>الاسم:</b> ${newUser.fullName}
-📧 <b>الإيميل:</b> <code>${newUser.email}</code>
-🏷️ <b>اسم المستخدم:</b> @${newUser.username}
-📱 <b>الهاتف:</b> <code>${newUser.phone || 'غير مسجل'}</code>
-🌍 <b>الدولة:</b> ${newUser.country}
-📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
+- <b>الاسم:</b> ${newUser.fullName}
+- <b>البريد:</b> <code>${newUser.email}</code>
+- <b>اسم المستخدم:</b> @${newUser.username}
+- <b>الهاتف:</b> <code>${newUser.phone || 'غير مسجل'}</code>
+- <b>الدولة:</b> ${newUser.country}
+- <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
     `.trim();
 
-    sendTelegramMessage('7053196033', newRegMsg).catch(() => {});
+    sendTelegramAlert(newRegMsg).catch(() => {});
 
     const token = generateToken({ id: newUser.id, email: newUser.email, role: newUser.role });
 

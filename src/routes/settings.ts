@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../utils/prisma';
 import { isAdmin } from '../middleware/auth';
 import { normalizeTelegramAdminChatIds } from '../utils/telegram-config';
+import { saveAdminChatIdsToDb, refreshAdminIds } from '../utils/telegramService';
 
 const router = Router();
 
@@ -11,7 +12,16 @@ const TELEGRAM_ADMINS_KEY = 'telegram_admin_chat_ids';
 router.get('/telegram-admins', isAdmin, async (_req, res) => {
   try {
     const setting = await prisma.setting.findUnique({ where: { key: TELEGRAM_ADMINS_KEY } });
-    const ids: string[] = setting ? JSON.parse(setting.value) : [];
+    let ids: string[] = [];
+    if (setting) {
+      try {
+        const parsed = JSON.parse(setting.value);
+        if (Array.isArray(parsed)) ids = parsed;
+      } catch {}
+    }
+    if (ids.length === 0) {
+      ids = normalizeTelegramAdminChatIds([], process.env.TELEGRAM_ADMIN_CHAT_ID || '');
+    }
     return res.json({ success: true, chatIds: ids });
   } catch (err) {
     return res.status(500).json({ error: 'خطأ في جلب إعدادات تليجرام' });
@@ -26,13 +36,7 @@ router.post('/telegram-admins', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'chatIds يجب أن يكون مصفوفة' });
     }
 
-    const normalized = normalizeTelegramAdminChatIds(chatIds, process.env.TELEGRAM_ADMIN_CHAT_ID || '');
-
-    await prisma.setting.upsert({
-      where: { key: TELEGRAM_ADMINS_KEY },
-      update: { value: JSON.stringify(normalized) },
-      create: { key: TELEGRAM_ADMINS_KEY, value: JSON.stringify(normalized) }
-    });
+    const normalized = await saveAdminChatIdsToDb(chatIds);
 
     return res.json({ success: true, chatIds: normalized });
   } catch (err) {

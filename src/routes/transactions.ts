@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import {
   sendTelegramPhotoNotification,
   getAdminChatIds,
+  refreshAdminIds,
   sendTelegramMessage,
   escapeHtml
 } from '../utils/telegramService';
@@ -401,7 +402,7 @@ router.post('/reject', isAdmin, async (req, res) => {
 
 // GET & POST /api/transactions/telegram-admin - Telegram Bot Chat Registration
 router.get('/telegram-admin', isAdmin, async (req, res) => {
-  const chatIds = getAdminChatIds();
+  const chatIds = await refreshAdminIds();
   return res.json({
     success: true,
     connected: chatIds.length > 0,

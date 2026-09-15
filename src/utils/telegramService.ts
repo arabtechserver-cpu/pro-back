@@ -43,9 +43,22 @@ export function getAdminChatIds(): string[] {
   return adminChatIds;
 }
 
-// Refresh from DB (called before every notification)
-async function refreshAdminIds() {
+// Refresh from DB
+export async function refreshAdminIds(): Promise<string[]> {
   adminChatIds = await loadAdminChatIdsFromDb();
+  return adminChatIds;
+}
+
+// Persist admin IDs to database and update memory cache
+export async function saveAdminChatIdsToDb(ids: string[]): Promise<string[]> {
+  const normalized = normalizeAdminChatIds(ids);
+  await prisma.setting.upsert({
+    where: { key: 'telegram_admin_chat_ids' },
+    update: { value: JSON.stringify(normalized) },
+    create: { key: 'telegram_admin_chat_ids', value: JSON.stringify(normalized) }
+  });
+  adminChatIds = normalized;
+  return adminChatIds;
 }
 
 // Flush pending deposit notifications to registered admins
@@ -60,16 +73,16 @@ async function flushPendingNotifications() {
   }
 }
 
-console.log(`[Telegram Bot] Active Admin Chat ID(s):`, adminChatIds);
-
 // Long Polling Telegram Bot Updates
 let lastUpdateId = 0;
 let isPolling = false;
 
-export function startTelegramBotPolling() {
+export async function startTelegramBotPolling() {
   if (isPolling) return;
   isPolling = true;
+  await refreshAdminIds();
   console.log('[Telegram Bot Listener] Started background Telegram updates polling...');
+  console.log('[Telegram Bot] Active Admin Chat ID(s):', adminChatIds);
   pollUpdates();
 }
 
@@ -122,11 +135,12 @@ async function handleIncomingTelegramUpdate(update: any) {
     update?.channel_post?.chat?.id ||
     update?.edited_message?.chat?.id ||
     ''
-  ).toString();
+  ).toString().trim();
 
   if (!incomingChatId) return;
 
-  // Security: Only process commands from authorized admins
+  // Refresh admin IDs from DB on every update so dashboard changes apply immediately
+  await refreshAdminIds();
   const currentAdminIds = getAdminChatIds();
   let isAuthorized = currentAdminIds.includes(incomingChatId);
 
@@ -142,48 +156,44 @@ async function handleIncomingTelegramUpdate(update: any) {
     // Block unauthorized callback executions
     if (!isAuthorized) {
       await answerCallbackQuery(cbId, 'غير مصرح', true);
-      console.warn(`[Telegram Bot] Unauthorized callback from chat ID: ${chatId} — blocked.`);
+      console.warn(`[Telegram Bot] Unauthorized callback from chat ID: ${chatId} - blocked.`);
       return;
     }
 
     try {
       // 0. Admin Management Commands
       if (data === 'admin_count') {
+        await refreshAdminIds();
         const admins = getAdminChatIds();
         const otherAdminsCount = admins.filter(id => id !== chatId && id !== DEFAULT_ADMIN_CHAT_ID).length;
         
-        let msg = `👥 <b>إحصائيات المشرفين المسجلين</b>\n\n`;
-        msg += `العدد الإجمالي: <b>${admins.length}</b>\n`;
-        msg += `<i>(هذا العدد يشمل حسابك الحالي وحساب النظام الافتراضي)</i>\n\n`;
+        let msg = `<b>احصائيات المشرفين المسجلين</b>\n\n`;
+        msg += `العدد الاجمالي: <b>${admins.length}</b>\n`;
+        msg += `المعرفات المسجلة:\n${admins.map(id => `- <code>${id}</code>`).join('\n')}\n\n`;
         
         if (otherAdminsCount > 0) {
-          msg += `⚠️ <b>تنبيه:</b> يوجد <b>${otherAdminsCount}</b> مشرف/مشرفين آخرين غيرك مسجلين في البوت!`;
+          msg += `تنبيه: يوجد <b>${otherAdminsCount}</b> مشرف اخر مسجل في البوت.`;
         } else {
-          msg += `✅ <b>الوضع آمن:</b> أنت المشرف الوحيد المسجل حالياً (بالإضافة للنظام).`;
+          msg += `انت المشرف الوحيد المسجل حاليا.`;
         }
 
-        await answerCallbackQuery(cbId, `تم جلب الإحصائيات!`, false);
+        await answerCallbackQuery(cbId, 'تم جلب الاحصائيات', false);
         await sendTelegramMessage(chatId, msg);
         return;
       }
 
       if (data === 'admin_kick_all') {
-        // Keep only the current admin and the default admin
-        const currentAdmins = getAdminChatIds();
-        for (const id of currentAdmins) {
-          if (id !== chatId && id !== DEFAULT_ADMIN_CHAT_ID) {
-            removeAdminChatId(id);
-          }
-        }
-        await answerCallbackQuery(cbId, '🗑️ تم طرد جميع المشرفين الآخرين بنجاح!', true);
-        await sendTelegramMessage(chatId, '✅ <b>تم طرد جميع المشرفين الآخرين.</b>\nأنت المشرف الوحيد المسجل الآن (بالإضافة للمشرف الافتراضي).');
+        const keptAdmins = Array.from(new Set([chatId, DEFAULT_ADMIN_CHAT_ID].filter(Boolean)));
+        await saveAdminChatIdsToDb(keptAdmins);
+        await answerCallbackQuery(cbId, 'تم طرد جميع المشرفين الاخرين بنجاح', true);
+        await sendTelegramMessage(chatId, '<b>تم طرد جميع المشرفين الاخرين.</b>\nانت المشرف الوحيد المسجل الان.');
         return;
       }
 
       if (data === 'admin_logout') {
-        removeAdminChatId(chatId);
-        await answerCallbackQuery(cbId, '🚪 تم تسجيل الخروج بنجاح!', true);
-        await sendTelegramMessage(chatId, '🚪 <b>تم إلغاء ربط حسابك.</b>\nلم تعد تستلم إشعارات ولن تتمكن من التحكم بالبوت.');
+        await removeAdminChatId(chatId);
+        await answerCallbackQuery(cbId, 'تم تسجيل الخروج بنجاح', true);
+        await sendTelegramMessage(chatId, '<b>تم الغاء ربط حسابك.</b>\nلن تصلك اشعارات بعد الان.');
         return;
       }
 
@@ -451,104 +461,99 @@ async function handleIncomingTelegramUpdate(update: any) {
 
   // 1. Handle unauthorized users
   if (!isAuthorized) {
-    // Only chat IDs listed in TELEGRAM_ADMIN_CHAT_ID env var can log in via password
-    const allowedIds = DEFAULT_ADMIN_CHAT_ID.split(',').map(s => s.trim()).filter(Boolean);
-    const isAllowedToLogin = allowedIds.includes(chatId);
-
-    if (isAllowedToLogin) {
-      const parts = text.split(/\s+/);
-      if (parts.length === 2 && lowerText !== '/start' && lowerText !== '/admin') {
-        const [identifier, password] = parts;
-        try {
-          const user = await prisma.user.findFirst({
-            where: {
-              OR: [{ email: identifier }, { username: identifier }],
-              role: 'admin'
-            }
-          });
-          if (user && await bcrypt.compare(password, user.password)) {
-            adminChatIds = normalizeAdminChatIds(allowedIds);
-            isAuthorized = true;
-            await sendTelegramMessage(
-              chatId,
-              `✅ <b>تم تسجيل الدخول بنجاح!</b>\n\nأرسل /start لعرض خيارات التحكم.`
-            );
-            return;
-          } else {
-            await sendTelegramMessage(chatId, `❌ <b>بيانات الدخول خاطئة.</b>\nتأكد من اسم المستخدم وكلمة المرور.`);
-            return;
+    const parts = text.split(/\s+/);
+    if (parts.length === 2 && lowerText !== '/start' && lowerText !== '/admin') {
+      const [identifier, password] = parts;
+      try {
+        const user = await prisma.user.findFirst({
+          where: {
+            OR: [{ email: identifier }, { username: identifier }],
+            role: 'admin'
           }
-        } catch (err) {
-          console.error('[Telegram Bot] DB auth error:', err);
+        });
+        if (user && await bcrypt.compare(password, user.password)) {
+          await saveAdminChatIdsToDb([...currentAdminIds, chatId]);
+          isAuthorized = true;
+          await sendTelegramMessage(
+            chatId,
+            `<b>تم تسجيل الدخول وتفعيل حساب المشرف بنجاح</b>\n\nمعرف حسابك (Chat ID: <code>${chatId}</code>) تم اعتماده وحفظه في قاعدة البيانات.\nارسل /start لعرض خيارات التحكم.`
+          );
+          return;
+        } else {
+          await sendTelegramMessage(
+            chatId,
+            `<b>بيانات الدخول غير صحيحة</b>\nتاكد من اسم المستخدم وكلمة المرور الخاصة بلوحة التحكم.`
+          );
           return;
         }
+      } catch (err: any) {
+        console.error('[Telegram Bot] DB auth error:', err?.message || err);
+        return;
       }
-      if (lowerText === '/start' || lowerText === '/admin') {
-        await sendTelegramMessage(
-          chatId,
-          `🔐 <b>مرحباً!</b>\n\nأرسل <b>اسم المستخدم</b> و<b>كلمة المرور</b> في رسالة واحدة مفصولين بمسافة:\n\n<code>admin mypassword123</code>`
-        );
-      }
-    } else {
-      if (lowerText === '/start' || lowerText === '/admin') {
-        console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
-      }
+    }
+
+    if (lowerText === '/start' || lowerText === '/admin') {
+      console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
+      await sendTelegramMessage(
+        chatId,
+        `<b>حساب غير مسجل كمشرف</b>\n\nمعرف حسابك (Chat ID): <code>${chatId}</code>\n\nلتفعيل هذا الحساب:\n1. قم باضافة هذا المعرف في لوحة التحكم في صفحة (الاعدادات &gt; معرفات مشرفي تليجرام).\n2. او ارسل اسم المستخدم وكلمة المرور الخاصة بحساب الادمن في رسالة واحدة لتفعيله مباشرة:\n<code>admin password</code>`
+      );
     }
     return;
   }
 
-
-  // 2. /start or /admin
+  // 2. /start or /admin for authorized admins
   if (lowerText === '/start' || lowerText === '/admin') {
-    if (isAuthorized) {
-      await sendTelegramMessage(
-        chatId,
-        `🟢 <b>أهلاً بك في بوت الإدارة التفاعلي!</b>\n\nحسابك مسجل كـ <b>أدمن معتمد</b> (Chat ID: <code>${chatId}</code>) وتصلك جميع الإشعارات مع أزرار التحكم الفورية.`,
-        {
-          inline_keyboard: [
-            [{ text: "👥 عدد المشرفين المسجلين", callback_data: "admin_count" }],
-            [{ text: "🗑️ طرد جميع المشرفين", callback_data: "admin_kick_all" }],
-            [{ text: "🚪 تسجيل الخروج (إلغاء الربط)", callback_data: "admin_logout" }]
-          ]
-        }
-      );
-    } else {
-      await sendTelegramMessage(
-        chatId,
-        `🔒 <b>غير مصرح!</b>\n\nأنت غير مسجل كمسؤول. يرجى إرسال <b>اسم المستخدم</b> و <b>كلمة المرور</b> الخاصة بلوحة التحكم (مفصولين بمسافة) لتفعيل حسابك.`
-      );
-      console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
-    }
+    await sendTelegramMessage(
+      chatId,
+      `<b>اهلاً بك في بوت الادارة</b>\n\nحسابك مسجل كـ <b>مشرف معتمد</b> (Chat ID: <code>${chatId}</code>) وتصلك جميع اشعارات الايداعات والطلبات فورياً مع ازرار التحكم والاعتماد.`,
+      {
+        inline_keyboard: [
+          [{ text: "عدد المشرفين المسجلين", callback_data: "admin_count" }],
+          [{ text: "طرد جميع المشرفين الاخرين", callback_data: "admin_kick_all" }],
+          [{ text: "تسجيل الخروج (الغاء الربط)", callback_data: "admin_logout" }]
+        ]
+      }
+    );
     return;
   }
 
   // 3. Status check
-  if (isAuthorized && lowerText === '/status') {
+  if (lowerText === '/status') {
     await sendTelegramMessage(
       chatId,
-      `🟢 <b>حسابك مسجل كـ أدمن معتمد (Chat ID: <code>${chatId}</code>) وتصلك الإشعارات والأزرار التفاعلية فورياً.</b>`
+      `<b>حسابك مسجل كـ مشرف معتمد (Chat ID: <code>${chatId}</code>) وتصلك الاشعارات والازرار التفاعلية فورياً.</b>`
     );
     return;
   }
 
   // 4. Logout / Unlink
-  if (isAuthorized && (lowerText === '/logout' || lowerText === '/unlink' || lowerText === 'الغاء ربط الحساب' || lowerText === 'الغاء الربط' || lowerText === 'تسجيل خروج')) {
-    removeAdminChatId(chatId);
+  if (lowerText === '/logout' || lowerText === '/unlink' || lowerText === 'الغاء ربط الحساب' || lowerText === 'الغاء الربط' || lowerText === 'تسجيل خروج') {
+    await removeAdminChatId(chatId);
     await sendTelegramMessage(
       chatId,
-      `🚪 <b>تم تسجيل الخروج وإلغاء الربط بنجاح!</b>\nلن تصلك إشعارات بعد الآن. أرسل /start لتسجيل الدخول مجدداً.`
+      `<b>تم تسجيل الخروج والغاء الربط بنجاح</b>\nلن تصلك اشعارات بعد الان. ارسل /start لتسجيل الدخول مجدداً.`
     );
     return;
   }
 }
 
-export function removeAdminChatId(chatId: string) {
+export async function removeAdminChatId(chatId: string) {
   if (chatId === DEFAULT_ADMIN_CHAT_ID) return;
   adminChatIds = adminChatIds.filter(id => id !== chatId);
-  if (adminChatIds.length === 0) {
+  if (adminChatIds.length === 0 && DEFAULT_ADMIN_CHAT_ID) {
     adminChatIds = [DEFAULT_ADMIN_CHAT_ID];
   }
-  console.log(`[Telegram Bot] Removed Admin Chat ID from session: ${chatId}`);
+  try {
+    await prisma.setting.upsert({
+      where: { key: 'telegram_admin_chat_ids' },
+      update: { value: JSON.stringify(adminChatIds) },
+      create: { key: 'telegram_admin_chat_ids', value: JSON.stringify(adminChatIds) }
+    });
+  } catch (err: any) {
+    console.error('[Telegram Bot] Failed to persist removed admin:', err?.message || err);
+  }
+  console.log(`[Telegram Bot] Removed Admin Chat ID from session and DB: ${chatId}`);
 }
 
 export function escapeHtml(str: string): string {

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from "../utils/prisma";
 import { isAdmin } from '../middleware/auth';
+import { enrichOrdersWithProviderData } from './orders';
 
 const router = Router();
 
@@ -388,10 +389,12 @@ router.get('/provider-orders', isAdmin, async (req, res) => {
     const totalVolume = orders.reduce((sum, o) => sum + (o.price || 0), 0);
     const completedVolume = completedOrders.reduce((sum, o) => sum + (o.price || 0), 0);
 
+    const enrichedOrders = await enrichOrdersWithProviderData(orders);
+
     return res.json({
       success: true,
       data: {
-        orders,
+        orders: enrichedOrders,
         totalCount,
         servicesList,
         summary: {

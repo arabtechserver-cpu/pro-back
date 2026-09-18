@@ -22,7 +22,7 @@ function safeJsonParse(val: any, fallback: any = null) {
 }
 
 // Helper to enrich orders with Provider and Service information
-async function enrichOrdersWithProviderData(orders: any[]) {
+export async function enrichOrdersWithProviderData(orders: any[]) {
   if (!orders || orders.length === 0) return [];
 
   const serviceIds = Array.from(
@@ -1054,4 +1054,31 @@ router.post('/update-status', isAdmin, async (req, res) => {
   }
 });
 
+// POST /api/orders/update-fields - Admin update order custom fields / targetInput
+router.post('/update-fields', isAdmin, async (req, res) => {
+  try {
+    const { orderId, targetInput } = req.body;
+    if (!orderId || targetInput === undefined) {
+      return res.status(400).json({ error: 'معرف الطلب والبيانات مطلوبة' });
+    }
+
+    const updatedOrder = await prisma.order.update({
+      where: { id: orderId },
+      data: {
+        targetInput: String(targetInput).trim()
+      }
+    });
+
+    return res.json({
+      success: true,
+      message: 'تم تحديث بيانات وحقول الطلب بنجاح',
+      order: updatedOrder
+    });
+  } catch (error: any) {
+    console.error('Error updating order fields:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء تحديث حقول الطلب' });
+  }
+});
+
 export default router;
+

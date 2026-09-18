@@ -867,5 +867,69 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
   }
 }
 
+// Send Admin OTP to Telegram Admins
+export async function sendTelegramAdminOtp(
+  otpCode: string,
+  user: { username: string; fullName?: string },
+  clientIp?: string
+): Promise<boolean> {
+  try {
+    await refreshAdminIds();
+    const chatIds = getAdminChatIds();
+    if (chatIds.length === 0) {
+      console.warn('[Telegram OTP] No admin chat IDs registered');
+      return false;
+    }
+
+    const message = [
+      '<b>[Admin Login OTP]</b>',
+      '',
+      `<b>المشرف:</b> @${escapeHtml(user.username)} (${escapeHtml(user.fullName || 'Admin')})`,
+      `<b>الوقت:</b> ${new Date().toLocaleTimeString('ar-EG')}`,
+      `<b>عنوان IP:</b> <code>${escapeHtml(clientIp || 'غير متوفر')}</code>`,
+      '',
+      '<b>رمز التحقق السري:</b>',
+      `<code>${otpCode}</code>`,
+      '',
+      '<i>هذا الرمز صالح لمدة 5 دقائق فقط. لا تشارك هذا الرمز مع أي شخص لحماية لوحة التحكم.</i>'
+    ].join('\n');
+
+    for (const chatId of chatIds) {
+      await sendTelegramMessage(chatId, message);
+    }
+    return true;
+  } catch (error: any) {
+    console.error('[Telegram sendTelegramAdminOtp Error]:', error?.message);
+    return false;
+  }
+}
+
+// Notify Admins on Successful Admin Login
+export async function sendTelegramAdminLoginSuccess(
+  user: { username: string; fullName?: string },
+  clientIp?: string
+): Promise<void> {
+  try {
+    await refreshAdminIds();
+    const chatIds = getAdminChatIds();
+    if (chatIds.length === 0) return;
+
+    const message = [
+      '<b>[Admin Session Started]</b>',
+      '',
+      `تم تسجيل الدخول إلى لوحة الإدارة بنجاح بواسطة: @${escapeHtml(user.username)} (${escapeHtml(user.fullName || 'Admin')})`,
+      `الوقت: ${new Date().toLocaleTimeString('ar-EG')}`,
+      `عنوان IP: <code>${escapeHtml(clientIp || 'غير متوفر')}</code>`
+    ].join('\n');
+
+    for (const chatId of chatIds) {
+      await sendTelegramMessage(chatId, message);
+    }
+  } catch (error: any) {
+    console.error('[Telegram sendTelegramAdminLoginSuccess Error]:', error?.message);
+  }
+}
+
 // Start listener automatically
 startTelegramBotPolling();
+

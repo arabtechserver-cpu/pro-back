@@ -2,10 +2,12 @@ import { Router } from 'express';
 import { prisma } from "../utils/prisma";
 import { generateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
-import { sendTelegramMessage, sendTelegramAlert } from '../utils/telegramService';
+import { sendTelegramMessage, sendTelegramAlert, sendTelegramAdminOtp, sendTelegramAdminLoginSuccess } from '../utils/telegramService';
+import { createAdminOtpChallenge, verifyAdminOtp, resendAdminOtp } from '../utils/adminOtp';
 import { turnstileMiddleware } from '../middleware/turnstileMiddleware';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
+
 
 const router = Router();
 
@@ -209,13 +211,35 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
       return res.status(200).json({ success: false, error: 'بيانات الدخول غير صحيحة!' });
     }
 
-    if (dbUser.role !== 'admin' && dbUser.status === 'suspended') {
-      return res.status(200).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة 🔴' });
+    if (dbUser.status === 'suspended') {
+      return res.status(200).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة' });
     }
 
     const isMatch = await bcrypt.compare(password, dbUser.password);
     if (!isMatch) {
       return res.status(200).json({ success: false, error: 'كلمة المرور غير صحيحة!' });
+    }
+
+    const isAdminAccount = ['admin', 'super_admin'].includes(dbUser.role);
+
+    if (isAdminAccount) {
+      const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+      const { challengeToken, code } = createAdminOtpChallenge({
+        id: dbUser.id,
+        username: dbUser.username,
+        email: dbUser.email
+      });
+
+      sendTelegramAdminOtp(code, { username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch((err) => {
+        console.error('Failed to send admin OTP to telegram:', err?.message || err);
+      });
+
+      return res.json({
+        success: true,
+        requireOtp: true,
+        challengeToken,
+        message: 'تم إرسال كود التحقق السري (OTP) إلى حساب تيليجرام الخاص بالإدارة'
+      });
     }
 
     const token = generateToken({ id: dbUser.id, email: dbUser.email, role: dbUser.role });
@@ -249,6 +273,103 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
     return res.status(200).json({ success: false, error: 'حدث خطأ أثناء تسجيل الدخول' });
   }
 });
+
+// Admin OTP Verification Handler
+const handleAdminOtpVerification = async (req: any, res: any) => {
+  try {
+    const { challengeToken, otp } = req.body;
+    if (!challengeToken || !otp) {
+      return res.status(200).json({ success: false, error: 'رمز التحقق ومعرف الجلسة مطلوبان' });
+    }
+
+    const verification = verifyAdminOtp(challengeToken, otp);
+    if (!verification.success || !verification.user) {
+      return res.status(200).json({ success: false, error: verification.error || 'رمز التحقق غير صحيح' });
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: verification.user.id },
+      include: {
+        membershipTier: true
+      }
+    });
+
+    if (!dbUser || !['admin', 'super_admin'].includes(dbUser.role)) {
+      return res.status(200).json({ success: false, error: 'ليس لديك صلاحيات الدخول للوحة التحكم' });
+    }
+
+    if (dbUser.status === 'suspended') {
+      return res.status(200).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً' });
+    }
+
+    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+    sendTelegramAdminLoginSuccess({ username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch(() => {});
+
+    const token = generateToken({ id: dbUser.id, email: dbUser.email, role: dbUser.role });
+    const effectiveDiscount = Math.max(
+      dbUser.customDiscount || 0,
+      dbUser.membershipTier?.discountPercentage || 0
+    );
+
+    return res.json({
+      success: true,
+      token,
+      user: {
+        id: dbUser.id,
+        fullName: dbUser.fullName,
+        email: dbUser.email,
+        username: dbUser.username,
+        phone: dbUser.phone,
+        country: dbUser.country,
+        status: dbUser.status,
+        balance: dbUser.balance,
+        role: dbUser.role,
+        membershipTierId: dbUser.membershipTierId,
+        membershipTier: dbUser.membershipTier,
+        customDiscount: dbUser.customDiscount || 0,
+        effectiveDiscount: effectiveDiscount
+      }
+    });
+  } catch (error: any) {
+    console.error('Verify admin OTP error:', error);
+    return res.status(200).json({ success: false, error: 'حدث خطأ أثناء التحقق من رمز التحقق' });
+  }
+};
+
+router.post('/admin/verify-otp', handleAdminOtpVerification);
+router.post('/verify-admin-otp', handleAdminOtpVerification);
+
+// Admin OTP Resend Handler
+const handleAdminOtpResend = async (req: any, res: any) => {
+  try {
+    const { challengeToken } = req.body;
+    if (!challengeToken) {
+      return res.status(200).json({ success: false, error: 'معرف جلسة التحقق مطلوب' });
+    }
+
+    const result = resendAdminOtp(challengeToken);
+    if (!result.success || !result.code || !result.user) {
+      return res.status(200).json({ success: false, error: result.error || 'تعذر إعادة إرسال الكود' });
+    }
+
+    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+    sendTelegramAdminOtp(result.code, { username: result.user.username }, clientIp).catch((err) => {
+      console.error('Failed to resend admin OTP to telegram:', err?.message || err);
+    });
+
+    return res.json({
+      success: true,
+      message: 'تم إرسال كود تحقق جديد إلى تيليجرام بنجاح'
+    });
+  } catch (error: any) {
+    console.error('Resend admin OTP error:', error);
+    return res.status(200).json({ success: false, error: 'حدث خطأ أثناء إعادة إرسال رمز التحقق' });
+  }
+};
+
+router.post('/admin/resend-otp', handleAdminOtpResend);
+router.post('/resend-admin-otp', handleAdminOtpResend);
+
 
 // POST /api/auth/google - Google Sign-In & One-Tap Authentication
 router.post('/google', async (req, res) => {

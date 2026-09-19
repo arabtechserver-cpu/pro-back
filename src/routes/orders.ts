@@ -219,7 +219,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (duplicateOrder) {
       return res.status(429).json({
-        error: '⚠️ تم استلام طلب مماثل لهذا المعرّف/الخدمة للتو وهو قيد المعالجة، يُرجى الانتظار لتجنب الخصم المزدوج.'
+        error: 'تم استلام طلب مماثل لهذا المعرف/الخدمة للتو وهو قيد المعالجة، يرجى الانتظار لتجنب الخصم المزدوج.'
       });
     }
 
@@ -460,20 +460,20 @@ router.post('/', authenticateToken, async (req, res) => {
     // 4. Send Telegram Alert to Admin
     const providerName = dhruService?.apiProvider?.name || 'سيرفر محلي / يدوي';
     const caption = `
-🛍️ <b>طلب خدمة جديد في انتظار موافقة الإدارة! (New Order Pending)</b>
+<b>طلب خدمة جديد في انتظار موافقة الإدارة (New Order Pending)</b>
 
-💳 <b>رقم الطلب:</b> #${newOrder.id.slice(-6)}
-👤 <b>العميل:</b> ${dbUser.fullName} (@${dbUser.username})
-📧 <b>الإيميل:</b> <code>${dbUser.email}</code>
-📱 <b>اسم الخدمة:</b> ${newOrder.serviceName}
-🌐 <b>المزود المربوط:</b> ${providerName} (ID: ${dhruService?.dhruId || 'N/A'})
-🔢 <b>البيانات / IMEI:</b> <code>${newOrder.targetInput}</code>
-📦 <b>الكمية:</b> ${newOrder.quantity}
-💰 <b>إجمالي التكلفة:</b> <code>$${newOrder.price.toFixed(2)} USD</code>
-🏦 <b>رصيد العميل المتبقي:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
-📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
+- <b>رقم الطلب:</b> #${newOrder.id.slice(-6)}
+- <b>العميل:</b> ${dbUser.fullName} (@${dbUser.username})
+- <b>الإيميل:</b> <code>${dbUser.email}</code>
+- <b>اسم الخدمة:</b> ${newOrder.serviceName}
+- <b>المزود المربوط:</b> ${providerName} (ID: ${dhruService?.dhruId || 'N/A'})
+- <b>البيانات / IMEI:</b> <code>${newOrder.targetInput}</code>
+- <b>الكمية:</b> ${newOrder.quantity}
+- <b>إجمالي التكلفة:</b> <code>$${newOrder.price.toFixed(2)} USD</code>
+- <b>رصيد العميل المتبقي:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
+- <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
 
-⏳ <b>الحالة:</b> في انتظار الإرسال للمزود أو التنفيذ اليدوي
+<b>الحالة:</b> في انتظار الإرسال للمزود أو التنفيذ اليدوي
     `.trim();
 
     try {
@@ -605,7 +605,7 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
       events.push({
         time: now.toISOString(),
         action: 'DISPATCH_FAILED',
-        title: isCreditError ? 'فشل الإرسال: رصيد المزود غير كافٍ ⚠️' : 'فشل الإرسال للمزود ❌',
+        title: isCreditError ? 'فشل الإرسال: رصيد المزود غير كاف' : 'فشل الإرسال للمزود',
         desc: userFacingMsg
       });
       parsedNotes.events = events;
@@ -621,12 +621,12 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
           const providerName = dhruService.apiProvider?.name || 'سيرفر المزود';
           await sendTelegramPhotoNotification({
             caption:
-              `🚨 <b>تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي!</b>\n\n` +
-              `📦 <b>رقم الطلب:</b> #${order.id.slice(-6)}\n` +
-              `📱 <b>اسم الخدمة:</b> ${dhruService.name}\n` +
-              `🌐 <b>المزود المربوط:</b> ${providerName}\n` +
-              `⚠️ <b>سبب الرفض:</b> <code>رصيد حسابك لدى المزود غير كافٍ (You have not enough credit)</code>\n\n` +
-              `💡 <b>الإجراء المطلوب:</b> يرجى شحن رصيد حسابك في موقع المزود ثم فتح لوحة الإدارة وإعادة إرسال الطلب.`
+              `<b>تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي</b>\n\n` +
+              `- <b>رقم الطلب:</b> #${order.id.slice(-6)}\n` +
+              `- <b>اسم الخدمة:</b> ${dhruService.name}\n` +
+              `- <b>المزود المربوط:</b> ${providerName}\n` +
+              `- <b>سبب الرفض:</b> <code>رصيد حسابك لدى المزود غير كاف (You have not enough credit)</code>\n\n` +
+              `<b>الإجراء المطلوب:</b> يرجى شحن رصيد حسابك في موقع المزود ثم فتح لوحة الإدارة وإعادة إرسال الطلب.`
           });
         } catch (tgErr) {
           console.error('[Dispatch Provider Telegram Alert Error]:', tgErr);
@@ -737,8 +737,8 @@ router.post('/refund', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'الطلب غير موجود' });
     }
 
-    if (order.status === 'rejected' || order.status === 'cancelled') {
-      return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً' });
+    if (['rejected', 'cancelled', 'failed'].includes(order.status)) {
+      return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقا' });
     }
 
     const refundAmount = order.price || 0;
@@ -766,7 +766,7 @@ router.post('/refund', isAdmin, async (req, res) => {
     try {
       updatedOrder = await prisma.$transaction(async (tx) => {
         const orderResult = await tx.order.updateMany({
-          where: { id: orderId, status: { notIn: ['rejected', 'cancelled'] } },
+          where: { id: orderId, status: { notIn: ['rejected', 'cancelled', 'failed'] } },
           data: {
             status: 'rejected',
             reply: `ملغي ومسترجع: ${cancelReason}`,
@@ -1015,7 +1015,7 @@ router.post('/check-status', isAdmin, async (req, res) => {
 
     return res.json({
       success: true,
-      message: `تم تحديث حالة الطلب من المزود: ${nextStatus === 'completed' ? 'مكتمل بنجاح ✅' : nextStatus}`,
+      message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
       order: updatedOrder,
       statusData
     });

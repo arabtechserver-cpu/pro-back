@@ -8,7 +8,11 @@
     "dev": "nodemon --watch src --exec tsx src/server.ts",
     "build": "npx prisma generate && tsc",
     "start": "npx prisma db push --skip-generate --accept-data-loss && node dist/server.js",
-    "db:push": "npx prisma db push --skip-generate --accept-data-loss"
+    "db:push": "npx prisma db push --skip-generate --accept-data-loss",
+    "ip:status": "tsx src/scripts/resetIpRestriction.ts --status",
+    "ip:disable": "tsx src/scripts/resetIpRestriction.ts --disable",
+    "ip:enable": "tsx src/scripts/resetIpRestriction.ts --enable",
+    "ip:add": "tsx src/scripts/resetIpRestriction.ts --add-ip"
   },
   "keywords": [],
   "author": "",

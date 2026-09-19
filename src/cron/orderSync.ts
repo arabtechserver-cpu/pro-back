@@ -128,43 +128,52 @@ export function initOrderSyncCron() {
             });
 
             // Notify User & Admin
-            const msg = `✅ تم اكتمال طلبك بنجاح!\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
+            const msg = `تم اكتمال طلبك بنجاح\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
             sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
             console.log(`[CRON] Order #${order.id.slice(-6)} marked as COMPLETED.`);
           }
           else if (isRejected) {
-            // REJECTED EXPLICITLY BY PROVIDER
             const rejectReason = replyCode || statusData.REASON || statusData.reason || 'مرفوض من المزود';
 
-            await prisma.order.update({
-              where: { id: order.id },
-              data: {
-                status: 'failed',
-                reply: `مرفوض: ${rejectReason}`
-              }
-            });
+            try {
+              await prisma.$transaction(async (tx) => {
+                const updateRes = await tx.order.updateMany({
+                  where: { id: order.id, status: 'processing' },
+                  data: {
+                    status: 'rejected',
+                    reply: `مرفوض: ${rejectReason}`
+                  }
+                });
 
-            // Refund User
-            if (order.userId) {
-              await prisma.user.update({
-                where: { id: order.userId },
-                data: { balance: { increment: order.price } }
-              });
+                if (updateRes.count === 0) {
+                  return;
+                }
 
-              await prisma.transaction.create({
-                data: {
-                  userId: order.userId,
-                  type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
-                  amount: order.price,
-                  method: 'استرجاع تلقائي',
-                  refNo: `REF-#${order.id.slice(-6)}`,
-                  status: 'completed'
+                if (order.userId && order.price > 0) {
+                  await tx.user.update({
+                    where: { id: order.userId },
+                    data: { balance: { increment: order.price } }
+                  });
+
+                  await tx.transaction.create({
+                    data: {
+                      userId: order.userId,
+                      type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
+                      amount: order.price,
+                      method: 'استرجاع تلقائي',
+                      refNo: `REF-#${order.id.slice(-6)}`,
+                      status: 'completed'
+                    }
+                  });
                 }
               });
+            } catch (txErr) {
+              console.error(`[CRON] Transaction failed for rejected order ${order.id}:`, txErr);
+              continue;
             }
 
             // Notify User & Admin
-            const msg = `❌ تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
+            const msg = `تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
             sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
             console.log(`[CRON] Order #${order.id.slice(-6)} marked as REJECTED and refunded.`);
           }

@@ -1,12 +1,19 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { prisma } from "../utils/prisma";
 import { isAdmin } from '../middleware/auth';
 import { enrichOrdersWithProviderData } from './orders';
 
 const router = Router();
 
+const analyticsLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 60,
+  message: { error: 'Too many requests' }
+});
+
 // POST /api/analytics/events - Log an anonymous or authenticated conversion event
-router.post('/events', async (req, res) => {
+router.post('/events', analyticsLimiter, async (req, res) => {
   try {
     const { eventName, sessionId, path, metadata } = req.body;
     

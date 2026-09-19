@@ -14,7 +14,7 @@ export const tenArticles = [
       <p>تعتبر <strong>UnlockTool</strong> اليوم الأداة الرقمية الأكثر انتشاراً وطلباً بين مهندسي وفنيي صيانة المحمول حول العالم، وذلك بفضل قدرتها على معالجة آلاف الهواتف الذكية بنقرة زر واحدة دون الحاجة إلى بوكسات أو دونجلات فيزيائية.</p>
 
       <div class="bg-primary/10 border-r-4 border-primary p-4 rounded-xl my-6">
-        <h4 class="text-primary font-bold text-lg mb-1">⚡ تفعيل فوري وتلقائي 24/7</h4>
+        <h4 class="text-primary font-bold text-lg mb-1">تفعيل فوري وتلقائي 24/7</h4>
         <p class="text-sm">يمكنك تفعيل حسابك على أداة UnlockTool فورياً وبأفضل سعر وكيل رسمي مباشرة عبر سيرفر عرب تك برو واستلام التفعيل خلال ثوانٍ معدودة.</p>
       </div>
 
@@ -46,7 +46,7 @@ export const tenArticles = [
       <p><strong>UnlockTool</strong> has established itself as the leading multi-brand digital software for mobile phone software engineers worldwide. Operating completely without physical boxes or dongles, it provides high-speed unlocking and flashing solutions.</p>
 
       <div class="bg-primary/10 border-l-4 border-primary p-4 rounded-xl my-6">
-        <h4 class="text-primary font-bold text-lg mb-1">⚡ Instant Automated Server Activation</h4>
+        <h4 class="text-primary font-bold text-lg mb-1">Instant Automated Server Activation</h4>
         <p class="text-sm">Activate your official UnlockTool account instantly at official reseller prices 24/7 on Arab Tech Pro Server.</p>
       </div>
 
@@ -96,7 +96,7 @@ export const tenArticles = [
       <p>تتطلب بعض العمليات المتقدمة مثل فك الشفرات الحديثة أو قراءة أكواد الشبكة بعض الأرصدة (Credits). يمكنك شراء أي كمية من كريدت شيميرا وشحنها في اسم المستخدم الخاص بك فورياً عبر سيرفرنا.</p>
 
       <div class="bg-secondary/10 border-r-4 border-secondary p-4 rounded-xl my-6">
-        <h4 class="text-secondary font-bold text-lg mb-1">💡 نصيحة للمحترفين</h4>
+        <h4 class="text-secondary font-bold text-lg mb-1">نصيحة للمحترفين</h4>
         <p class="text-sm">تأكد دائماً من تثبيت أحدث إصدار من برنامج Chimera وتحديث تعريفات Samsung USB Drivers الرسمية قبل بدء أي عملية لتجنب انقطاع الاتصال.</p>
       </div>
 

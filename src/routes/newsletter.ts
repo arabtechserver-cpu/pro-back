@@ -1,4 +1,5 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { prisma } from "../utils/prisma";
 import { isAdmin } from "../middleware/auth";
 import { 
@@ -9,6 +10,15 @@ import {
 import { sendTelegramMessage, getAdminChatIds } from "../utils/telegramService";
 
 const router = Router();
+
+const subscribeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 5,
+  message: {
+    success: false,
+    error: "تجاوزت الحد المسموح به لطلبات الاشتراك، يرجى المحاولة لاحقاً."
+  }
+});
 
 // Helper to notify all subscribers about a new item / update
 export async function broadcastNewItemToSubscribers({
@@ -59,30 +69,20 @@ export async function broadcastNewItemToSubscribers({
           actionUrl: url,
           actionText: text
         });
-      } catch (err) {
-        console.error(`Failed to send broadcast email to ${sub.email}:`, err);
+      } catch (emailErr) {
+        console.warn(`Failed to send newsletter broadcast to ${sub.email}:`, emailErr);
       }
     });
 
     await Promise.allSettled(emailPromises);
 
-    // Update lastNotifiedAt & updatedAt safely
     try {
       await prisma.subscriber.updateMany({
         where: { isActive: true },
-        data: {
-          lastNotifiedAt: new Date(),
-          updatedAt: new Date()
-        } as any
+        data: { lastNotifiedAt: new Date() }
       });
     } catch (updateErr) {
       console.warn("Could not update lastNotifiedAt on subscribers:", updateErr);
-      try {
-        await prisma.subscriber.updateMany({
-          where: { isActive: true },
-          data: { updatedAt: new Date() }
-        });
-      } catch (_) {}
     }
 
     // Also notify Admin on Telegram
@@ -90,7 +90,7 @@ export async function broadcastNewItemToSubscribers({
     for (const chatId of adminChatIds) {
       await sendTelegramMessage(
         chatId,
-        `📢 <b>تم إرسال إشعار للمشتركين في النشرة الإخبارية!</b>\n\n📌 <b>العنوان:</b> ${title}\n📝 <b>الوصف:</b> ${message}\n👥 <b>عدد المستلمين:</b> ${subscribers.length} عميل مشترك\n🔗 <b>الرابط:</b> ${url}`
+        `[NEWSLETTER] <b>تم إرسال إشعار للمشتركين في النشرة الإخبارية!</b>\n\n<b>العنوان:</b> ${title}\n<b>الوصف:</b> ${message}\n<b>عدد المستلمين:</b> ${subscribers.length} عميل مشترك\n<b>الرابط:</b> ${url}`
       );
     }
 
@@ -102,7 +102,7 @@ export async function broadcastNewItemToSubscribers({
 }
 
 // POST /api/newsletter/subscribe - Public endpoint for visitors & customers
-router.post("/subscribe", async (req, res) => {
+router.post("/subscribe", subscribeLimiter, async (req, res) => {
   try {
     const { email, name } = req.body;
 
@@ -153,7 +153,7 @@ router.post("/subscribe", async (req, res) => {
     for (const chatId of adminChatIds) {
       sendTelegramMessage(
         chatId,
-        `📬 <b>مشترك جديد في النشرة الإخبارية!</b>\n\n✉️ <b>البريد الإلكتروني:</b> <code>${cleanEmail}</code>\n👤 <b>الاسم:</b> ${cleanName || 'زائر'}\n🕒 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}`
+        `[NEWSLETTER] <b>مشترك جديد في النشرة الإخبارية!</b>\n\n<b>البريد الإلكتروني:</b> <code>${cleanEmail}</code>\n<b>الاسم:</b> ${cleanName || 'زائر'}\n<b>التاريخ:</b> ${new Date().toLocaleString('ar-EG', { timeZone: 'Africa/Cairo' })}`
       ).catch(() => {});
     }
 

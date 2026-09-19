@@ -1,9 +1,22 @@
 import { Router } from 'express';
+import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';
 
 const router = Router();
+
+const externalApiLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 120,
+  message: {
+    SUCCESS: [{
+      ERROR: "Too many requests. Rate limit exceeded, please try again in a minute."
+    }]
+  }
+});
+
+router.use(externalApiLimiter);
 
 // Middleware to authenticate API requests with username and API key
 const authenticateApi = async (req: any, res: any, next: any) => {
@@ -488,22 +501,22 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
         // Send Telegram alert to admin for manual approval
         const providerName = service.apiProvider?.name || 'سيرفر محلي / يدوي';
         const caption = `
-🛍️ <b>طلب API جديد في انتظار موافقة الإدارة! (New API Order Pending)</b>
+[NEW API ORDER] <b>طلب API جديد في انتظار موافقة الإدارة! (New API Order Pending)</b>
 
-💳 <b>رقم الطلب:</b> #${order.id.slice(-6)}
-🌐 <b>مصدر الطلب:</b> API (${user.apiSiteName || 'موقع عميل'})
-🔗 <b>رابط الموقع:</b> ${user.apiSiteUrl || 'N/A'}
-👤 <b>العميل:</b> ${user.fullName} (@${user.username})
-📧 <b>الإيميل:</b> <code>${user.email}</code>
-📱 <b>اسم الخدمة:</b> ${order.serviceName}
-🏢 <b>المزود المربوط:</b> ${providerName} (ID: ${service.dhruId || 'N/A'})
-🔢 <b>البيانات / IMEI:</b> <code>${order.targetInput}</code>
-📦 <b>الكمية:</b> ${order.quantity}
-💰 <b>المبلغ المخصوم (تكلفة + 8% ربح):</b> <code>$${order.price.toFixed(2)} USD</code>
-🏦 <b>رصيد العميل المتبقي:</b> <code>$${(user.balance - finalTotalPrice).toFixed(2)} USD</code>
-📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
+<b>رقم الطلب:</b> #${order.id.slice(-6)}
+<b>مصدر الطلب:</b> API (${user.apiSiteName || 'موقع عميل'})
+<b>رابط الموقع:</b> ${user.apiSiteUrl || 'N/A'}
+<b>العميل:</b> ${user.fullName} (@${user.username})
+<b>الإيميل:</b> <code>${user.email}</code>
+<b>اسم الخدمة:</b> ${order.serviceName}
+<b>المزود المربوط:</b> ${providerName} (ID: ${service.dhruId || 'N/A'})
+<b>البيانات / IMEI:</b> <code>${order.targetInput}</code>
+<b>الكمية:</b> ${order.quantity}
+<b>المبلغ المخصوم (تكلفة + 8% ربح):</b> <code>$${order.price.toFixed(2)} USD</code>
+<b>رصيد العميل المتبقي:</b> <code>$${(user.balance - finalTotalPrice).toFixed(2)} USD</code>
+<b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
 
-⏳ <b>الحالة:</b> في انتظار مراجعة وموافقة الإدارة بالداشبورد
+<b>الحالة:</b> في انتظار مراجعة وموافقة الإدارة بالداشبورد
         `.trim();
 
         sendTelegramPhotoNotification({ caption }).catch((err) => {

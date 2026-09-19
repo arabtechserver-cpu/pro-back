@@ -4,6 +4,8 @@ import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
 import https from "https";
 import http from "http";
+import dns from "dns";
+import { promisify } from "util";
 import { isAdmin } from '../middleware/auth';
 import {
   isQuantityField,
@@ -12,6 +14,9 @@ import {
   enrichCustomFieldsWithQuantity
 } from "../utils/provider-quantity";
 import { invalidateDhruServicesCache } from "./dhru";
+import { isPrivateIP } from "../utils/dhru-api";
+
+const dnsLookup = promisify(dns.lookup);
 
 const router = Router();
 
@@ -337,9 +342,65 @@ export function makeProviderApiCall(
   action: string,
   parameters: Record<string, string> = {}
 ): Promise<{ ok: boolean; status: number; data: any; raw: string; targetUrl: string }> {
-  return new Promise((resolve) => {
+  return new Promise(async (resolve) => {
     try {
       const targetUrl = normalizeApiUrl(apiUrl);
+      if (!targetUrl) {
+        return resolve({
+          ok: false,
+          status: 400,
+          data: { error: "Invalid provider URL" },
+          raw: "Invalid provider URL",
+          targetUrl
+        });
+      }
+
+      const urlObj = new URL(targetUrl);
+      if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") {
+        return resolve({
+          ok: false,
+          status: 400,
+          data: { error: "Invalid URL protocol. Only HTTP and HTTPS are permitted" },
+          raw: "Invalid protocol",
+          targetUrl
+        });
+      }
+
+      if (urlObj.hostname === "localhost" || isPrivateIP(urlObj.hostname)) {
+        console.error(`[SSRF BLOCK] Attempted to connect to local/private hostname: ${urlObj.hostname}`);
+        return resolve({
+          ok: false,
+          status: 400,
+          data: { error: "SSRF Attempt Detected: Blocked local/private network address" },
+          raw: "SSRF Blocked",
+          targetUrl
+        });
+      }
+
+      let safeAddress: string;
+      try {
+        const { address } = await dnsLookup(urlObj.hostname);
+        if (isPrivateIP(address)) {
+          console.error(`[SSRF BLOCK] Hostname ${urlObj.hostname} resolved to private IP: ${address}`);
+          return resolve({
+            ok: false,
+            status: 400,
+            data: { error: "SSRF Attempt Detected: Resolved to local/private network address" },
+            raw: "SSRF Blocked",
+            targetUrl
+          });
+        }
+        safeAddress = address;
+      } catch (dnsErr: any) {
+        return resolve({
+          ok: false,
+          status: 502,
+          data: { error: `Failed to resolve provider hostname: ${dnsErr.message}` },
+          raw: dnsErr.message,
+          targetUrl
+        });
+      }
+
       const data = new URLSearchParams();
       if (username) data.append("username", username.trim());
       data.append("key", apiKey.trim());
@@ -353,16 +414,16 @@ export function makeProviderApiCall(
       });
 
       const postData = data.toString();
-      const urlObj = new URL(targetUrl);
-      
+
       const options = {
-        hostname: urlObj.hostname,
+        hostname: safeAddress,
         port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
         path: urlObj.pathname + urlObj.search,
         method: "POST",
-        // Enforce IPv4 lookup explicitly to match old dhruClient.js behavior inside Docker
         family: 4, 
+        servername: urlObj.hostname,
         headers: {
+          "Host": urlObj.hostname,
           "Content-Type": "application/x-www-form-urlencoded",
           "Content-Length": Buffer.byteLength(postData),
           "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",

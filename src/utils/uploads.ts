@@ -117,7 +117,7 @@ export async function restoreImagesToDisk(prismaClient: any): Promise<number> {
     }
 
     if (restoredCount > 0) {
-      console.log(`[Uploads] ✅ Restored ${restoredCount} image(s) to server disk at: ${uploadDir}`);
+      console.log(`[Uploads] Restored ${restoredCount} image(s) to server disk at: ${uploadDir}`);
     }
     return restoredCount;
   } catch (err: any) {

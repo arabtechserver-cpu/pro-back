@@ -1,5 +1,6 @@
 import { prisma } from "../utils/prisma";
 import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { syncDhruServices } from '../scripts/syncDhruServices';
 import { extractQuantityLimits, enrichCustomFieldsWithQuantity } from './provider-quantity';
 import { refreshAdminIds } from './telegramService';
@@ -8,52 +9,44 @@ export async function bootstrapDatabase() {
   try {
     console.log('[Bootstrap] Checking database status...');
 
-    // 1. Check & Ensure Admin User is Active
+    // 1. Check & Ensure Admin User exists
     const adminUser = await prisma.user.findFirst({
       where: {
-        OR: [
-          { email: 'admin@admin.com' },
-          { username: 'admin' },
-          { role: 'admin' }
-        ]
+        role: { in: ['admin', 'super_admin'] }
       }
     });
 
     if (!adminUser) {
-      console.log('[Bootstrap] No admin user found. Creating default admin user...');
-      const hashedPassword = await bcrypt.hash('123456', 10);
+      console.log('[Bootstrap] No admin user found. Creating initial admin user...');
+      const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || crypto.randomBytes(12).toString('hex');
+      const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@admin.com';
+      const hashedPassword = await bcrypt.hash(defaultPassword, 10);
       await prisma.user.create({
         data: {
           fullName: 'System Administrator',
-          email: 'admin@admin.com',
+          email: adminEmail,
           username: 'admin',
           password: hashedPassword,
           phone: '+201000000000',
           country: 'EG',
-          role: 'admin',
+          role: 'super_admin',
           status: 'active',
-          balance: 1000.0,
+          balance: 0.0,
         },
       });
-      console.log('[Bootstrap] Default Admin created (Email: admin@admin.com / Password: 123456)');
+      console.log(`[Bootstrap] Initial super_admin created with email ${adminEmail}. Ensure DEFAULT_ADMIN_PASSWORD is set in production.`);
     } else {
-      // Force ensure admin account is ACTIVE and has admin role, with NO API access allowed
+      // Ensure API access is disabled for administrative accounts
       await prisma.user.updateMany({
         where: {
-          OR: [
-            { role: 'admin' },
-            { username: 'admin' },
-            { email: 'admin@admin.com' }
-          ]
+          role: { in: ['admin', 'super_admin'] }
         },
         data: {
-          status: 'active',
-          role: 'admin',
           apiKey: null,
           apiEnabled: false
         }
       });
-      console.log('[Bootstrap] Admin account status restored to ACTIVE (API access permanently blocked for admin accounts).');
+      console.log('[Bootstrap] Admin accounts verified with API access disabled.');
     }
 
     // Initialize or sync telegram_admin_chat_ids setting

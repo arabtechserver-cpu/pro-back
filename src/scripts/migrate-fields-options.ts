@@ -27,11 +27,11 @@ interface BackupField {
 }
 
 async function migrateFieldsOptions() {
-  console.log('🔄 بدء تحديث حقول الـ options في قاعدة البيانات...\n');
+  console.log('[MIGRATE] بدء تحديث حقول الـ options في قاعدة البيانات...\n');
 
   // قراءة الـ backup
   if (!fs.existsSync(BACKUP_PATH)) {
-    console.error('❌ ملف الـ backup غير موجود:', BACKUP_PATH);
+    console.error('[ERROR] ملف الـ backup غير موجود:', BACKUP_PATH);
     process.exit(1);
   }
 
@@ -39,7 +39,7 @@ async function migrateFieldsOptions() {
   const backup = JSON.parse(raw);
   const services: any[] = backup.tables?.services || [];
 
-  console.log(`📦 إجمالي الخدمات في الـ backup: ${services.length}`);
+  console.log(`[INFO] إجمالي الخدمات في الـ backup: ${services.length}`);
 
   // فلتر الخدمات التي لديها select fields مع options
   const servicesWithSelectOptions = services.filter(svc => {
@@ -50,7 +50,7 @@ async function migrateFieldsOptions() {
     } catch { return false; }
   });
 
-  console.log(`🎯 خدمات لديها select+options: ${servicesWithSelectOptions.length}`);
+  console.log(`[INFO] خدمات لديها select+options: ${servicesWithSelectOptions.length}`);
   for (const s of servicesWithSelectOptions) {
     const fields: BackupField[] = JSON.parse(s.fields);
     const selectFields = fields.filter(f => f.type === 'select' && f.options?.length > 0);
@@ -86,7 +86,7 @@ async function migrateFieldsOptions() {
       });
       
       if (fallback.length === 0) {
-        console.log(`⚠️  لم يُوجد في Prisma: "${backupSvc.name}"`);
+        console.log(`[WARN] لم يُوجد في Prisma: "${backupSvc.name}"`);
         notFoundCount++;
         continue;
       }
@@ -117,7 +117,7 @@ async function migrateFieldsOptions() {
             fieldoptions: field.options.join('\n'),   // الـ format المتوقع: options مفصولة بـ \n
             label: field.label || key,
           };
-          console.log(`   ✅ تحديث "${key}" → options: [${field.options.join(', ')}]`);
+          console.log(`   [UPDATED] "${key}" -> options: [${field.options.join(', ')}]`);
         } else if (!currentCustom[key]) {
           // أضف حقل text لو مش موجود
           currentCustom[key] = {
@@ -138,16 +138,16 @@ async function migrateFieldsOptions() {
         data: { requiresCustom: JSON.stringify(currentCustom) }
       });
 
-      console.log(`✅ تم تحديث: "${service.name}" (${service.id.slice(-6)})`);
+      console.log(`[SUCCESS] تم تحديث: "${service.name}" (${service.id.slice(-6)})`);
       updatedCount++;
     }
   }
 
-  console.log(`\n🎉 انتهى! تم تحديث ${updatedCount} خدمة, لم يُوجد ${notFoundCount} خدمة.`);
+  console.log(`\n[DONE] انتهى! تم تحديث ${updatedCount} خدمة, لم يُوجد ${notFoundCount} خدمة.`);
   await prisma.$disconnect();
 }
 
 migrateFieldsOptions().catch(e => {
-  console.error('❌ خطأ:', e);
+  console.error('[ERROR] خطأ:', e);
   process.exit(1);
 });

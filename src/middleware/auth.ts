@@ -1,6 +1,7 @@
 import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from "../utils/prisma";
+import { dashboardIpGuard } from './dashboardIpGuard';
 
 export interface AuthRequest extends Request {
   user?: any;
@@ -159,7 +160,7 @@ export const generateToken = (payload: any) => {
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
   authenticateToken(req, res, () => {
     if (req.user && ['admin', 'super_admin'].includes(req.user.role)) {
-      return next();
+      return dashboardIpGuard(req, res, next);
     }
     return res.status(403).json({ error: 'Access denied: Admins only' });
   });

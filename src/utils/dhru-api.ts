@@ -5,7 +5,7 @@ import { promisify } from "util";
 
 const lookup = promisify(dns.lookup);
 
-function isPrivateIP(ip: string): boolean {
+export function isPrivateIP(ip: string): boolean {
   return (
     ip === "127.0.0.1" ||
     ip === "::1" ||

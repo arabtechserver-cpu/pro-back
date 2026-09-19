@@ -151,11 +151,11 @@ router.post('/', authenticateToken, async (req, res) => {
     if (existingSameRef) {
       if (existingSameRef.status === 'pending') {
         return res.status(400).json({
-          error: `⚠️ رقم المعاملة أو الإشعار (${cleanRefNo}) مسجل مسبقاً وهو قيد المراجعة حالياً من قِبل الإدارة. يُرجى الانتظار لتفادي التكرار.`
+          error: `رقم المعاملة أو الإشعار (${cleanRefNo}) مسجل مسبقا وهو قيد المراجعة حاليا من قبل الإدارة. يرجى الانتظار لتفادي التكرار.`
         });
       } else {
         return res.status(400).json({
-          error: `⚠️ تم اعتماد هذا الإشعار/الرقم المرجعي (${cleanRefNo}) مسبقاً وشحن الرصيد به. لا يمكن إعادة استخدامه.`
+          error: `تم اعتماد هذا الإشعار/الرقم المرجعي (${cleanRefNo}) مسبقا وشحن الرصيد به. لا يمكن إعادة استخدامه.`
         });
       }
     }
@@ -172,11 +172,11 @@ router.post('/', authenticateToken, async (req, res) => {
 
     if (recentPendingTx) {
       return res.status(429).json({
-        error: '⚠️ تم إرسال طلب إيداع من حسابك قبل قليل وهو قيد المراجعة. يُرجى الانتظار بضع لحظات قبل إرسال طلب جديد لتجنب التكرار.'
+        error: 'تم إرسال طلب إيداع من حسابك قبل قليل وهو قيد المراجعة. يرجى الانتظار بضع لحظات قبل إرسال طلب جديد لتجنب التكرار.'
       });
     }
 
-    // 3. Handle receipt image: save full uncompressed original buffer to persistent volume on disk
+    // 3. Handle receipt image with strict MIME validation to prevent Stored XSS
     let savedReceiptUrl = null;
     let localDiskPath: string | null = null;
     
@@ -188,10 +188,25 @@ router.post('/', authenticateToken, async (req, res) => {
         const match = receiptImage.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s);
         if (match) {
           const mimeType = match[1].toLowerCase();
-          const ext = mimeType.split('/')[1]?.replace('jpeg', 'jpg') || 'jpg';
+          const allowedMimeTypes: Record<string, string> = {
+            'image/jpeg': 'jpg',
+            'image/jpg': 'jpg',
+            'image/png': 'png',
+            'image/webp': 'webp'
+          };
+
+          const ext = allowedMimeTypes[mimeType];
+          if (!ext) {
+            return res.status(400).json({ error: 'نوع صورة الإيصال غير مدعوم. يسمح فقط بصيغ JPG و PNG و WEBP.' });
+          }
+
           const base64Data = match[2];
-          const filename = `receipt_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
           const buffer = Buffer.from(base64Data, 'base64');
+          if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
+            return res.status(400).json({ error: 'حجم صورة الإيصال يجب ألا يتجاوز 10 ميجابايت.' });
+          }
+
+          const filename = `receipt_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
           localDiskPath = saveBufferToUploads(filename, buffer);
           savedReceiptUrl = `/uploads/${filename}`;
         } else {
@@ -226,32 +241,32 @@ router.post('/', authenticateToken, async (req, res) => {
     const safeRefNo = escapeHtml(refNo);
 
     const receiptLink = savedReceiptUrl
-      ? `\n🖼️ <b>صورة الإيصال (الدقة الأصلية):</b> <a href="https://arabtechproserver.tech${savedReceiptUrl}">عرض الصورة كاملة</a>`
+      ? `\nصورة الإيصال: <a href="https://arabtechproserver.tech${savedReceiptUrl}">عرض الصورة كاملة</a>`
       : '';
 
     const caption = `
-💳 <b>إيداع جديد قيد المراجعة! (New Deposit Pending)</b>
+<b>إيداع جديد قيد المراجعة (New Deposit Pending)</b>
 
-👤 <b>العميل:</b> ${safeFullName} (@${safeUsername})
-📧 <b>الإيميل:</b> <code>${safeEmail}</code>
-💰 <b>المبلغ المطلوب:</b> <code>+$${parseFloat(amount).toFixed(2)} USD</code>
-🏦 <b>طريقة الدفع:</b> ${safeMethod}
-🔢 <b>رقم المرجع / الإيصال:</b> <code>${safeRefNo}</code>
-📅 <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
+- <b>العميل:</b> ${safeFullName} (@${safeUsername})
+- <b>البريد:</b> <code>${safeEmail}</code>
+- <b>المبلغ المطلوب:</b> <code>+$${parseFloat(amount).toFixed(2)} USD</code>
+- <b>طريقة الدفع:</b> ${safeMethod}
+- <b>رقم المرجع / الإيصال:</b> <code>${safeRefNo}</code>
+- <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
 ${receiptLink}
 
-⏳ <b>الحالة:</b> قيد المراجعة - يُرجى فتح لوحة التحكم أو استخدام الأزرار أدناه.
+<b>الحالة:</b> قيد المراجعة - يرجى فتح لوحة التحكم أو استخدام الأزرار أدناه.
     `.trim();
 
     const inlineKeyboard: any[][] = [];
     if (savedReceiptUrl) {
       inlineKeyboard.push([
-        { text: "🔍 فتح الإيصال بالدقة الكاملة", url: `https://arabtechproserver.tech${savedReceiptUrl}` }
+        { text: "فتح الإيصال بالدقة الكاملة", url: `https://arabtechproserver.tech${savedReceiptUrl}` }
       ]);
     }
     inlineKeyboard.push([
-      { text: "✅ موافقة وشحن الرصيد", callback_data: `approve_tx_${newTransaction.id}` },
-      { text: "❌ رفض الإيداع", callback_data: `reject_tx_${newTransaction.id}` }
+      { text: "موافقة وشحن الرصيد", callback_data: `approve_tx_${newTransaction.id}` },
+      { text: "رفض الإيداع", callback_data: `reject_tx_${newTransaction.id}` }
     ]);
 
     const replyMarkup = { inline_keyboard: inlineKeyboard };
@@ -333,13 +348,13 @@ router.post('/approve', isAdmin, async (req, res) => {
     const upgradedUser = await checkAndAutoUpgradeMembership(tx.userId, tx.amount);
 
     const caption = `
-[إشعار إداري] 🛡️
-🟢 <b>تمت الموافقة وإضافة الرصيد بنجاح!</b>
+[إشعار إداري]
+<b>تمت الموافقة وإضافة الرصيد بنجاح</b>
 
-👤 <b>العميل:</b> ${updatedUser.fullName} (@${updatedUser.username})
-💰 <b>المبلغ المضاف:</b> <code>+$${tx.amount.toFixed(2)} USD</code>
-🏦 <b>رصيد الحساب الجديد:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
-${upgradedUser?.membershipTier ? `🎖️ <b>العضوية الحالية:</b> ${upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name} (${upgradedUser.membershipTier.discountPercentage}% خصم)` : ''}
+- <b>العميل:</b> ${updatedUser.fullName} (@${updatedUser.username})
+- <b>المبلغ المضاف:</b> <code>+$${tx.amount.toFixed(2)} USD</code>
+- <b>رصيد الحساب الجديد:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
+${upgradedUser?.membershipTier ? `- <b>العضوية الحالية:</b> ${upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name} (${upgradedUser.membershipTier.discountPercentage}% خصم)` : ''}
     `.trim();
 
     sendTelegramPhotoNotification({ caption }).catch(() => {});

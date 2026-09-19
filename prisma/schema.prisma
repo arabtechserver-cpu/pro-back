@@ -263,4 +263,31 @@ model CouponUsage {
   @@unique([couponId, userId])
 }
 
+model AllowedDashboardIP {
+  id           String    @id @default(uuid())
+  ipAddress    String    @unique
+  label        String?
+  isActive     Boolean   @default(true)
+  createdBy    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  lastAccessAt DateTime?
 
+  @@index([ipAddress])
+  @@index([isActive])
+}
+
+model DashboardAccessLog {
+  id        String   @id @default(uuid())
+  userId    String?
+  username  String?
+  ipAddress String
+  userAgent String?  @db.Text
+  status    String
+  reason    String?
+  createdAt DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([status, createdAt])
+  @@index([ipAddress])
+}

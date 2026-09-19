@@ -29,8 +29,12 @@ router.get('/telegram-admins', isAdmin, async (_req, res) => {
 });
 
 // POST /api/settings/telegram-admins
-router.post('/telegram-admins', isAdmin, async (req, res) => {
+router.post('/telegram-admins', isAdmin, async (req: any, res) => {
   try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'صلاحية تعديل حسابات تليجرام الإدارية محصورة في المدير العام فقط' });
+    }
+
     const { chatIds } = req.body;
     if (!Array.isArray(chatIds)) {
       return res.status(400).json({ error: 'chatIds يجب أن يكون مصفوفة' });

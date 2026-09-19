@@ -1,11 +1,18 @@
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 import { prisma } from "../utils/prisma";
 import { sendTelegramPhotoNotification, sendTelegramAlert } from '../utils/telegramService';
 
 const JWT_SECRET = process.env.JWT_SECRET;
 
 const router = Router();
+
+const aiChatLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  max: 15,
+  message: { error: 'Too many requests. Please slow down.' }
+});
 
 // Optional Customer Auth Middleware for AI chat
 const optionalAuth = async (req: any, res: any, next: any) => {
@@ -168,23 +175,23 @@ async function executeToolCall(toolCall: any, userId?: string, guestInfo: any = 
 
       // Send Instant Telegram Notification to Admins with Interactive Action Buttons
       const tgMsg = 
-        `🚨 <b>تذكرة دعم فني / شكوى جديدة #${ticketId}</b> 🚨\n` +
+        `[TICKET] <b>تذكرة دعم فني / شكوى جديدة #${ticketId}</b>\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `👤 <b>العميل:</b> ${customerName}\n` +
-        (customerEmail ? `📧 <b>البريد:</b> <code>${customerEmail}</code>\n` : '') +
-        (customerPhone ? `📱 <b>الهاتف:</b> <code>${customerPhone}</code>\n` : '') +
-        (orderId ? `📦 <b>رقم الطلب:</b> <code>#${orderId}</code>\n` : '') +
-        `🏷️ <b>القسم:</b> <b>${category}</b>\n` +
-        `⚡ <b>الأولوية:</b> <b>${urgency}</b>\n\n` +
-        `📝 <b>عنوان التذكرة:</b>\n<b>${subject}</b>\n\n` +
-        `📄 <b>التفاصيل:</b>\n${details}\n` +
+        `<b>العميل:</b> ${customerName}\n` +
+        (customerEmail ? `<b>البريد:</b> <code>${customerEmail}</code>\n` : '') +
+        (customerPhone ? `<b>الهاتف:</b> <code>${customerPhone}</code>\n` : '') +
+        (orderId ? `<b>رقم الطلب:</b> <code>#${orderId}</code>\n` : '') +
+        `<b>القسم:</b> <b>${category}</b>\n` +
+        `<b>الأولوية:</b> <b>${urgency}</b>\n\n` +
+        `<b>عنوان التذكرة:</b>\n<b>${subject}</b>\n\n` +
+        `<b>التفاصيل:</b>\n${details}\n` +
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
-        `🤖 <i>تم الاستلام والإرسال فورياً عبر المساعد الذكي AI</i>`;
+        `<i>تم الاستلام والإرسال فورياً عبر المساعد الذكي AI</i>`;
 
       const replyMarkup = {
         inline_keyboard: [
-          customerPhone ? [{ text: "📱 فتح محادثة واتساب مع العميل", url: `https://wa.me/${customerPhone.replace(/[^0-9]/g, '')}` }] : [],
-          customerEmail ? [{ text: "📧 إرسال إيميل للعميل", url: `mailto:${customerEmail}` }] : []
+          customerPhone ? [{ text: "فتح محادثة واتساب مع العميل", url: `https://wa.me/${customerPhone.replace(/[^0-9]/g, '')}` }] : [],
+          customerEmail ? [{ text: "إرسال إيميل للعميل", url: `mailto:${customerEmail}` }] : []
         ].filter(r => r.length > 0)
       };
 
@@ -276,7 +283,7 @@ async function buildLocalReply(message: string, userId?: string, guestInfo: any 
 
   // 1. Merchant VIP / Grievances / Wholesale
   if (/تنافس|بتنافس|خسرت|تخسرني|خصرت|عملاء|منافسة|جملة|تاجر|موزع/.test(normalized)) {
-    return `أهلاً بك يا غالي ويسعدنا جداً سماع وجهة نظرك وتفهم موقفك تماماً! 🤝\n\nنحن في **عرب تك برو سيرفر (Arab Tech Pro Server)** هدفنا الأول ليس منافسة زملائنا التجار أو أصحاب المحلات، بل بالعكس نحن نوفر أسعار جملة وسيرفرات API مباشرة لتمكين التجار والفنيين من تحقيق أعلى هامش ربح وخدمة عملائهم بأسرع وقت وبأقل تكلفة.\n\nيسعدنا فتح **حساب تاجر / موزع VIP** لك بأسعار مخصصة وأعلى نسبة خصم! يمكنك التواصل مع الإدارة مباشرة عبر واتساب: https://wa.me/16728972935 أو تيليجرام: @ARABTECHSUPPURT2.`;
+    return `أهلاً بك ويسعدنا جداً سماع وجهة نظرك وتفهم موقفك تماماً!\n\nنحن في **عرب تك برو سيرفر (Arab Tech Pro Server)** هدفنا الأول ليس منافسة زملائنا التجار أو أصحاب المحلات، بل بالعكس نحن نوفر أسعار جملة وسيرفرات API مباشرة لتمكين التجار والفنيين من تحقيق أعلى هامش ربح وخدمة عملائهم بأسرع وقت وبأقل تكلفة.\n\nيسعدنا فتح **حساب تاجر / موزع VIP** لك بأسعار مخصصة وأعلى نسبة خصم! يمكنك التواصل مع الإدارة مباشرة عبر واتساب: https://wa.me/16728972935 أو تيليجرام: @ARABTECHSUPPURT2.`;
   }
 
   // 2. Complaint or Ticket Request (Comprehensive match)
@@ -296,13 +303,13 @@ async function buildLocalReply(message: string, userId?: string, guestInfo: any 
     }, userId, guestInfo);
 
     if (toolRes && toolRes.success) {
-      return `✅ تم رفع تذكرتك بنجاح برقم **#${toolRes.ticket_id}**.\n\n📲 **تم إرسال كافة التفاصيل فوراً إلى إدارة السيرفر على تيليجرام**.\nفريق الدعم الفني والإدارة سيقومون بمتابعتها والرد عليك في أقرب وقت. يمكنك أيضاً مراسلة الإدارة مباشرة على تيليجرام: @ARABTECHSUPPURT2 أو واتساب: https://wa.me/16728972935`;
+      return `تم رفع تذكرتك بنجاح برقم **#${toolRes.ticket_id}**.\n\n**تم إرسال كافة التفاصيل فوراً إلى إدارة السيرفر على تيليجرام**.\nفريق الدعم الفني والإدارة سيقومون بمتابعتها والرد عليك في أقرب وقت. يمكنك أيضاً مراسلة الإدارة مباشرة على تيليجرام: @ARABTECHSUPPURT2 أو واتساب: https://wa.me/16728972935`;
     }
   }
 
   // 3. Delays / Refunds / Wallet balance refund
   if (/استرجاع|استرداد|فلوس|refund/.test(normalized)) {
-    return `حقك محفوظ تماماً وسياسة الموقع تضمن رد الرصيد 100% لمحفظتك في حال تأخر أو تعذر تنفيذ أي طلب! 🛡️\n\nفضلاً زودني برقم الطلب (Order ID) لفحصه وتحديث حالته، أو لإلغائه وإعادة الرصيد إلى محفظتك مباشرة.`;
+    return `حقك محفوظ تماماً وسياسة الموقع تضمن رد الرصيد 100% لمحفظتك في حال تأخر أو تعذر تنفيذ أي طلب!\n\nفضلاً زودني برقم الطلب (Order ID) لفحصه وتحديث حالته، أو لإلغائه وإعادة الرصيد إلى محفظتك مباشرة.`;
   }
 
   // 4. Contacts
@@ -323,11 +330,11 @@ async function buildLocalReply(message: string, userId?: string, guestInfo: any 
   }, userId);
 
   if (searchRes?.results?.length) {
-    const list = searchRes.results.slice(0, 5).map((s: any) => `• **${s.name}** — ${s.price} (${s.time})\n  🔗 [طلب الخدمة](${s.url})`).join('\n');
+    const list = searchRes.results.slice(0, 5).map((s: any) => `• **${s.name}** — ${s.price} (${s.time})\n  [طلب الخدمة](${s.url})`).join('\n');
     return `وجدت هذه الخدمات المتاحة في السيرفر:\n\n${list}`;
   }
 
-  return `أهلاً بك في المساعد الذكي لمنصة **عرب تك برو سيرفر - Arab Tech Pro Server**! 🤖\n\nأنا هنا لمساعدتك في الاستفسار عن أسعار وخدمات السيرفر، فحص حالة الطلبات، أو رفع تذكرة مباشرة لإدارة الموقع على تيليجرام.\n\nكيف يمكنني مساعدتك اليوم؟`;
+  return `أهلاً بك في المساعد الذكي لمنصة **عرب تك برو سيرفر - Arab Tech Pro Server**!\n\nأنا هنا لمساعدتك في الاستفسار عن أسعار وخدمات السيرفر، فحص حالة الطلبات، أو رفع تذكرة مباشرة لإدارة الموقع على تيليجرام.\n\nكيف يمكنني مساعدتك اليوم؟`;
 }
 
 // Call OpenRouter API
@@ -361,7 +368,7 @@ async function callOpenRouter(messages: any[]) {
 /**
  * POST /api/ai/chat
  */
-router.post('/chat', optionalAuth, async (req: any, res: any) => {
+router.post('/chat', aiChatLimiter, optionalAuth, async (req: any, res: any) => {
   try {
     const { message, history, guest_name, guest_email, guest_phone } = req.body;
     const userId = req.user?.id;
@@ -396,7 +403,7 @@ router.post('/chat', optionalAuth, async (req: any, res: any) => {
 
         const followUp: any = await callOpenRouter(conversation);
         const content = followUp?.choices?.[0]?.message?.content?.trim();
-        const finalReply = content || toolResult.message || (toolResult.ticket_id ? `✅ تم تسجيل تذكرتك بنجاح برقم #${toolResult.ticket_id} وتم إرسال الإشعار والتفاصيل كاملة للإدارة على تيليجرام فورياً.` : 'تم تنفيذ العملية بنجاح.');
+        const finalReply = content || toolResult.message || (toolResult.ticket_id ? `تم تسجيل تذكرتك بنجاح برقم #${toolResult.ticket_id} وتم إرسال الإشعار والتفاصيل كاملة للإدارة على تيليجرام فورياً.` : 'تم تنفيذ العملية بنجاح.');
         return res.json({ reply: finalReply, history: [...conversation, { role: 'assistant', content: finalReply }] });
       }
 
@@ -420,7 +427,7 @@ router.post('/chat', optionalAuth, async (req: any, res: any) => {
           }, userId, guestInfo);
 
           if (autoTicket && autoTicket.ticket_id) {
-            replyText += `\n\n---\n✅ **تم تسجيل شكواك رسمياً برقم تذكرة:** \`#${autoTicket.ticket_id}\`\n📲 **تم إرسال إشعار فوري وتفصيلي لإدارة السيرفر على تيليجرام** لمتابعتها والرد عليك.`;
+            replyText += `\n\n---\n**تم تسجيل شكواك رسمياً برقم تذكرة:** \`#${autoTicket.ticket_id}\`\n**تم إرسال إشعار فوري وتفصيلي لإدارة السيرفر على تيليجرام** لمتابعتها والرد عليك.`;
           }
         }
 

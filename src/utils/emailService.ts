@@ -44,7 +44,7 @@ function generateLuxuryEmailHtml({
       <tr>
         <td style="background: linear-gradient(135deg, #1e3a8a 0%, #0284c7 100%); padding: 30px 20px; text-align: center;">
           <div style="display: inline-block; padding: 6px 16px; background: rgba(15, 23, 42, 0.6); border: 1px solid rgba(56, 189, 248, 0.4); border-radius: 30px; color: #38bdf8; font-size: 12px; font-weight: bold; margin-bottom: 10px; letter-spacing: 1px;">
-            ⚡ ARAB TECH PRO SERVER
+            ARAB TECH PRO SERVER
           </div>
           <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 800; letter-spacing: 0.5px;">عرب تك برو سيرفر</h1>
           <p style="margin: 5px 0 0 0; color: #bae6fd; font-size: 13px; font-family: monospace;">arabtechproserver.tech</p>
@@ -55,7 +55,7 @@ function generateLuxuryEmailHtml({
       <tr>
         <td style="padding: 35px 30px;">
           <div style="font-size: 18px; font-weight: 700; color: #f8fafc; margin-bottom: 15px;">
-            مرحباً بك، ${username} 👋
+            مرحباً بك، ${username}
           </div>
           
           <div style="background-color: rgba(15, 23, 42, 0.7); border: 1px solid #334155; border-radius: 14px; padding: 22px; color: #cbd5e1; font-size: 15px; line-height: 1.8; margin-bottom: 25px; white-space: pre-line;">
@@ -135,7 +135,7 @@ export async function sendEmail({
       res.on("data", (c) => (data += c));
       res.on("end", () => {
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          console.log(`🚀 [Resend Success] Email delivered to: ${to} (Subject: ${subject})`);
+          console.log(`[Resend Success] Email delivered to: ${to} (Subject: ${subject})`);
           resolve(true);
         } else {
           console.warn(`[Resend Error ${res.statusCode}]:`, data);
@@ -188,7 +188,7 @@ export async function sendLoopsTransactionalEmail(
       res.on("data", (c) => (data += c));
       res.on("end", () => {
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          console.log(`🚀 [Loops Success] Transactional email sent to: ${email}`);
+          console.log(`[Loops Success] Transactional email sent to: ${email}`);
           resolve(true);
         } else {
           console.warn(`[Loops Error ${res.statusCode}]:`, data);
@@ -309,7 +309,7 @@ export const sendOrderConfirmationEmail = async (
 ): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
   const username = payload.username || "عزيزنا العميل";
-  const message = `تم استلام وتنفيذ طلبك رقم <b>#${payload.orderId}</b> بنجاح!\n\n📱 <b>الخدمة:</b> ${payload.serviceName}\n🔢 <b>المُدخل (IMEI / ID):</b> ${payload.targetInput}\n💰 <b>المبلغ المخصوم:</b> $${payload.price.toFixed(2)} USD.`;
+  const message = `تم استلام وتنفيذ طلبك رقم <b>#${payload.orderId}</b> بنجاح!\n\n<b>الخدمة:</b> ${payload.serviceName}\n<b>المُدخل (IMEI / ID):</b> ${payload.targetInput}\n<b>المبلغ المخصوم:</b> $${payload.price.toFixed(2)} USD.`;
 
   const html = generateLuxuryEmailHtml({
     title: `تم تأكيد طلبك رقم #${payload.orderId}`,
@@ -341,7 +341,7 @@ export const sendDepositApprovalEmail = async (
 ): Promise<boolean> => {
   const cleanEmail = email.trim().toLowerCase();
   const username = payload.username || "عزيزنا العميل";
-  const message = `تهانينا! تمت الموافقة على طلب إيداعك وإضافة <b>+$${payload.amount.toFixed(2)} USD</b> إلى رصيدك بنجاح.${payload.tierName ? `\n🎖️ <b>مستوى عضويتك الحالي:</b> ${payload.tierName}` : ''}`;
+  const message = `تهانينا! تمت الموافقة على طلب إيداعك وإضافة <b>+$${payload.amount.toFixed(2)} USD</b> إلى رصيدك بنجاح.${payload.tierName ? `\n<b>مستوى عضويتك الحالي:</b> ${payload.tierName}` : ''}`;
 
   const html = generateLuxuryEmailHtml({
     title: `تم اعتماد إيداع رصيدك: +$${payload.amount.toFixed(2)}`,

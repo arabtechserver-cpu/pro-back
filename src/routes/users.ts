@@ -212,16 +212,25 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
 // Use /api/auth/register which includes Turnstile + rate limiting
 
 // POST Toggle User Status (Activate / Suspend)
-router.post("/toggle-status", isAdmin, async (req, res) => {
+router.post("/toggle-status", isAdmin, async (req: any, res) => {
   try {
     const { userId, newStatus } = req.body;
     if (!userId || !newStatus) {
       return res.status(400).json({ error: "userId and newStatus are required" });
     }
 
+    const callerId = req.user?.id;
+    if (callerId === userId) {
+      return res.status(400).json({ success: false, error: "لا يمكن تعطيل حسابك الحالي" });
+    }
+
     const targetUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (targetUser?.role === 'admin') {
-      return res.status(400).json({ success: false, error: 'لا يمكن إيقاف حساب الأدمن الرئيسي' });
+    if (!targetUser) {
+      return res.status(404).json({ success: false, error: "المستخدم غير موجود" });
+    }
+
+    if (['admin', 'super_admin'].includes(targetUser.role)) {
+      return res.status(403).json({ success: false, error: "لا يمكن تعديل حالة حسابات المسؤولين" });
     }
 
     const updatedUser = await prisma.user.update({
@@ -241,9 +250,30 @@ router.post("/toggle-status", isAdmin, async (req, res) => {
 });
 
 // DELETE User
-router.delete("/:id", isAdmin, async (req, res) => {
+router.delete("/:id", isAdmin, async (req: any, res) => {
   try {
     const { id } = req.params;
+    const callerId = req.user?.id;
+    const callerRole = req.user?.role;
+
+    if (callerId === id) {
+      return res.status(400).json({ error: "لا يمكن حذف حسابك الحالي" });
+    }
+
+    const targetUser = await prisma.user.findUnique({ where: { id: id as string } });
+    if (!targetUser) {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    if (['admin', 'super_admin'].includes(targetUser.role)) {
+      if (callerRole !== 'super_admin') {
+        return res.status(403).json({ error: "غير مصرح لك بحذف حسابات المسؤولين" });
+      }
+      if (targetUser.role === 'super_admin') {
+        return res.status(403).json({ error: "لا يمكن حذف حساب المدير العام" });
+      }
+    }
+
     await prisma.user.delete({ where: { id: id as string } });
     return res.json({ success: true, message: "تم حذف المستخدم بنجاح" });
   } catch (error: any) {
@@ -253,9 +283,12 @@ router.delete("/:id", isAdmin, async (req, res) => {
 });
 
 // POST /api/users/change-password - Admin change user password
-router.post("/change-password", isAdmin, async (req, res) => {
+router.post("/change-password", isAdmin, async (req: any, res) => {
   try {
     const { userId, newPassword } = req.body;
+    const callerId = req.user?.id;
+    const callerRole = req.user?.role;
+
     if (!userId || !newPassword) {
       return res.status(400).json({ error: "الرجاء إدخال معرف المستخدم وكلمة المرور الجديدة" });
     }
@@ -264,14 +297,26 @@ router.post("/change-password", isAdmin, async (req, res) => {
       return res.status(400).json({ error: "كلمة المرور يجب أن لا تقل عن 8 أحرف" });
     }
 
+    const targetUser = await prisma.user.findUnique({ where: { id: userId } });
+    if (!targetUser) {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    if (['admin', 'super_admin'].includes(targetUser.role)) {
+      if (targetUser.role === 'super_admin' && callerId !== targetUser.id) {
+        return res.status(403).json({ error: "لا يمكن إعادة تعيين كلمة مرور المدير العام من هذه الواجهة" });
+      }
+      if (callerRole !== 'super_admin' && callerId !== targetUser.id) {
+        return res.status(403).json({ error: "غير مصرح لك بتغيير كلمة مرور حسابات المسؤولين" });
+      }
+    }
+
     const hashedPassword = await bcrypt.hash(newPassword, 10);
 
     await prisma.user.update({
       where: { id: userId },
       data: { password: hashedPassword }
     });
-
-    console.log(`[DB persisted] Password updated for userId: ${userId}`);
 
     return res.json({
       success: true,
@@ -284,16 +329,27 @@ router.post("/change-password", isAdmin, async (req, res) => {
 });
 
 // POST /api/users/update-balance - Admin manually update user wallet balance
-router.post("/update-balance", isAdmin, async (req, res) => {
+router.post("/update-balance", isAdmin, async (req: any, res) => {
   try {
     const { userId, newBalance, action, amount } = req.body;
+    const callerId = req.user?.id;
+    const callerRole = req.user?.role;
+
     if (!userId) {
       return res.status(400).json({ error: "معرف المستخدم مطلوب" });
+    }
+
+    if (callerId === userId && callerRole !== 'super_admin') {
+      return res.status(403).json({ error: "غير مصرح لك بتعديل رصيد حسابك الشخصي" });
     }
 
     const existingUser = await prisma.user.findUnique({ where: { id: userId } });
     if (!existingUser) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
+
+    if (['admin', 'super_admin'].includes(existingUser.role) && callerRole !== 'super_admin' && callerId !== existingUser.id) {
+      return res.status(403).json({ error: "غير مصرح لك بتعديل أرصدة حسابات المسؤولين" });
     }
 
     let updatedBalance = existingUser.balance;
@@ -313,11 +369,9 @@ router.post("/update-balance", isAdmin, async (req, res) => {
 
     const upgraded = await checkAndAutoUpgradeMembership(userId, amount ? parseFloat(amount) : undefined);
 
-    console.log(`[Admin Manual Balance Edit] User ${updatedUser.username} (${updatedUser.email}) -> New Balance: $${updatedUser.balance}`);
-
     return res.json({
       success: true,
-      message: `تم تعديل رصيد المستخدم (${updatedUser.fullName}) بنجاح إلى $${updatedUser.balance.toFixed(2)} USD!`,
+      message: `تم تعديل رصيد المستخدم (${updatedUser.fullName}) بنجاح إلى $${updatedUser.balance.toFixed(2)} USD`,
       user: upgraded || updatedUser
     });
   } catch (error: any) {

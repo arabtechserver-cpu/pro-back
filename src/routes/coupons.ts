@@ -1,8 +1,18 @@
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import { prisma } from "../utils/prisma";
 import { isAdmin } from "../middleware/auth";
 
 const router = Router();
+
+const couponValidateLimiter = rateLimit({
+  windowMs: 5 * 60 * 1000,
+  max: 15,
+  message: {
+    valid: false,
+    error: "تجاوزت الحد المسموح به لمحاولات فحص أكواد الخصم، يرجى المحاولة بعد قليل."
+  }
+});
 
 // GET /api/coupons - List all coupons with stats (Admin only)
 router.get("/", isAdmin, async (req, res) => {
@@ -138,7 +148,7 @@ router.delete("/:id", isAdmin, async (req, res) => {
 });
 
 // POST /api/coupons/validate - Validate coupon for checkout (Public/Client)
-router.post("/validate", async (req, res) => {
+router.post("/validate", couponValidateLimiter, async (req, res) => {
   try {
     const { code, price, userId } = req.body;
 

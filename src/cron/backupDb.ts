@@ -26,8 +26,28 @@ export async function performJSONBackupAndSend() {
 
     console.log(`[Backup] Fetching data from database for JSON report...`);
     
-    // Fetch users (with balances and info)
-    const users = await prisma.user.findMany();
+    // Fetch users (with balances and info, omitting sensitive credentials)
+    const users = await prisma.user.findMany({
+      select: {
+        id: true,
+        fullName: true,
+        email: true,
+        username: true,
+        phone: true,
+        country: true,
+        role: true,
+        status: true,
+        balance: true,
+        membershipTierId: true,
+        customDiscount: true,
+        createdAt: true,
+        updatedAt: true,
+        apiEnabled: true,
+        apiMargin: true,
+        apiSiteName: true,
+        apiSiteUrl: true
+      }
+    });
     
     // Fetch orders
     const orders = await prisma.order.findMany();
@@ -56,7 +76,7 @@ export async function performJSONBackupAndSend() {
     const stats = fs.statSync(jsonFilePath);
     const fileSizeMB = (stats.size / 1024 / 1024).toFixed(2);
     
-    const caption = `📊 <b>تقرير النسخة الاحتياطية اليومي (JSON)</b>\n\n📅 <b>التاريخ:</b> ${dateStr}\n👥 <b>المستخدمين:</b> ${users.length}\n🛒 <b>الطلبات:</b> ${orders.length}\n💳 <b>المعاملات:</b> ${transactions.length}\n💾 <b>الحجم:</b> ${fileSizeMB} MB`;
+    const caption = `[REPORT] <b>تقرير النسخة الاحتياطية اليومي (JSON)</b>\n\n<b>التاريخ:</b> ${dateStr}\n<b>المستخدمين:</b> ${users.length}\n<b>الطلبات:</b> ${orders.length}\n<b>المعاملات:</b> ${transactions.length}\n<b>الحجم:</b> ${fileSizeMB} MB`;
     
     // Send to Telegram
     await sendDocumentToAdmins(jsonFilePath, caption);

@@ -85,7 +85,7 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
       const refreshedUser = await prisma.user.findUnique({ where: { id: targetUser.id } });
       return res.json({
         success: true,
-        message: 'تم شحن هذا الرصيد بالفعل سابقاً في محفظتك! ✅',
+        message: 'تم شحن هذا الرصيد بالفعل سابقاً في محفظتك!',
         amount: existingTx.amount,
         balance: refreshedUser?.balance || targetUser.balance,
         alreadyCaptured: true
@@ -148,22 +148,22 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
     const payerName = captureResult?.payer?.name ? `${captureResult.payer.name.given_name || ''} ${captureResult.payer.name.surname || ''}`.trim() : targetUser.fullName;
 
     const caption = `
-🎉 <b>تم تأكيد واستلام دفعة PayPal حقيقية بنجاح! 🟢</b>
+[PAYPAL SUCCESS] <b>تم تأكيد واستلام دفعة PayPal حقيقية بنجاح!</b>
 
-💳 <b>رقم العملية (PayPal):</b> <code>${cleanOrderId}</code>
-🧾 <b>معرف التحصيل (Capture ID):</b> <code>${captureId}</code>
-👤 <b>حساب العميل بالموقع:</b> ${updatedUser.fullName} (@${updatedUser.username})
-📧 <b>إيميل الدفع (PayPal Payer):</b> <code>${payerEmail}</code>
-💰 <b>المبلغ المستلم فعلياً:</b> <code>+$${capturedAmount.toFixed(2)} USD</code>
-🏦 <b>رصيد المحفظة بعد الشحن:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
-⚡ <b>الحالة:</b> مدفوع ومؤكد من خوادم PayPal مباشرة ✅
+<b>رقم العملية (PayPal):</b> <code>${cleanOrderId}</code>
+<b>معرف التحصيل (Capture ID):</b> <code>${captureId}</code>
+<b>حساب العميل بالموقع:</b> ${updatedUser.fullName} (@${updatedUser.username})
+<b>إيميل الدفع (PayPal Payer):</b> <code>${payerEmail}</code>
+<b>المبلغ المستلم فعلياً:</b> <code>+$${capturedAmount.toFixed(2)} USD</code>
+<b>رصيد المحفظة بعد الشحن:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
+<b>الحالة:</b> مدفوع ومؤكد من خوادم PayPal مباشرة
     `.trim();
 
     sendTelegramPhotoNotification({ caption }).catch(() => {});
 
     return res.json({
       success: true,
-      message: `تم التحقق واستلام الدفعة وإضافة $${capturedAmount.toFixed(2)} USD إلى محفظتك بنجاح! ✅`,
+      message: `تم التحقق واستلام الدفعة وإضافة $${capturedAmount.toFixed(2)} USD إلى محفظتك بنجاح!`,
       amount: capturedAmount,
       balance: updatedUser.balance,
       orderId: cleanOrderId,

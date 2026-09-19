@@ -208,12 +208,12 @@ async function handleIncomingTelegramUpdate(update: any) {
         });
 
         if (!order) {
-          await sendTelegramMessage(chatId, `❌ <b>الطلب #${orderId.slice(-6)} غير موجود في قاعدة البيانات!</b>`);
+          await sendTelegramMessage(chatId, `[ERROR] <b>الطلب #${orderId.slice(-6)} غير موجود في قاعدة البيانات!</b>`);
           return;
         }
 
         if (order.apiOrderId) {
-          await sendTelegramMessage(chatId, `⚠️ <b>تم إرسال هذا الطلب للمزود مسبقاً!</b> (Dhru ID: <code>${order.apiOrderId}</code>)`);
+          await sendTelegramMessage(chatId, `[WARNING] <b>تم إرسال هذا الطلب للمزود مسبقاً!</b> (Dhru ID: <code>${order.apiOrderId}</code>)`);
           return;
         }
 
@@ -223,7 +223,7 @@ async function handleIncomingTelegramUpdate(update: any) {
         });
 
         if (!dhruService || !dhruService.dhruId) {
-          await sendTelegramMessage(chatId, `❌ <b>تعذر العثور على معرّف الخدمة (Dhru ID) للخدمة "${order.serviceName}"!</b>`);
+          await sendTelegramMessage(chatId, `[ERROR] <b>تعذر العثور على معرّف الخدمة (Dhru ID) للخدمة "${order.serviceName}"!</b>`);
           return;
         }
 
@@ -242,9 +242,9 @@ async function handleIncomingTelegramUpdate(update: any) {
           const rawErrMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION || 'خطأ غير معروف من المزود';
           const isCredit = JSON.stringify(dhruResponse || {}).toLowerCase().includes('credit');
           const finalErrMsg = isCredit
-            ? '⚠️ رصيد حسابك لدى المزود الخارجي غير كافٍ. يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
+            ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ. يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
             : rawErrMsg;
-          await sendTelegramMessage(chatId, `❌ <b>فشل إرسال الطلب للمزود:</b>\n<code>${finalErrMsg}</code>`);
+          await sendTelegramMessage(chatId, `[ERROR] <b>فشل إرسال الطلب للمزود:</b>\n<code>${finalErrMsg}</code>`);
           return;
         }
 
@@ -260,7 +260,7 @@ async function handleIncomingTelegramUpdate(update: any) {
 
         await sendTelegramMessage(
           chatId,
-          `🚀 <b>تم إرسال الطلب للمزود بنجاح عبر التلجرام!</b>\n\n🔢 <b>رقم الطلب:</b> #${order.id.slice(-6)}\n📱 <b>الخدمة:</b> ${order.serviceName}\n🔢 <b>Dhru Ref ID:</b> <code>${refId}</code>\n👤 <b>العميل:</b> ${order.user?.fullName} (<code>${order.user?.email}</code>)\n🟢 <b>الحالة:</b> جاري التنفيذ لدى المزود ⏳`
+          `<b>تم إرسال الطلب للمزود بنجاح عبر التلجرام!</b>\n\n<b>رقم الطلب:</b> #${order.id.slice(-6)}\n<b>الخدمة:</b> ${order.serviceName}\n<b>Dhru Ref ID:</b> <code>${refId}</code>\n<b>العميل:</b> ${order.user?.fullName} (<code>${order.user?.email}</code>)\n<b>الحالة:</b> جاري التنفيذ لدى المزود`
         );
 
         if (order.user?.email) {
@@ -283,7 +283,7 @@ async function handleIncomingTelegramUpdate(update: any) {
 
         const tx = await prisma.transaction.findUnique({ where: { id: txId } });
         if (!tx) {
-          await sendTelegramMessage(chatId, `❌ <b>عملية الإيداع غير موجودة!</b>`);
+          await sendTelegramMessage(chatId, `[ERROR] <b>عملية الإيداع غير موجودة!</b>`);
           return;
         }
 
@@ -311,7 +311,7 @@ async function handleIncomingTelegramUpdate(update: any) {
           });
         } catch (txError: any) {
           if (txError.message === 'ALREADY_PROCESSED') {
-            await sendTelegramMessage(chatId, `⚠️ <b>تم اعتماد أو معالجة هذه العملية مسبقاً!</b>`);
+            await sendTelegramMessage(chatId, `[WARNING] <b>تم اعتماد أو معالجة هذه العملية مسبقاً!</b>`);
             return;
           }
           throw txError;
@@ -320,12 +320,12 @@ async function handleIncomingTelegramUpdate(update: any) {
         const upgradedUser = await checkAndAutoUpgradeMembership(tx.userId, tx.amount);
 
         const tierInfo = upgradedUser?.membershipTier
-          ? `🎖️ <b>العضوية الحالية:</b> ${upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name} (-${upgradedUser.membershipTier.discountPercentage}% خصم)`
+          ? `<b>العضوية الحالية:</b> ${upgradedUser.membershipTier.nameAr || upgradedUser.membershipTier.name} (-${upgradedUser.membershipTier.discountPercentage}% خصم)`
           : '';
 
         await sendTelegramMessage(
           chatId,
-          `✅ <b>تمت الموافقة وشحن الرصيد بنجاح عبر التلجرام!</b>\n\n👤 <b>العميل:</b> ${updatedUser.fullName} (<code>${updatedUser.email}</code>)\n💰 <b>المبلغ المضاف:</b> <code>+$${tx.amount.toFixed(2)} USD</code>\n🏦 <b>رصيد الحساب الجديد:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>\n${tierInfo}`
+          `<b>تمت الموافقة وشحن الرصيد بنجاح عبر التلجرام!</b>\n\n<b>العميل:</b> ${updatedUser.fullName} (<code>${updatedUser.email}</code>)\n<b>المبلغ المضاف:</b> <code>+$${tx.amount.toFixed(2)} USD</code>\n<b>رصيد الحساب الجديد:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>\n${tierInfo}`
         );
 
         if (updatedUser.email) {
@@ -350,11 +350,11 @@ async function handleIncomingTelegramUpdate(update: any) {
         });
 
         if (updatedTxResult.count === 0) {
-           await sendTelegramMessage(chatId, `⚠️ <b>هذه العملية تمت معالجتها مسبقاً!</b>`);
+           await sendTelegramMessage(chatId, `[WARNING] <b>هذه العملية تمت معالجتها مسبقاً!</b>`);
            return;
         }
 
-        await sendTelegramMessage(chatId, `❌ <b>تم رفض طلب الإيداع رقم #${txId.slice(-6)} بنجاح.</b>`);
+        await sendTelegramMessage(chatId, `[REJECTED] <b>تم رفض طلب الإيداع رقم #${txId.slice(-6)} بنجاح.</b>`);
         return;
       }
 
@@ -369,13 +369,13 @@ async function handleIncomingTelegramUpdate(update: any) {
         });
 
         if (updatedOrderResult.count === 0) {
-          await sendTelegramMessage(chatId, `⚠️ <b>تم إكمال هذا الطلب مسبقاً!</b>`);
+          await sendTelegramMessage(chatId, `[WARNING] <b>تم إكمال هذا الطلب مسبقاً!</b>`);
           return;
         }
 
         const updatedOrder = await prisma.order.findUnique({ where: { id: orderId } });
 
-        await sendTelegramMessage(chatId, `✅ <b>تم إكمال الطلب #${orderId.slice(-6)} بنجاح!</b> (${updatedOrder?.serviceName || ''})`);
+        await sendTelegramMessage(chatId, `[COMPLETED] <b>تم إكمال الطلب #${orderId.slice(-6)} بنجاح!</b> (${updatedOrder?.serviceName || ''})`);
         return;
       }
 
@@ -386,7 +386,7 @@ async function handleIncomingTelegramUpdate(update: any) {
 
         const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
         if (!order || !order.userId) {
-          await sendTelegramMessage(chatId, `❌ <b>الطلب غير موجود أو غير مرتبط بحساب عميل!</b>`);
+          await sendTelegramMessage(chatId, `[ERROR] <b>الطلب غير موجود أو غير مرتبط بحساب عميل!</b>`);
           return;
         }
 
@@ -428,7 +428,7 @@ async function handleIncomingTelegramUpdate(update: any) {
           });
         } catch (txError: any) {
           if (txError.message === 'ALREADY_PROCESSED') {
-            await sendTelegramMessage(chatId, `⚠️ <b>تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً!</b>`);
+            await sendTelegramMessage(chatId, `[WARNING] <b>تم إلغاء هذا الطلب واسترجاع رصيده مسبقاً!</b>`);
             return;
           }
           throw txError;
@@ -436,13 +436,13 @@ async function handleIncomingTelegramUpdate(update: any) {
 
         await sendTelegramMessage(
           chatId,
-          `🔄 <b>تم إلغاء الطلب واسترجاع الرصيد بنجاح!</b>\n\n🔢 <b>رقم الطلب:</b> #${order.id.slice(-6)}\n👤 <b>العميل:</b> ${refundedUser.fullName}\n💰 <b>المبلغ المسترجع:</b> <code>+$${order.price.toFixed(2)} USD</code>\n🏦 <b>رصيد العميل الحالي:</b> <code>$${refundedUser.balance.toFixed(2)} USD</code>`
+          `[REFUND] <b>تم إلغاء الطلب واسترجاع الرصيد بنجاح!</b>\n\n<b>رقم الطلب:</b> #${order.id.slice(-6)}\n<b>العميل:</b> ${refundedUser.fullName}\n<b>المبلغ المسترجع:</b> <code>+$${order.price.toFixed(2)} USD</code>\n<b>رصيد العميل الحالي:</b> <code>$${refundedUser.balance.toFixed(2)} USD</code>`
         );
         return;
       }
     } catch (err: any) {
       console.error('[Telegram Callback Error]:', err);
-      await sendTelegramMessage(chatId, `⚠️ <b>حدث خطأ أثناء معالجة الأمر:</b> ${err?.message}`);
+      await sendTelegramMessage(chatId, `[WARNING] <b>حدث خطأ أثناء معالجة الأمر:</b> ${err?.message}`);
       return;
     }
   }
@@ -770,7 +770,7 @@ export async function sendTelegramPhotoNotification({
               headers: form.getHeaders(),
               timeout: 60000
             });
-            console.log(`🚀 [Telegram Bot] Receipt photo sent successfully to Admin Chat ID: ${chatId}`);
+            console.log(`[Telegram Bot] Receipt photo sent successfully to Admin Chat ID: ${chatId}`);
             delivered = true;
           } catch (photoErr: any) {
             const photoDesc = photoErr?.response?.data?.description || photoErr?.message;
@@ -790,7 +790,7 @@ export async function sendTelegramPhotoNotification({
                 headers: form2.getHeaders(),
                 timeout: 60000
               });
-              console.log(`🚀 [Telegram Bot] Receipt photo (plain) sent successfully to Admin Chat ID: ${chatId}`);
+              console.log(`[Telegram Bot] Receipt photo (plain) sent successfully to Admin Chat ID: ${chatId}`);
               delivered = true;
             } catch (photoErr2: any) {}
           }
@@ -811,7 +811,7 @@ export async function sendTelegramPhotoNotification({
               headers: docForm.getHeaders(),
               timeout: 60000
             });
-            console.log(`🚀 [Telegram Bot] Receipt document sent successfully to Admin Chat ID: ${chatId}`);
+            console.log(`[Telegram Bot] Receipt document sent successfully to Admin Chat ID: ${chatId}`);
             delivered = true;
           } catch (docErr: any) {
             console.warn(`[Telegram sendDocument failed for ${chatId}]:`, docErr?.response?.data?.description || docErr?.message);
@@ -852,14 +852,14 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
             headers: form.getHeaders(),
             timeout: 60000
           });
-          console.log(`🚀 [Telegram Bot] Document sent successfully to Admin Chat ID: ${chatId}`);
+          console.log(`[Telegram Bot] Document sent successfully to Admin Chat ID: ${chatId}`);
         } else {
           console.error(`[Telegram Bot] Document not found at path: ${filePath}`);
         }
       } catch (error: any) {
         const errorMsg = error?.response?.data?.description || error?.message;
         console.error(`[Telegram Document Delivery Error for ${chatId}]:`, errorMsg);
-        await sendTelegramMessage(chatId, caption + `\n\n<i>⚠️ تعذر إرسال الملف إليك بسبب مشكلة في الرفع. (${errorMsg})</i>`);
+        await sendTelegramMessage(chatId, caption + `\n\n<i>[WARNING] تعذر إرسال الملف إليك بسبب مشكلة في الرفع. (${errorMsg})</i>`);
       }
     }
   } catch (error: any) {

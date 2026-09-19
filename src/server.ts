@@ -66,6 +66,7 @@ import currenciesRoutes from './routes/currencies';
 import externalApiRoutes from './routes/externalApi';
 import couponsRoutes from './routes/coupons';
 import settingsRoutes from './routes/settings';
+import ipAccessRoutes from './routes/ipAccess';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/coupons', couponsRoutes);
@@ -98,6 +99,8 @@ app.use('/api/reseller', externalApiRoutes);
 app.use('/api/external', externalApiRoutes);
 app.use('/api/dhru/api', externalApiRoutes);
 app.use('/api/settings', settingsRoutes);
+app.use('/api/ip-access', ipAccessRoutes);
+app.use('/api/admin/ip-access', ipAccessRoutes);
 
 // Health check
 app.get('/api/health', (req, res) => {

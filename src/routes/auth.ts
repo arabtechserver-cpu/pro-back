@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { prisma } from "../utils/prisma";
 import { generateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
@@ -7,6 +8,8 @@ import { createAdminOtpChallenge, verifyAdminOtp, resendAdminOtp } from '../util
 import { turnstileMiddleware } from '../middleware/turnstileMiddleware';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
+import { extractClientIp } from '../utils/ipUtils';
+import { checkIpAccess, logDashboardAccess } from '../services/ipAccessService';
 
 
 const router = Router();
@@ -19,9 +22,13 @@ const authLimiter = rateLimit({
 
 router.use(authLimiter);
 
-// In-memory OTP Store for forgot password flow
-// يتم مسح الأكواد المنتهية تلقائياً كل 15 دقيقة لمنع Memory Leak
-const otpStore = new Map<string, { code: string; expiresAt: number }>();
+// In-memory OTP Store for forgot password flow with brute force attempt tracking
+interface UserOtpRecord {
+  code: string;
+  expiresAt: number;
+  attempts: number;
+}
+const otpStore = new Map<string, UserOtpRecord>();
 setInterval(() => {
   const now = Date.now();
   for (const [key, val] of otpStore.entries()) {
@@ -36,6 +43,10 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
 
     if (!fullName || !email || !username || !password) {
       return res.status(200).json({ success: false, error: 'الرجاء تعبئة جميع الحقول المطلوبة' });
+    }
+
+    if (password.length < 8) {
+      return res.status(200).json({ success: false, error: 'كلمة المرور يجب أن لا تقل عن 8 أحرف' });
     }
 
     const cleanEmail = email.trim().toLowerCase();
@@ -125,10 +136,10 @@ router.post('/send-otp', async (req, res) => {
       }
     }
 
-    const otpCode = Math.floor(100000 + Math.random() * 900000).toString();
+    const otpCode = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
-    otpStore.set(cleanEmail, { code: otpCode, expiresAt });
+    otpStore.set(cleanEmail, { code: otpCode, expiresAt, attempts: 0 });
 
     sendOtpEmailViaLoops(cleanEmail, {
       code: otpCode,
@@ -154,11 +165,26 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
       return res.status(200).json({ success: false, error: 'البريد الإلكتروني، كود OTP، وكلمة المرور الجديدة مطلوبة' });
     }
 
+    if (newPassword.length < 8) {
+      return res.status(200).json({ success: false, error: 'كلمة المرور الجديدة يجب أن لا تقل عن 8 أحرف' });
+    }
+
     const cleanEmail = email.trim().toLowerCase();
     const record = otpStore.get(cleanEmail);
 
-    if (!record || record.code !== otp.trim() || Date.now() > record.expiresAt) {
+    if (!record || Date.now() > record.expiresAt) {
+      if (record) otpStore.delete(cleanEmail);
       return res.status(200).json({ success: false, error: 'كود التحقق (OTP) غير صحيح أو منتهي الصلاحية' });
+    }
+
+    if (record.attempts >= 5) {
+      otpStore.delete(cleanEmail);
+      return res.status(200).json({ success: false, error: 'تم تجاوز الحد الأقصى للمحاولات الخاطئة. الرجاء طلب كود جديد' });
+    }
+
+    if (record.code !== otp.trim()) {
+      record.attempts += 1;
+      return res.status(200).json({ success: false, error: 'كود التحقق (OTP) غير صحيح' });
     }
 
     const userObj = await prisma.user.findUnique({ where: { email: cleanEmail } });
@@ -223,7 +249,27 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
     const isAdminAccount = ['admin', 'super_admin'].includes(dbUser.role);
 
     if (isAdminAccount) {
-      const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+      const clientIp = extractClientIp(req);
+      const accessResult = await checkIpAccess(clientIp);
+
+      if (!accessResult.allowed) {
+        logDashboardAccess({
+          userId: dbUser.id,
+          username: dbUser.username,
+          ipAddress: clientIp,
+          userAgent: req.headers['user-agent'] as string,
+          status: 'blocked',
+          reason: 'Admin login blocked: IP address not allowed'
+        }).catch(() => {});
+
+        return res.status(403).json({
+          success: false,
+          error: 'Access to the dashboard is not allowed from this network.',
+          code: 'IP_NOT_ALLOWED',
+          clientIp
+        });
+      }
+
       const { challengeToken, code } = createAdminOtpChallenge({
         id: dbUser.id,
         username: dbUser.username,
@@ -302,7 +348,27 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
       return res.status(200).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً' });
     }
 
-    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+    const clientIp = extractClientIp(req);
+    const accessResult = await checkIpAccess(clientIp);
+
+    if (!accessResult.allowed) {
+      logDashboardAccess({
+        userId: dbUser.id,
+        username: dbUser.username,
+        ipAddress: clientIp,
+        userAgent: req.headers['user-agent'] as string,
+        status: 'blocked',
+        reason: 'Admin OTP verification blocked: IP address not allowed'
+      }).catch(() => {});
+
+      return res.status(403).json({
+        success: false,
+        error: 'Access to the dashboard is not allowed from this network.',
+        code: 'IP_NOT_ALLOWED',
+        clientIp
+      });
+    }
+
     sendTelegramAdminLoginSuccess({ username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch(() => {});
 
     const token = generateToken({ id: dbUser.id, email: dbUser.email, role: dbUser.role });
@@ -432,7 +498,7 @@ router.post('/google', async (req, res) => {
     }
 
     if (user.status === 'suspended') {
-      return res.status(403).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة 🔴' });
+      return res.status(403).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة' });
     }
 
     const token = generateToken({ id: user.id, email: user.email, role: user.role });

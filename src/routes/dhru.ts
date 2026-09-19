@@ -369,8 +369,12 @@ router.post('/services/notify', isAdmin, async (req, res) => {
 });
 
 // POST /api/dhru/services/delete-all - Delete all services & categories
-router.post('/services/delete-all', isAdmin, async (req, res) => {
+router.post('/services/delete-all', isAdmin, async (req: any, res) => {
   try {
+    if (req.user?.role !== 'super_admin') {
+      return res.status(403).json({ error: 'حذف جميع الخدمات والأقسام مقتصر على المدير العام فقط' });
+    }
+
     const deletedServices = await prisma.dhruService.deleteMany({});
     const deletedCategories = await prisma.dhruCategory.deleteMany({});
 

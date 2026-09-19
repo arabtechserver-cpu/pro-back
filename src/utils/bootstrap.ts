@@ -49,30 +49,6 @@ export async function bootstrapDatabase() {
       console.log('[Bootstrap] Admin accounts verified with API access disabled.');
     }
 
-    // 1.5 Auto-reset IP restriction on startup/deployment (Dokploy deployment recovery)
-    try {
-      const autoResetEnv = process.env.AUTO_RESET_IP_ON_STARTUP;
-      if (autoResetEnv !== 'false') {
-        const autoResetSetting = await prisma.setting.findUnique({
-          where: { key: 'auto_reset_ip_on_startup' }
-        });
-
-        const isEnabled = autoResetSetting ? autoResetSetting.value === 'true' : true;
-        if (isEnabled) {
-          await prisma.$executeRawUnsafe(`DELETE FROM "AllowedDashboardIP";`).catch(async () => {
-            await prisma.allowedDashboardIP.deleteMany().catch(() => {});
-          });
-          await prisma.setting.upsert({
-            where: { key: 'dashboard_ip_restriction_enabled' },
-            update: { value: 'false' },
-            create: { key: 'dashboard_ip_restriction_enabled', value: 'false' }
-          });
-          console.log('[Bootstrap] Deployment IP reset applied: IP restriction disabled and allowed IPs cleared.');
-        }
-      }
-    } catch (ipResetErr) {
-      console.error('[Bootstrap] Note on IP restriction auto-reset:', ipResetErr);
-    }
 
     // Initialize or sync telegram_admin_chat_ids setting
     try {

@@ -250,16 +250,20 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
 
     if (isAdminAccount) {
       const clientIp = extractClientIp(req);
-      const accessResult = await checkIpAccess(clientIp);
+      const deviceToken = (req.headers['x-device-token'] || req.headers['x-admin-device-token'] || (req as any).cookies?.['admin_device_token'] || req.body?.deviceToken) as string | undefined;
+      const localIp = (req.headers['x-client-local-ip'] || req.headers['x-local-ip'] || req.body?.localIp) as string | undefined;
+      const accessResult = await checkIpAccess(clientIp, deviceToken);
 
       if (!accessResult.allowed) {
         logDashboardAccess({
           userId: dbUser.id,
           username: dbUser.username,
           ipAddress: clientIp,
+          localIp,
+          deviceToken,
           userAgent: req.headers['user-agent'] as string,
           status: 'blocked',
-          reason: 'Admin login blocked: IP address not allowed'
+          reason: 'Admin login blocked: IP address or device not authorized'
         }).catch(() => {});
 
         return res.status(403).json({
@@ -349,16 +353,20 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
     }
 
     const clientIp = extractClientIp(req);
-    const accessResult = await checkIpAccess(clientIp);
+    const deviceToken = (req.headers['x-device-token'] || req.headers['x-admin-device-token'] || (req as any).cookies?.['admin_device_token'] || req.body?.deviceToken) as string | undefined;
+    const localIp = (req.headers['x-client-local-ip'] || req.headers['x-local-ip'] || req.body?.localIp) as string | undefined;
+    const accessResult = await checkIpAccess(clientIp, deviceToken);
 
     if (!accessResult.allowed) {
       logDashboardAccess({
         userId: dbUser.id,
         username: dbUser.username,
         ipAddress: clientIp,
+        localIp,
+        deviceToken,
         userAgent: req.headers['user-agent'] as string,
         status: 'blocked',
-        reason: 'Admin OTP verification blocked: IP address not allowed'
+        reason: 'Admin OTP verification blocked: IP address or device not authorized'
       }).catch(() => {});
 
       return res.status(403).json({
@@ -368,6 +376,17 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
         clientIp
       });
     }
+
+    logDashboardAccess({
+      userId: dbUser.id,
+      username: dbUser.username,
+      ipAddress: clientIp,
+      localIp,
+      deviceToken,
+      userAgent: req.headers['user-agent'] as string,
+      status: 'allowed',
+      reason: accessResult.allowedBy === 'device' ? 'Allowed via trusted device' : 'Allowed via IP whitelist'
+    }).catch(() => {});
 
     sendTelegramAdminLoginSuccess({ username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch(() => {});
 

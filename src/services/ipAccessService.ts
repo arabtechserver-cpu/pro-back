@@ -1,5 +1,5 @@
 import { prisma } from '../utils/prisma';
-import { normalizeIp, isValidIp, areIpsEqual } from '../utils/ipUtils';
+import { normalizeIp, isValidIp, areIpsEqual, isPrivateOrLocalIp } from '../utils/ipUtils';
 
 export const MAX_ALLOWED_IPS = 2;
 export const IP_RESTRICTION_SETTING_KEY = 'dashboard_ip_restriction_enabled';
@@ -51,16 +51,62 @@ export async function getAllowedIps() {
   });
 }
 
-export async function checkIpAccess(clientIp: string): Promise<{
+export const MAX_ALLOWED_DEVICES = 5;
+
+export async function getAllowedDevices() {
+  try {
+    return await prisma.allowedDashboardDevice.findMany({
+      orderBy: { createdAt: 'desc' }
+    });
+  } catch {
+    return [];
+  }
+}
+
+export async function checkIpAccess(
+  clientIp: string,
+  deviceToken?: string
+): Promise<{
   allowed: boolean;
   matchedRecord?: any;
+  matchedDevice?: any;
+  allowedBy: 'none' | 'device' | 'ip';
   restrictionEnabled: boolean;
 }> {
   const restrictionEnabled = await isIpRestrictionEnabled();
   if (!restrictionEnabled) {
-    return { allowed: true, restrictionEnabled: false };
+    return { allowed: true, restrictionEnabled: false, allowedBy: 'none' };
   }
 
+  // 1. Check if Device Token is authorized
+  if (deviceToken && typeof deviceToken === 'string' && deviceToken.trim()) {
+    try {
+      const activeDevice = await prisma.allowedDashboardDevice.findFirst({
+        where: { deviceToken: deviceToken.trim(), isActive: true }
+      });
+
+      if (activeDevice) {
+        const lastUpdate = lastAccessUpdateMap.get(`dev_${activeDevice.id}`) || 0;
+        const now = Date.now();
+        if (now - lastUpdate > 60000) {
+          lastAccessUpdateMap.set(`dev_${activeDevice.id}`, now);
+          prisma.allowedDashboardDevice.update({
+            where: { id: activeDevice.id },
+            data: { lastAccessAt: new Date(), lastIp: normalizeIp(clientIp) }
+          }).catch(() => {});
+        }
+
+        return {
+          allowed: true,
+          matchedDevice: activeDevice,
+          allowedBy: 'device',
+          restrictionEnabled: true
+        };
+      }
+    } catch (_) {}
+  }
+
+  // 2. Check if Client IP is whitelisted
   const normalizedClient = normalizeIp(clientIp);
   const activeIps = await prisma.allowedDashboardIP.findMany({
     where: { isActive: true }
@@ -82,10 +128,10 @@ export async function checkIpAccess(clientIp: string): Promise<{
       }).catch(() => {});
     }
 
-    return { allowed: true, matchedRecord: matched, restrictionEnabled: true };
+    return { allowed: true, matchedRecord: matched, allowedBy: 'ip', restrictionEnabled: true };
   }
 
-  return { allowed: false, restrictionEnabled: true };
+  return { allowed: false, restrictionEnabled: true, allowedBy: 'none' };
 }
 
 export async function addAllowedIp(params: {
@@ -96,6 +142,10 @@ export async function addAllowedIp(params: {
   const normalized = normalizeIp(params.ipAddress);
   if (!isValidIp(normalized)) {
     throw new Error('عنوان الـ IP غير صالح');
+  }
+
+  if (isPrivateOrLocalIp(normalized)) {
+    throw new Error('عنوان الـ IP المدخل هو عنوان محلي داخلي للجهاز (مثل 192.168 أو 10.x). لا يمكن استخدامه لأن السيرفر لا يرى إلا عنوان الـ IP العام لشبكة الاتصال (Public IP).');
   }
 
   const currentCount = await prisma.allowedDashboardIP.count();
@@ -162,10 +212,81 @@ export async function deleteAllowedIp(id: string, currentAdminIp?: string) {
   return prisma.allowedDashboardIP.delete({ where: { id } });
 }
 
+export async function addAllowedDevice(params: {
+  deviceToken: string;
+  fingerprint?: string;
+  label?: string;
+  localIp?: string;
+  lastIp?: string;
+  createdBy?: string;
+}) {
+  if (!params.deviceToken || typeof params.deviceToken !== 'string') {
+    throw new Error('رمز الجهاز (Device Token) مطلوب');
+  }
+
+  const existing = await prisma.allowedDashboardDevice.findUnique({
+    where: { deviceToken: params.deviceToken.trim() }
+  });
+
+  if (existing) {
+    return prisma.allowedDashboardDevice.update({
+      where: { id: existing.id },
+      data: {
+        isActive: true,
+        label: params.label?.trim() || existing.label,
+        localIp: params.localIp?.trim() || existing.localIp,
+        lastIp: params.lastIp ? normalizeIp(params.lastIp) : existing.lastIp,
+        fingerprint: params.fingerprint || existing.fingerprint,
+        lastAccessAt: new Date()
+      }
+    });
+  }
+
+  const currentCount = await prisma.allowedDashboardDevice.count();
+  if (currentCount >= MAX_ALLOWED_DEVICES) {
+    throw new Error(`تم الوصول للحد الأقصى للأجهزة المعتمدة (${MAX_ALLOWED_DEVICES} أجهزة كحد أقصى)`);
+  }
+
+  return prisma.allowedDashboardDevice.create({
+    data: {
+      deviceToken: params.deviceToken.trim(),
+      label: params.label?.trim() || 'هاتف المشرف المعتمد',
+      localIp: params.localIp?.trim() || null,
+      lastIp: params.lastIp ? normalizeIp(params.lastIp) : null,
+      fingerprint: params.fingerprint || null,
+      createdBy: params.createdBy || 'Admin',
+      isActive: true,
+      lastAccessAt: new Date()
+    }
+  });
+}
+
+export async function updateAllowedDevice(id: string, data: { label?: string; isActive?: boolean }) {
+  const device = await prisma.allowedDashboardDevice.findUnique({ where: { id } });
+  if (!device) throw new Error('الجهاز غير موجود');
+
+  return prisma.allowedDashboardDevice.update({
+    where: { id },
+    data: {
+      ...(typeof data.label === 'string' ? { label: data.label.trim() } : {}),
+      ...(typeof data.isActive === 'boolean' ? { isActive: data.isActive } : {})
+    }
+  });
+}
+
+export async function deleteAllowedDevice(id: string) {
+  const device = await prisma.allowedDashboardDevice.findUnique({ where: { id } });
+  if (!device) throw new Error('الجهاز غير موجود');
+
+  return prisma.allowedDashboardDevice.delete({ where: { id } });
+}
+
 export async function logDashboardAccess(params: {
   userId?: string;
   username?: string;
   ipAddress: string;
+  localIp?: string;
+  deviceToken?: string;
   userAgent?: string;
   status: 'allowed' | 'blocked';
   reason?: string;
@@ -176,6 +297,8 @@ export async function logDashboardAccess(params: {
         userId: params.userId || null,
         username: params.username || null,
         ipAddress: normalizeIp(params.ipAddress),
+        localIp: params.localIp ? normalizeIp(params.localIp) : null,
+        deviceToken: params.deviceToken ? params.deviceToken.slice(0, 50) : null,
         userAgent: params.userAgent || null,
         status: params.status,
         reason: params.reason || null
@@ -190,12 +313,14 @@ export async function logDashboardAccess(params: {
 export async function getDashboardIpStats() {
   const [
     allowedCount,
+    devicesCount,
     successfulAccess,
     blockedAttempts,
     activeAdmins,
     isRestrictionEnabledState
   ] = await Promise.all([
     prisma.allowedDashboardIP.count(),
+    prisma.allowedDashboardDevice.count().catch(() => 0),
     prisma.dashboardAccessLog.count({ where: { status: 'allowed' } }),
     prisma.dashboardAccessLog.count({ where: { status: 'blocked' } }),
     prisma.user.count({
@@ -210,6 +335,8 @@ export async function getDashboardIpStats() {
   return {
     allowedCount,
     maxLimit: MAX_ALLOWED_IPS,
+    devicesCount,
+    maxDevices: MAX_ALLOWED_DEVICES,
     successfulAccess,
     blockedAttempts,
     activeAdmins,
@@ -236,7 +363,8 @@ export async function getAccessLogs(params: {
     const searchStr = params.search.trim();
     where.OR = [
       { ipAddress: { contains: searchStr, mode: 'insensitive' } },
-      { username: { contains: searchStr, mode: 'insensitive' } }
+      { username: { contains: searchStr, mode: 'insensitive' } },
+      { localIp: { contains: searchStr, mode: 'insensitive' } }
     ];
   }
 
@@ -261,20 +389,31 @@ export async function getAccessLogs(params: {
 
 export async function verifyAdminCanToggleProtection(
   currentAdminIp: string,
-  enable: boolean
+  enable: boolean,
+  currentDeviceToken?: string
 ): Promise<{ ok: boolean; reason?: string }> {
   if (!enable) {
     return { ok: true };
   }
 
-  const activeIps = await prisma.allowedDashboardIP.findMany({
-    where: { isActive: true }
-  });
+  if (currentDeviceToken) {
+    const activeDevice = await prisma.allowedDashboardDevice.findFirst({
+      where: { deviceToken: currentDeviceToken, isActive: true }
+    }).catch(() => null);
+    if (activeDevice) {
+      return { ok: true };
+    }
+  }
 
-  if (activeIps.length === 0) {
+  const [activeIps, activeDevices] = await Promise.all([
+    prisma.allowedDashboardIP.findMany({ where: { isActive: true } }),
+    prisma.allowedDashboardDevice.findMany({ where: { isActive: true } }).catch(() => [])
+  ]);
+
+  if (activeIps.length === 0 && activeDevices.length === 0) {
     return {
       ok: false,
-      reason: 'لا يمكن تفعيل الحماية بدون وجود عنوان IP مسموح ونشط واحد على الأقل.'
+      reason: 'لا يمكن تفعيل الحماية بدون وجود عنوان IP مسموح أو جهاز معتمد ونشط واحد على الأقل.'
     };
   }
 
@@ -283,10 +422,10 @@ export async function verifyAdminCanToggleProtection(
     areIpsEqual(record.ipAddress, normalizedAdmin)
   );
 
-  if (!isCurrentIpPresent) {
+  if (!isCurrentIpPresent && activeDevices.length === 0) {
     return {
       ok: false,
-      reason: 'يجب إضافة وتفعيل عنوان الـ IP الحالي الخاص بك قبل تفعيل حماية الـ IP لتجنب قفل لوحة التحكم على نفسك.'
+      reason: 'يجب إضافة وتفعيل عنوان الـ IP الحالي أو اعتماد هذا الجهاز أولاً قبل تفعيل حماية لوحة التحكم لتجنب قفل الحساب على نفسك.'
     };
   }
 

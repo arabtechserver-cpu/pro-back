@@ -1,14 +1,20 @@
 import { Router } from 'express';
+import { prisma } from '../utils/prisma';
 import { isAdmin, AuthRequest } from '../middleware/auth';
-import { extractClientIp, normalizeIp, isValidIp, areIpsEqual } from '../utils/ipUtils';
+import { extractClientIp, normalizeIp, isValidIp, areIpsEqual, isPrivateOrLocalIp } from '../utils/ipUtils';
 import {
   MAX_ALLOWED_IPS,
+  MAX_ALLOWED_DEVICES,
   isIpRestrictionEnabled,
   setIpRestrictionEnabled,
   getAllowedIps,
   addAllowedIp,
   updateAllowedIp,
   deleteAllowedIp,
+  getAllowedDevices,
+  addAllowedDevice,
+  updateAllowedDevice,
+  deleteAllowedDevice,
   getDashboardIpStats,
   getAccessLogs,
   verifyAdminCanToggleProtection
@@ -54,16 +60,25 @@ router.get('/status', async (req: AuthRequest, res) => {
 const getMyIpHandler = async (req: AuthRequest, res: any) => {
   try {
     const clientIp = extractClientIp(req);
-    const allowedIps = await getAllowedIps();
-    const matched = allowedIps.find((item) => areIpsEqual(item.ipAddress, clientIp));
+    const deviceToken = (req.headers['x-device-token'] as string) || (req.query.deviceToken as string);
+    const [allowedIps, allowedDevices] = await Promise.all([
+      getAllowedIps(),
+      getAllowedDevices()
+    ]);
+
+    const matchedIp = allowedIps.find((item) => areIpsEqual(item.ipAddress, clientIp));
+    const matchedDevice = deviceToken ? allowedDevices.find((d) => d.deviceToken === deviceToken && d.isActive) : null;
 
     return res.json({
       success: true,
       ip: clientIp,
       currentIp: clientIp,
-      isAllowed: Boolean(matched && matched.isActive),
-      label: matched?.label || null,
-      isActive: matched?.isActive ?? null
+      isAllowed: Boolean((matchedIp && matchedIp.isActive) || matchedDevice),
+      allowedBy: matchedDevice ? 'device' : (matchedIp ? 'ip' : 'none'),
+      isDeviceAllowed: Boolean(matchedDevice),
+      matchedDeviceName: matchedDevice?.label || null,
+      label: matchedIp?.label || null,
+      isActive: matchedIp?.isActive ?? null
     });
   } catch (error: any) {
     return res.status(500).json({ success: false, error: error.message || 'خطأ في استخراج عنوان الـ IP الحالي' });
@@ -108,6 +123,13 @@ const addAllowedHandler = async (req: AuthRequest, res: any) => {
     const normalized = normalizeIp(targetIp);
     if (!isValidIp(normalized)) {
       return res.status(400).json({ success: false, error: 'صيغة عنوان الـ IP غير صالحة' });
+    }
+
+    if (isPrivateOrLocalIp(normalized)) {
+      return res.status(400).json({
+        success: false,
+        error: 'عنوان الـ IP المدخل هو عنوان محلي خاص بالجهاز (Local IP). يرجى إدخال عنوان الـ IP العام للشبكة (Public IP) الذي يظهر في أعلى الصفحة.'
+      });
     }
 
     const createdBy = req.user?.username || req.user?.email || 'Super Admin';
@@ -182,7 +204,8 @@ const toggleHandler = async (req: AuthRequest, res: any) => {
     }
 
     const currentAdminIp = extractClientIp(req);
-    const verification = await verifyAdminCanToggleProtection(currentAdminIp, enabled);
+    const currentDeviceToken = (req.headers['x-device-token'] as string) || req.body?.deviceToken;
+    const verification = await verifyAdminCanToggleProtection(currentAdminIp, enabled, currentDeviceToken);
 
     if (!verification.ok) {
       return res.status(400).json({
@@ -206,6 +229,124 @@ const toggleHandler = async (req: AuthRequest, res: any) => {
 };
 router.post('/toggle-restriction', toggleHandler);
 router.post('/toggle', toggleHandler);
+
+// GET /auto-reset - Get auto-reset setting status
+router.get('/auto-reset', async (_req: AuthRequest, res) => {
+  try {
+    const setting = await prisma.setting.findUnique({
+      where: { key: 'auto_reset_ip_on_startup' }
+    });
+    const enabled = setting ? setting.value === 'true' : (process.env.AUTO_RESET_IP_ON_STARTUP !== 'false');
+    return res.json({ success: true, enabled });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /toggle-auto-reset - Toggle auto-reset setting
+router.post('/toggle-auto-reset', async (req: AuthRequest, res) => {
+  try {
+    const { enabled } = req.body;
+    if (typeof enabled !== 'boolean') {
+      return res.status(400).json({ success: false, error: 'حالة المسح التلقائي مطلوبة' });
+    }
+
+    await prisma.setting.upsert({
+      where: { key: 'auto_reset_ip_on_startup' },
+      update: { value: enabled ? 'true' : 'false' },
+      create: { key: 'auto_reset_ip_on_startup', value: enabled ? 'true' : 'false' }
+    });
+
+    return res.json({
+      success: true,
+      enabled,
+      message: enabled
+        ? 'تم تفعيل مسح الـ IP تلقائياً عند الرفع أو إعادة التشغيل'
+        : 'تم إيقاف مسح الـ IP التلقائي بنجاح'
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// GET /devices - List all authorized devices
+router.get('/devices', async (_req: AuthRequest, res) => {
+  try {
+    const devices = await getAllowedDevices();
+    return res.json({
+      success: true,
+      devices,
+      count: devices.length,
+      maxLimit: MAX_ALLOWED_DEVICES
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+// POST /devices - Authorize a new device
+router.post('/devices', async (req: AuthRequest, res) => {
+  try {
+    const { deviceToken, fingerprint, label, localIp } = req.body;
+    const clientIp = extractClientIp(req);
+    const createdBy = req.user?.username || req.user?.email || 'Super Admin';
+
+    if (!deviceToken) {
+      return res.status(400).json({ success: false, error: 'رمز بصمة الجهاز مطلوب' });
+    }
+
+    const record = await addAllowedDevice({
+      deviceToken,
+      fingerprint,
+      label: label || 'هاتف المشرف المعتمد',
+      localIp,
+      lastIp: clientIp,
+      createdBy
+    });
+
+    return res.status(201).json({
+      success: true,
+      message: 'تم اعتماد الجهاز بنجاح. يمكنك الآن الدخول من هذا الجهاز من أي شبكة.',
+      device: record
+    });
+  } catch (error: any) {
+    return res.status(400).json({ success: false, error: error.message || 'فشل في اعتماد الجهاز' });
+  }
+});
+
+// PATCH /devices/:id - Update device label or active status
+router.patch('/devices/:id', async (req: AuthRequest, res) => {
+  try {
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
+    const { label, isActive } = req.body;
+
+    const updated = await updateAllowedDevice(id, { label, isActive });
+    return res.json({
+      success: true,
+      message: 'تم تحديث بيانات الجهاز بنجاح',
+      device: updated
+    });
+  } catch (error: any) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+});
+
+// DELETE /devices/:id - Revoke and remove authorized device
+router.delete('/devices/:id', async (req: AuthRequest, res) => {
+  try {
+    const rawId = req.params.id;
+    const id = Array.isArray(rawId) ? rawId[0] : rawId;
+
+    await deleteAllowedDevice(id);
+    return res.json({
+      success: true,
+      message: 'تم إلغاء اعتماد الجهاز وحذفه بنجاح'
+    });
+  } catch (error: any) {
+    return res.status(400).json({ success: false, error: error.message });
+  }
+});
 
 // GET /stats - Aggregate stats for cards
 router.get('/stats', async (_req: AuthRequest, res) => {

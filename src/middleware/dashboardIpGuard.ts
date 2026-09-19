@@ -10,7 +10,9 @@ export async function dashboardIpGuard(
 ): Promise<void> {
   try {
     const clientIp = extractClientIp(req);
-    const accessResult = await checkIpAccess(clientIp);
+    const deviceToken = (req.headers['x-device-token'] || req.headers['x-admin-device-token'] || (req as any).cookies?.['admin_device_token']) as string | undefined;
+    const localIp = (req.headers['x-client-local-ip'] || req.headers['x-local-ip']) as string | undefined;
+    const accessResult = await checkIpAccess(clientIp, deviceToken);
 
     if (accessResult.allowed) {
       return next();
@@ -21,9 +23,11 @@ export async function dashboardIpGuard(
       userId: req.user?.id,
       username: req.user?.username,
       ipAddress: clientIp,
+      localIp,
+      deviceToken,
       userAgent,
       status: 'blocked',
-      reason: 'Unauthorized dashboard IP',
+      reason: 'Unauthorized dashboard IP or device',
     });
 
     res.status(403).json({

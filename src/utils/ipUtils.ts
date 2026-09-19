@@ -49,26 +49,117 @@ export function normalizeIp(rawIp: string | null | undefined): string {
 }
 
 /**
- * Checks whether an IP address is syntactically valid (IPv4 or IPv6).
+ * Checks whether an IP address is a syntactically valid single IPv4 or IPv6.
  */
-export function isValidIp(ip: string): boolean {
+export function isValidSingleIp(ip: string): boolean {
   if (!ip) return false;
   const normalized = normalizeIp(ip);
   return net.isIP(normalized) !== 0;
 }
 
 /**
- * Compares two IP addresses for semantic equality after normalization.
+ * Checks whether an IP address is syntactically valid (IPv4, IPv6, wildcard, or CIDR).
  */
-export function areIpsEqual(ip1: string, ip2: string): boolean {
-  if (!ip1 || !ip2) return false;
-  const n1 = normalizeIp(ip1);
-  const n2 = normalizeIp(ip2);
+export function isValidIp(ip: string): boolean {
+  if (!ip || typeof ip !== 'string') return false;
+  const normalized = normalizeIp(ip);
+
+  // Check standard single IP
+  if (net.isIP(normalized) !== 0) return true;
+
+  // Wildcard IPv4 pattern (e.g., 197.252.98.* or 197.252.*.*)
+  if (normalized.includes('*')) {
+    const parts = normalized.split('.');
+    if (parts.length !== 4) return false;
+    let seenStar = false;
+    for (const part of parts) {
+      if (part === '*') {
+        seenStar = true;
+      } else {
+        if (seenStar) return false;
+        if (!/^\d+$/.test(part)) return false;
+        const num = Number(part);
+        if (num < 0 || num > 255) return false;
+      }
+    }
+    return true;
+  }
+
+  // CIDR notation (e.g., 197.252.98.0/24)
+  if (normalized.includes('/')) {
+    const [ipPart, maskPart] = normalized.split('/');
+    if (!ipPart || !maskPart || !/^\d+$/.test(maskPart)) return false;
+    const mask = Number(maskPart);
+    if (net.isIP(ipPart) === 4 && mask >= 8 && mask <= 32) return true;
+    if (net.isIP(ipPart) === 6 && mask >= 16 && mask <= 128) return true;
+  }
+
+  return false;
+}
+
+/**
+ * Checks whether an IP belongs to private/internal ranges (RFC 1918 / Loopback)
+ */
+export function isPrivateOrLocalIp(ip: string): boolean {
+  if (!ip) return false;
+  const normalized = normalizeIp(ip);
+  if (!normalized) return false;
+
+  const localhostIps = ['127.0.0.1', '::1', 'localhost'];
+  if (localhostIps.includes(normalized)) return true;
+
+  if (net.isIP(normalized) === 4) {
+    const parts = normalized.split('.').map(Number);
+    if (parts[0] === 10) return true;
+    if (parts[0] === 172 && parts[1] >= 16 && parts[1] <= 31) return true;
+    if (parts[0] === 192 && parts[1] === 168) return true;
+    if (parts[0] === 169 && parts[1] === 254) return true;
+    if (parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127) return true;
+  }
+
+  return false;
+}
+
+function ipv4ToInt(ip: string): number {
+  return ip.split('.').reduce((acc, octet) => ((acc << 8) + Number(octet)) >>> 0, 0);
+}
+
+/**
+ * Compares two IP addresses for semantic equality after normalization,
+ * supporting exact matches, wildcards (e.g. 197.252.98.*), and CIDR ranges.
+ */
+export function areIpsEqual(configuredIp: string, clientIp: string): boolean {
+  if (!configuredIp || !clientIp) return false;
+  const n1 = normalizeIp(configuredIp);
+  const n2 = normalizeIp(clientIp);
   if (n1 === n2) return true;
 
   const localhostIps = ['127.0.0.1', '::1', 'localhost'];
   if (localhostIps.includes(n1) && localhostIps.includes(n2)) {
     return true;
+  }
+
+  // Wildcard pattern e.g. 197.252.98.*
+  if (n1.includes('*') && net.isIP(n2) === 4) {
+    const patternParts = n1.split('.');
+    const clientParts = n2.split('.');
+    if (patternParts.length === 4 && clientParts.length === 4) {
+      return patternParts.every((part, i) => part === '*' || part === clientParts[i]);
+    }
+  }
+
+  // CIDR notation e.g. 197.252.98.0/24
+  if (n1.includes('/') && net.isIP(n2) === 4) {
+    const [baseIp, maskStr] = n1.split('/');
+    if (net.isIP(baseIp) === 4) {
+      const maskBits = Number(maskStr);
+      if (maskBits >= 0 && maskBits <= 32) {
+        const mask = maskBits === 0 ? 0 : (~0 << (32 - maskBits)) >>> 0;
+        const baseInt = (ipv4ToInt(baseIp) & mask) >>> 0;
+        const clientInt = (ipv4ToInt(n2) & mask) >>> 0;
+        return baseInt === clientInt;
+      }
+    }
   }
 
   return false;
@@ -86,34 +177,34 @@ export function extractClientIp(req: Request): string {
   const cfConnectingIp = req.headers['cf-connecting-ip'];
   if (typeof cfConnectingIp === 'string' && cfConnectingIp.trim()) {
     const candidate = normalizeIp(cfConnectingIp.split(',')[0]);
-    if (isValidIp(candidate)) return candidate;
+    if (isValidSingleIp(candidate)) return candidate;
   }
 
   // 2. X-Real-IP header (direct upstream proxy set)
   const realIp = req.headers['x-real-ip'];
   if (typeof realIp === 'string' && realIp.trim()) {
     const candidate = normalizeIp(realIp.split(',')[0]);
-    if (isValidIp(candidate)) return candidate;
+    if (isValidSingleIp(candidate)) return candidate;
   }
 
   // 3. Standard X-Forwarded-For header (first hop is client)
   const forwardedFor = req.headers['x-forwarded-for'];
   if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
     const candidate = normalizeIp(forwardedFor.split(',')[0]);
-    if (isValidIp(candidate)) return candidate;
+    if (isValidSingleIp(candidate)) return candidate;
   }
 
   // 4. Express req.ip
   if (req.ip) {
     const candidate = normalizeIp(req.ip);
-    if (isValidIp(candidate)) return candidate;
+    if (isValidSingleIp(candidate)) return candidate;
   }
 
   // 5. Socket remote address
   const socketAddress = req.socket?.remoteAddress;
   if (socketAddress) {
     const candidate = normalizeIp(socketAddress);
-    if (isValidIp(candidate)) return candidate;
+    if (isValidSingleIp(candidate)) return candidate;
   }
 
   return '127.0.0.1';

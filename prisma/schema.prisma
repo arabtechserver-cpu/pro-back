@@ -277,17 +277,37 @@ model AllowedDashboardIP {
   @@index([isActive])
 }
 
+model AllowedDashboardDevice {
+  id           String    @id @default(uuid())
+  deviceToken  String    @unique
+  fingerprint  String?
+  label        String?
+  localIp      String?
+  lastIp       String?
+  isActive     Boolean   @default(true)
+  createdBy    String?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @default(now()) @updatedAt
+  lastAccessAt DateTime?
+
+  @@index([deviceToken])
+  @@index([isActive])
+}
+
 model DashboardAccessLog {
-  id        String   @id @default(uuid())
-  userId    String?
-  username  String?
-  ipAddress String
-  userAgent String?  @db.Text
-  status    String
-  reason    String?
-  createdAt DateTime @default(now())
+  id          String   @id @default(uuid())
+  userId      String?
+  username    String?
+  ipAddress   String
+  localIp     String?
+  deviceToken String?
+  userAgent   String?  @db.Text
+  status      String
+  reason      String?
+  createdAt   DateTime @default(now())
 
   @@index([createdAt])
   @@index([status, createdAt])
   @@index([ipAddress])
+  @@index([deviceToken])
 }

@@ -49,6 +49,31 @@ export async function bootstrapDatabase() {
       console.log('[Bootstrap] Admin accounts verified with API access disabled.');
     }
 
+    // 1.5 Auto-reset IP restriction on startup/deployment (Dokploy deployment recovery)
+    try {
+      const autoResetEnv = process.env.AUTO_RESET_IP_ON_STARTUP;
+      if (autoResetEnv !== 'false') {
+        const autoResetSetting = await prisma.setting.findUnique({
+          where: { key: 'auto_reset_ip_on_startup' }
+        });
+
+        const isEnabled = autoResetSetting ? autoResetSetting.value === 'true' : true;
+        if (isEnabled) {
+          await prisma.$executeRawUnsafe(`DELETE FROM "AllowedDashboardIP";`).catch(async () => {
+            await prisma.allowedDashboardIP.deleteMany().catch(() => {});
+          });
+          await prisma.setting.upsert({
+            where: { key: 'dashboard_ip_restriction_enabled' },
+            update: { value: 'false' },
+            create: { key: 'dashboard_ip_restriction_enabled', value: 'false' }
+          });
+          console.log('[Bootstrap] Deployment IP reset applied: IP restriction disabled and allowed IPs cleared.');
+        }
+      }
+    } catch (ipResetErr) {
+      console.error('[Bootstrap] Note on IP restriction auto-reset:', ipResetErr);
+    }
+
     // Initialize or sync telegram_admin_chat_ids setting
     try {
       const defaultId = (process.env.TELEGRAM_ADMIN_CHAT_ID || '').trim();
@@ -71,6 +96,29 @@ export async function bootstrapDatabase() {
     } catch (colErr) {
       // Ignore if column exists or unsupported syntax
     }
+
+    // Auto-create AllowedDashboardDevice table and missing columns
+    try {
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "AllowedDashboardDevice" (
+          "id" TEXT PRIMARY KEY,
+          "deviceToken" TEXT UNIQUE NOT NULL,
+          "fingerprint" TEXT,
+          "label" TEXT,
+          "localIp" TEXT,
+          "lastIp" TEXT,
+          "isActive" BOOLEAN NOT NULL DEFAULT true,
+          "createdBy" TEXT,
+          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          "lastAccessAt" TIMESTAMP(3)
+        );
+      `);
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AllowedDashboardDevice_deviceToken_idx" ON "AllowedDashboardDevice"("deviceToken");`);
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AllowedDashboardDevice_isActive_idx" ON "AllowedDashboardDevice"("isActive");`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DashboardAccessLog" ADD COLUMN IF NOT EXISTS "localIp" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DashboardAccessLog" ADD COLUMN IF NOT EXISTS "deviceToken" TEXT;`);
+    } catch (_) {}
 
     // 2. Ensure columns exist via auto-migration helpers
     // Newsletter tables (Subscriber, NewsletterBroadcast) are managed by prisma db push.

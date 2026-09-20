@@ -9,6 +9,61 @@ export async function bootstrapDatabase() {
   try {
     console.log('[Bootstrap] Checking database status...');
 
+    // 0. Auto-synchronize missing schema columns and tables before querying Prisma models
+    try {
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "googleSub" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "tokenVersion" INTEGER NOT NULL DEFAULT 1;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "deletedAt" TIMESTAMP(3);`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "refundedAt" TIMESTAMP(3);`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "refundRefNo" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "source" TEXT DEFAULT 'web';`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "apiClientOrderId" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Transaction" ADD COLUMN IF NOT EXISTS "adminActorId" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "Transaction" ADD COLUMN IF NOT EXISTS "notes" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DashboardAccessLog" ADD COLUMN IF NOT EXISTS "localIp" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "DashboardAccessLog" ADD COLUMN IF NOT EXISTS "deviceToken" TEXT;`);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "PaymentIntent" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "userId" TEXT NOT NULL,
+            "provider" TEXT NOT NULL DEFAULT 'paypal',
+            "orderId" TEXT NOT NULL,
+            "captureId" TEXT,
+            "amount" DOUBLE PRECISION NOT NULL,
+            "currency" TEXT NOT NULL DEFAULT 'USD',
+            "status" TEXT NOT NULL DEFAULT 'created',
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PaymentIntent_userId_idx" ON "PaymentIntent"("userId");`);
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "PaymentIntent_status_idx" ON "PaymentIntent"("status");`);
+      await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "PaymentIntent_provider_orderId_key" ON "PaymentIntent"("provider", "orderId");`);
+      await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "PaymentIntent_provider_captureId_key" ON "PaymentIntent"("provider", "captureId");`);
+
+      await prisma.$executeRawUnsafe(`
+        CREATE TABLE IF NOT EXISTS "AllowedDashboardDevice" (
+            "id" TEXT NOT NULL PRIMARY KEY,
+            "deviceToken" TEXT NOT NULL,
+            "fingerprint" TEXT,
+            "label" TEXT,
+            "localIp" TEXT,
+            "lastIp" TEXT,
+            "isActive" BOOLEAN NOT NULL DEFAULT true,
+            "createdBy" TEXT,
+            "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            "lastAccessAt" TIMESTAMP(3)
+        );
+      `);
+      await prisma.$executeRawUnsafe(`CREATE UNIQUE INDEX IF NOT EXISTS "AllowedDashboardDevice_deviceToken_key" ON "AllowedDashboardDevice"("deviceToken");`);
+      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AllowedDashboardDevice_deviceToken_idx" ON "AllowedDashboardDevice"("deviceToken");`);
+      console.log('[Bootstrap] Initial schema columns verified and synchronized.');
+    } catch (colErr) {
+      console.warn('[Bootstrap] Notice during initial column synchronization:', colErr);
+    }
+
     // 1. Check & Ensure Admin User exists
     const adminUser = await prisma.user.findFirst({
       where: {

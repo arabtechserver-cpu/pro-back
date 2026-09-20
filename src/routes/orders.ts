@@ -496,7 +496,7 @@ router.post('/', authenticateToken, async (req, res) => {
 
     return res.json({
       success: true,
-      message: `تم استلام وتأكيد طلبك بنجاح! رقم الطلب #${newOrder.id.slice(-6)} وهو الآن قيد المراجعة والتنفيذ.`,
+      message: `تم استلام وتأكيد طلبك بنجاح! رقم الطلب #${newOrder.id.slice(-6)} وهو الآن قيد الانتظار والمراجعة.`,
       order: {
         ...newOrder,
         provider: dhruService?.apiProvider ? { name: dhruService.apiProvider.name } : null

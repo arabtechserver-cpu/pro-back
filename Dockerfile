@@ -22,12 +22,10 @@ COPY prisma ./prisma/
 RUN npm ci --only=production
 RUN npx prisma generate
 
-COPY --from=builder --chown=node:node /app/dist ./dist
+COPY --from=builder /app/dist ./dist
 
-RUN mkdir -p /app/uploads /app/backups && chown -R node:node /app/uploads /app/backups
-
-USER node
+RUN mkdir -p /app/uploads /app/backups && chmod -R 777 /app/uploads /app/backups
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "npx prisma migrate resolve --applied 20260919000000_add_dashboard_ip_access_control 2>/dev/null || true; npx prisma migrate resolve --applied 20260920000000_security_and_hardening 2>/dev/null || true; npx prisma migrate deploy || true; node dist/server.js"]
+CMD ["sh", "-c", "mkdir -p /app/uploads /app/backups && chmod -R 777 /app/uploads /app/backups 2>/dev/null || true; npx prisma migrate resolve --applied 20260919000000_add_dashboard_ip_access_control 2>/dev/null || true; npx prisma migrate resolve --applied 20260920000000_security_and_hardening 2>/dev/null || true; npx prisma migrate deploy || true; node dist/server.js"]

@@ -139,6 +139,9 @@ export async function sendEmail({
           resolve(true);
         } else {
           console.warn(`[Resend Error ${res.statusCode}]:`, data);
+          if (data && data.includes("domain is not verified")) {
+            console.warn(`[Resend Action Required] The domain arabtechproserver.tech is unverified in Resend. Please verify DNS records at https://resend.com/domains.`);
+          }
           resolve(false);
         }
       });
@@ -216,6 +219,8 @@ export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<
   const title = `كود التحقق الخاص بك: ${payload.code}`;
   const message = `كود التحقق الخاص بك هو: <b>${payload.code}</b>.\nيرجى إدخاله في الموقع لتأكيد العملية.\nهذا الكود صالح لمدة 10 دقائق فقط للحفاظ على أمان حسابك.`;
 
+  console.log(`[OTP DISPATCH] Destination: ${cleanEmail} | OTP Code: [ ${payload.code} ] | Purpose: ${payload.actionLabel || 'Verification'}`);
+
   const html = generateLuxuryEmailHtml({
     title,
     username,
@@ -225,11 +230,17 @@ export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<
     actionUrl: "https://arabtechproserver.tech/login"
   });
 
-  return sendEmail({
+  const sent = await sendEmail({
     to: cleanEmail,
     subject: `عرب تك برو سيرفر | ${payload.actionLabel || 'كود التحقق'}: ${payload.code}`,
     html
   });
+
+  if (!sent) {
+    console.warn(`[OTP FALLBACK LOG] Email delivery failed for ${cleanEmail}. Valid OTP Code is: [ ${payload.code} ]`);
+  }
+
+  return sent;
 };
 
 export const sendOtpEmailViaLoops = sendOtpEmail;

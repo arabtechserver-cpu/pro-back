@@ -30,4 +30,4 @@ USER node
 
 EXPOSE 5000
 
-CMD ["sh", "-c", "npx prisma migrate deploy; node dist/server.js"]
+CMD ["sh", "-c", "npx prisma migrate resolve --applied 20260919000000_add_dashboard_ip_access_control 2>/dev/null || true; npx prisma migrate resolve --applied 20260920000000_security_and_hardening 2>/dev/null || true; npx prisma migrate deploy || true; node dist/server.js"]

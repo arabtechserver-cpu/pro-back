@@ -229,6 +229,169 @@ router.post('/services/update', isAdmin, async (req, res) => {
   }
 });
 
+// POST /api/dhru/services/bundle - Create a new bundle with services and custom fields
+router.post('/services/bundle', isAdmin, async (req, res) => {
+  try {
+    const { categoryId, categoryName, bundleName, services } = req.body;
+
+    if (!bundleName || typeof bundleName !== 'string' || !bundleName.trim()) {
+      return res.status(400).json({ error: 'اسم الباقة مطلوب' });
+    }
+
+    if (!Array.isArray(services) || services.length === 0) {
+      return res.status(400).json({ error: 'يجب إضافة خدمة واحدة على الأقل داخل الباقة' });
+    }
+
+    // Resolve or create category
+    let targetCategory: any = null;
+    if (categoryId && typeof categoryId === 'string' && categoryId.trim()) {
+      targetCategory = await prisma.dhruCategory.findUnique({ where: { id: categoryId.trim() } });
+    }
+
+    if (!targetCategory && categoryName && typeof categoryName === 'string' && categoryName.trim()) {
+      const cleanCatName = categoryName.trim();
+      targetCategory = await prisma.dhruCategory.findFirst({ where: { name: cleanCatName } });
+      if (!targetCategory) {
+        targetCategory = await prisma.dhruCategory.create({ data: { name: cleanCatName } });
+      }
+    }
+
+    if (!targetCategory) {
+      targetCategory = await prisma.dhruCategory.findFirst({ where: { name: 'باقات وخدمات مخصصة' } });
+      if (!targetCategory) {
+        targetCategory = await prisma.dhruCategory.create({ data: { name: 'باقات وخدمات مخصصة' } });
+      }
+    }
+
+    const createdServices: any[] = [];
+    const cleanBundleName = bundleName.trim();
+
+    for (let i = 0; i < services.length; i++) {
+      const s = services[i];
+      if (!s.name || typeof s.name !== 'string' || !s.name.trim()) {
+        continue;
+      }
+
+      const uniqueDhruId = `pkg_${Date.now()}_${Math.random().toString(36).substring(2, 7)}_${i}`;
+
+      let requiresCustom: string | null = null;
+      if (Array.isArray(s.fields) && s.fields.length > 0) {
+        const fieldsObj: Record<string, any> = {};
+        s.fields.forEach((f: any, fIdx: number) => {
+          const rawKey = (f.fieldname || f.name || `field_${fIdx + 1}`).trim().replace(/\s+/g, '_');
+          if (rawKey) {
+            let options: string[] = [];
+            if (Array.isArray(f.options)) {
+              options = f.options.map((o: any) => String(o).trim()).filter(Boolean);
+            } else if (typeof f.options === 'string' && f.options.trim()) {
+              options = f.options.split(/[\r\n,|]+/).map((o: string) => o.trim()).filter(Boolean);
+            }
+
+            fieldsObj[rawKey] = {
+              label: (f.label || rawKey).trim(),
+              fieldname: rawKey,
+              fieldtype: f.fieldtype || 'text',
+              required: f.required !== false,
+              ...(options.length > 0 ? { options } : {})
+            };
+          }
+        });
+        if (Object.keys(fieldsObj).length > 0) {
+          requiresCustom = JSON.stringify(fieldsObj);
+        }
+      } else if (s.requiresCustom) {
+        requiresCustom = typeof s.requiresCustom === 'string' ? s.requiresCustom : JSON.stringify(s.requiresCustom);
+      }
+
+      const credit = Math.max(0, parseFloat(s.credit) || 0);
+      const margin = parseFloat(s.margin) || 0;
+
+      const created = await prisma.dhruService.create({
+        data: {
+          dhruId: uniqueDhruId,
+          name: s.name.trim(),
+          originalName: s.name.trim(),
+          groupName: cleanBundleName,
+          credit,
+          margin,
+          time: (s.time && String(s.time).trim()) || '1-24 Hours',
+          info: (s.info && String(s.info).trim()) || null,
+          isActive: s.isActive !== false,
+          categoryId: targetCategory.id,
+          requiresCustom
+        }
+      });
+      createdServices.push(created);
+    }
+
+    if (createdServices.length === 0) {
+      return res.status(400).json({ error: 'لم يتم حفظ أي خدمة، يرجى التأكد من كتابة أسماء الخدمات بشكل صحيح' });
+    }
+
+    invalidateDhruServicesCache();
+
+    res.json({
+      success: true,
+      message: `تم إنشاء الباقة (${cleanBundleName}) بنجاح مع ${createdServices.length} خدمة`,
+      category: targetCategory,
+      services: createdServices
+    });
+  } catch (error) {
+    console.error('Create bundle error:', error);
+    res.status(500).json({ error: 'حدث خطأ أثناء حفظ الباقة والخدمات' });
+  }
+});
+
+// POST /api/dhru/services/delete - Delete single service
+router.post('/services/delete', isAdmin, async (req, res) => {
+  try {
+    const { serviceId } = req.body;
+    if (!serviceId) {
+      return res.status(400).json({ error: 'serviceId is required' });
+    }
+
+    const service = await prisma.dhruService.findUnique({ where: { id: serviceId } });
+    if (!service) {
+      return res.status(404).json({ error: 'الخدمة غير موجودة' });
+    }
+
+    await prisma.dhruService.delete({ where: { id: serviceId } });
+
+    invalidateDhruServicesCache();
+    res.json({ success: true, message: `تم حذف الخدمة (${service.name}) بنجاح` });
+  } catch (error) {
+    console.error('Delete service error:', error);
+    res.status(500).json({ error: 'فشل حذف الخدمة' });
+  }
+});
+
+// POST /api/dhru/services/delete-group - Delete entire bundle/group of services
+router.post('/services/delete-group', isAdmin, async (req, res) => {
+  try {
+    const { groupName, categoryId } = req.body;
+    if (!groupName) {
+      return res.status(400).json({ error: 'groupName is required' });
+    }
+
+    const whereClause: any = { groupName };
+    if (categoryId) {
+      whereClause.categoryId = categoryId;
+    }
+
+    const result = await prisma.dhruService.deleteMany({ where: whereClause });
+
+    invalidateDhruServicesCache();
+    res.json({
+      success: true,
+      count: result.count,
+      message: `تم حذف جميع خدمات باقة (${groupName}) وعددهم ${result.count} خدمة بنجاح`
+    });
+  } catch (error) {
+    console.error('Delete group error:', error);
+    res.status(500).json({ error: 'فشل حذف خدمات الباقة' });
+  }
+});
+
 router.get('/services/:id', async (req, res) => {
   try {
     const { id } = req.params;

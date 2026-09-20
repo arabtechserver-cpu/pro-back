@@ -1,15 +1,21 @@
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
+import bcrypt from 'bcryptjs';
+import crypto from 'crypto';
 import { isAdmin } from '../middleware/auth';
 import { prisma } from "../utils/prisma";
 
 const router = Router();
 const BACKUPS_DIR = path.join(__dirname, '..', '..', 'backups');
 
-// Ensure backups dir exists
-if (!fs.existsSync(BACKUPS_DIR)) {
-  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+// Ensure backups dir exists safely
+try {
+  if (!fs.existsSync(BACKUPS_DIR)) {
+    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
+  }
+} catch (dirErr) {
+  console.warn('[Backup] Unable to initialize backups directory on module load:', dirErr);
 }
 
 // Helper: Extract all data into a JSON structure
@@ -27,6 +33,11 @@ async function generateBackupSnapshot() {
     subscribers,
     newsletterBroadcasts,
     storedImages,
+    paymentIntents,
+    apiProviders,
+    allowedIps,
+    settings,
+    coupons
   ] = await Promise.all([
     prisma.user.findMany({
       select: {
@@ -56,6 +67,11 @@ async function generateBackupSnapshot() {
     prisma.subscriber.findMany(),
     prisma.newsletterBroadcast.findMany(),
     prisma.storedImage.findMany(),
+    prisma.paymentIntent.findMany(),
+    prisma.apiProvider.findMany(),
+    prisma.allowedDashboardIP.findMany(),
+    prisma.setting.findMany(),
+    prisma.coupon.findMany()
   ]);
 
   return {
@@ -124,6 +140,7 @@ async function performSelectiveRestore(
     transactionsProcessed: 0,
     servicesProcessed: 0,
     blogPostsProcessed: 0,
+    videosProcessed: 0
   };
 
   // Map old IDs to valid database User IDs
@@ -132,10 +149,11 @@ async function performSelectiveRestore(
   // 1. Process Customers / Users
   if (options.customers && Array.isArray(rawCustomers) && rawCustomers.length > 0) {
     if (isOverwrite) {
-      // In overwrite mode, delete non-admin users
+      // In overwrite mode, delete non-admin users and dependent foreign keys
       await prisma.order.deleteMany();
       await prisma.transaction.deleteMany();
       await prisma.walletTransaction.deleteMany();
+      await prisma.paymentIntent.deleteMany();
       await prisma.user.deleteMany({ where: { role: { notIn: ['admin', 'super_admin'] } } });
     }
 
@@ -146,7 +164,9 @@ async function performSelectiveRestore(
       const country = c.country || 'EG';
       const role = c.role === 'admin' ? 'admin' : 'user';
       const status = c.status === 'suspended' ? 'suspended' : 'active';
-      const password = c.password || '$2a$10$abcdefghijklmnopqrstuvwxyz123456';
+      const password = (c.password && typeof c.password === 'string' && c.password.startsWith('$2'))
+        ? c.password
+        : await bcrypt.hash(crypto.randomUUID() + '_LOCKED', 10);
 
       try {
         // Find existing user by username or email
@@ -306,9 +326,9 @@ async function performSelectiveRestore(
       await prisma.walletTransaction.deleteMany();
     }
 
-    // Process wallet_transactions / transactions
-    const combinedTxns = [...rawTransactions, ...rawWalletTxns];
-    for (const t of combinedTxns) {
+    // Process transactions
+    const sourceTxns = Array.isArray(rawTransactions) && rawTransactions.length > 0 ? rawTransactions : rawWalletTxns;
+    for (const t of sourceTxns) {
       try {
         let matchedUserId: string | null = null;
         if (t.userId) matchedUserId = userIdMap.get(t.userId) || t.userId;
@@ -316,6 +336,14 @@ async function performSelectiveRestore(
         else if (t.customer_username) matchedUserId = userIdMap.get(t.customer_username) || null;
 
         if (matchedUserId) {
+          const refNo = String(t.refNo || t.ref_no || `TRX-${Date.now()}-${Math.floor(Math.random() * 1000)}`);
+          if (!isOverwrite) {
+            const existingTx = await prisma.transaction.findFirst({
+              where: { refNo, userId: matchedUserId }
+            });
+            if (existingTx) continue;
+          }
+
           const amount = Number(t.amount) || 0;
           const type = t.type || 'شحن محفظة';
           await prisma.transaction.create({
@@ -325,18 +353,8 @@ async function performSelectiveRestore(
               amount: amount,
               method: t.method || 'رصيد سابق / تحويل',
               status: t.status || 'completed',
-              refNo: String(t.refNo || t.ref_no || `TRX-${Date.now()}-${Math.floor(Math.random()*1000)}`),
+              refNo: refNo,
               receiptImage: t.receiptImage || t.receipt_image || null,
-              createdAt: t.created_at || t.createdAt ? new Date(t.created_at || t.createdAt) : undefined,
-            }
-          });
-
-          await prisma.walletTransaction.create({
-            data: {
-              userId: matchedUserId,
-              amount: amount,
-              type: type.includes('خصم') ? 'withdrawal' : 'deposit',
-              status: 'completed',
               createdAt: t.created_at || t.createdAt ? new Date(t.created_at || t.createdAt) : undefined,
             }
           });
@@ -372,6 +390,57 @@ async function performSelectiveRestore(
         });
         stats.blogPostsProcessed++;
       } catch (e) {}
+    }
+  }
+
+  // 6. Process Video Series and Tutorials (S19 fix)
+  if (options.videos) {
+    if (Array.isArray(rawVideoSeries) && rawVideoSeries.length > 0) {
+      for (const s of rawVideoSeries) {
+        try {
+          if (!s.titleEn && !s.titleAr) continue;
+          await prisma.videoSeries.upsert({
+            where: { id: s.id || 'new-series' },
+            create: {
+              id: s.id,
+              titleEn: s.titleEn || '',
+              titleAr: s.titleAr || '',
+              descriptionEn: s.descriptionEn || null,
+              descriptionAr: s.descriptionAr || null,
+              isSubscriptionRequired: Boolean(s.isSubscriptionRequired),
+              price: s.price !== undefined && s.price !== null ? parseFloat(s.price) : null,
+              thumbnail: s.thumbnail || null
+            },
+            update: {}
+          });
+        } catch (e) {}
+      }
+    }
+
+    if (Array.isArray(rawVideoTutorials) && rawVideoTutorials.length > 0) {
+      for (const v of rawVideoTutorials) {
+        try {
+          if (!v.titleEn && !v.titleAr) continue;
+          await prisma.videoTutorial.upsert({
+            where: { id: v.id || 'new-tutorial' },
+            create: {
+              id: v.id,
+              titleEn: v.titleEn || '',
+              titleAr: v.titleAr || '',
+              descriptionEn: v.descriptionEn || null,
+              descriptionAr: v.descriptionAr || null,
+              videoUrl: v.videoUrl || '',
+              thumbnail: v.thumbnail || null,
+              category: v.category || null,
+              seriesId: v.seriesId || null,
+              orderIndex: v.orderIndex || 0,
+              isFreePreview: v.isFreePreview !== undefined ? Boolean(v.isFreePreview) : true
+            },
+            update: {}
+          });
+          stats.videosProcessed = (stats.videosProcessed || 0) + 1;
+        } catch (e) {}
+      }
     }
   }
 

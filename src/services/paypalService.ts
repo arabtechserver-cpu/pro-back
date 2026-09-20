@@ -133,3 +133,73 @@ export async function capturePayPalOrder(orderId: string) {
     throw new Error(`فشل تأكيد عملية الدفع من PayPal: ${errorDesc || 'لم يتم تأكيد الدفع من قبل العميل على موقع PayPal'}`);
   }
 }
+
+// 5. Verify PayPal Webhook Signature via official PayPal REST API
+export async function verifyPayPalWebhookSignature(
+  headers: Record<string, string | string[] | undefined>,
+  body: any
+): Promise<{ verified: boolean; error?: string }> {
+  const webhookId = process.env.PAYPAL_WEBHOOK_ID;
+  if (!webhookId) {
+    return { verified: false, error: 'PAYPAL_WEBHOOK_ID is not configured on server' };
+  }
+
+  const getHeader = (name: string): string => {
+    const val = headers[name.toLowerCase()] || headers[name];
+    return Array.isArray(val) ? val[0] : (val || '');
+  };
+
+  const authAlgo = getHeader('paypal-auth-algo');
+  const certUrl = getHeader('paypal-cert-url');
+  const transmissionId = getHeader('paypal-transmission-id');
+  const transmissionSig = getHeader('paypal-transmission-sig');
+  const transmissionTime = getHeader('paypal-transmission-time');
+
+  if (!authAlgo || !certUrl || !transmissionId || !transmissionSig || !transmissionTime) {
+    return { verified: false, error: 'Missing required PayPal signature headers' };
+  }
+
+  try {
+    const parsedCertUrl = new URL(certUrl);
+    if (parsedCertUrl.protocol !== 'https:') {
+      return { verified: false, error: 'Insecure certificate URL protocol' };
+    }
+    const host = parsedCertUrl.hostname.toLowerCase();
+    if (!host.endsWith('.paypal.com') && host !== 'paypal.com') {
+      return { verified: false, error: 'Untrusted certificate URL host' };
+    }
+  } catch (_) {
+    return { verified: false, error: 'Invalid certificate URL format' };
+  }
+
+  try {
+    const accessToken = await getPayPalAccessToken();
+    const response = await axios({
+      url: `${BASE_URL}/v1/notifications/verify-webhook-signature`,
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${accessToken}`
+      },
+      data: {
+        auth_algo: authAlgo,
+        cert_url: certUrl,
+        transmission_id: transmissionId,
+        transmission_sig: transmissionSig,
+        transmission_time: transmissionTime,
+        webhook_id: webhookId,
+        webhook_event: body
+      }
+    });
+
+    const status = response.data?.verification_status;
+    if (status === 'SUCCESS') {
+      return { verified: true };
+    }
+    return { verified: false, error: `PayPal verification returned status: ${status}` };
+  } catch (error: any) {
+    const errorMsg = error?.response?.data?.message || error?.message || 'Verification request failed';
+    return { verified: false, error: errorMsg };
+  }
+}
+

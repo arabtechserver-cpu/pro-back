@@ -100,14 +100,17 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
         let user = null;
         if (decoded.id) {
           user = await prisma.user.findUnique({ where: { id: decoded.id } });
-        }
-        if (!user && decoded.email) {
+        } else if (decoded.email) {
           user = await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
         }
 
         if (user) {
           if (user.status === 'suspended') {
             return res.status(403).json({ error: 'Account is suspended' });
+          }
+          const expectedVersion = user.tokenVersion || 1;
+          if (decoded.tokenVersion !== expectedVersion) {
+            continue;
           }
           req.user = user;
           return next();
@@ -118,7 +121,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
   }
 
-  return res.status(401).json({ error: 'Access denied: Authentication token required' });
+  return res.status(401).json({ error: 'Access denied: Authentication token required or session expired' });
 };
 
 export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -131,14 +134,17 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
         let user = null;
         if (decoded.id) {
           user = await prisma.user.findUnique({ where: { id: decoded.id } });
-        }
-        if (!user && decoded.email) {
+        } else if (decoded.email) {
           user = await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
         }
 
         if (user) {
           if (user.status === 'suspended') {
             return res.status(403).json({ error: 'Account is suspended' });
+          }
+          const expectedVersion = user.tokenVersion || 1;
+          if (decoded.tokenVersion !== expectedVersion) {
+            continue;
           }
           req.user = user;
           return next();
@@ -149,12 +155,18 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
     }
   }
 
-  // If token is missing/expired, proceed anyway so endpoint can inspect userId/email
   return next();
 };
 
-export const generateToken = (payload: any) => {
-  return jwt.sign(payload, JWT_SECRET, { expiresIn: '30d' });
+export const generateToken = (payload: any, customExpiresIn?: string | number) => {
+  const defaultExpiry = (payload && typeof payload === 'object' && ['admin', 'super_admin'].includes(payload.role))
+    ? '12h'
+    : '7d';
+  const expiresIn = customExpiresIn || defaultExpiry;
+  const tokenPayload = (payload && typeof payload === 'object')
+    ? { tokenVersion: 1, ...payload }
+    : payload;
+  return jwt.sign(tokenPayload, JWT_SECRET as jwt.Secret, { expiresIn } as jwt.SignOptions);
 };
 
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {

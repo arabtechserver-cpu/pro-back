@@ -1,6 +1,6 @@
 import { Router } from 'express';
 import { getAccountInfo, getImeiServiceList } from '../utils/dhru-api';
-import { isAdmin } from '../middleware/auth';
+import { isAdmin, optionalAuth } from '../middleware/auth';
 
 const router = Router();
 
@@ -75,7 +75,7 @@ router.get('/services', (req, res, next) => {
     });
 
     const cleanedCategories = isPricingView
-      ? serializePricingServiceCategories(categories, cleanServiceName)
+      ? serializePricingServiceCategories(categories, cleanServiceName, false)
       : serializeAdminServiceCategories(categories, cleanServiceName);
 
     if (isPricingView && all !== 'true') {
@@ -392,15 +392,19 @@ router.post('/services/delete-group', isAdmin, async (req, res) => {
   }
 });
 
-router.get('/services/:id', async (req, res) => {
+router.get('/services/:id', optionalAuth, async (req: any, res) => {
   try {
     const { id } = req.params;
+    const authUser = req.user;
+    const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
+
     const service = await prisma.dhruService.findFirst({
       where: {
         OR: [
           { id },
           { dhruId: id }
-        ]
+        ],
+        ...(!isAdminUser && { isActive: true })
       },
       include: {
         dhruCategory: true
@@ -449,21 +453,32 @@ router.get('/services/:id', async (req, res) => {
       } catch {}
     }
 
-    const cleanedService = {
-      ...service,
+    const cleanedService: any = {
+      id: service.id,
+      dhruId: service.dhruId,
+      name: cleanServiceName(service.name, service.info || '', service.groupName || ''),
+      apiServiceType: service.apiServiceType,
+      categoryId: service.categoryId,
+      groupName: service.groupName,
+      info: service.info,
+      time: service.time,
       requiresCustom: finalRequiresCustom,
-      credit,
-      margin,
       price: finalPrice,
       finalPrice,
       sellingPrice: finalPrice,
-      name: cleanServiceName(service.name, service.info || '', service.groupName || ''),
+      isActive: service.isActive,
       supportsQty: qtyConfig.supportsQty,
       supports_quantity: qtyConfig.supportsQty,
       minQty: qtyConfig.minQty,
       maxQty: qtyConfig.maxQty,
       min_quantity: qtyConfig.min_quantity,
-      max_quantity: qtyConfig.max_quantity
+      max_quantity: qtyConfig.max_quantity,
+      dhruCategory: service.dhruCategory,
+      ...(isAdminUser && {
+        credit,
+        margin,
+        providerId: service.providerId
+      })
     };
 
     res.json(cleanedService);

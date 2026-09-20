@@ -14,22 +14,50 @@ import {
   enrichCustomFieldsWithQuantity
 } from "../utils/provider-quantity";
 import { invalidateDhruServicesCache } from "./dhru";
-import { isPrivateIP } from "../utils/dhru-api";
+import { isPrivateIP, isPrivateHostname } from "../utils/dhru-api";
 
 const dnsLookup = promisify(dns.lookup);
+
+export function maskApiKey(key?: string | null): string {
+  if (!key) return "";
+  const trimmed = key.trim();
+  if (trimmed.length <= 8) return "********";
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+export function isMaskedApiKey(key?: string | null, existingKey?: string | null): boolean {
+  if (!key) return false;
+  const trimmed = key.trim();
+  if (trimmed.includes("*") || trimmed.includes("...")) return true;
+  if (existingKey && trimmed === maskApiKey(existingKey)) return true;
+  return false;
+}
+
+export function sanitizeProvider(provider: any) {
+  if (!provider) return provider;
+  return {
+    ...provider,
+    apiKey: maskApiKey(provider.apiKey)
+  };
+}
 
 const router = Router();
 
 router.use(isAdmin);
 
-// Helper to format API url
 export function normalizeApiUrl(rawUrl: string): string {
   let url = (rawUrl || "").trim();
   if (!url) return "";
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+  if (url.startsWith("http://")) {
+    throw new Error("Insecure HTTP provider URLs are prohibited. HTTPS is strictly required.");
+  }
+  if (!url.startsWith("https://")) {
     url = "https://" + url;
   }
   const urlObj = new URL(url);
+  urlObj.username = "";
+  urlObj.password = "";
+
   const path = urlObj.pathname.replace(/\/+$/, "");
   const hasExplicitApiEndpoint =
     /\/api\/index\.php$/i.test(path) ||
@@ -38,12 +66,12 @@ export function normalizeApiUrl(rawUrl: string): string {
 
   if (!hasExplicitApiEndpoint) {
     if (/\/api$/i.test(path)) {
-      url = url.replace(/\/$/, '') + '/index.php';
+      urlObj.pathname = path + "/index.php";
     } else {
-      url = url.replace(/\/$/, '') + '/api/index.php';
+      urlObj.pathname = path + "/api/index.php";
     }
   }
-  return url;
+  return urlObj.toString();
 }
 
 function collectAccountInfoCandidates(payload: any): any[] {
@@ -344,30 +372,32 @@ export function makeProviderApiCall(
 ): Promise<{ ok: boolean; status: number; data: any; raw: string; targetUrl: string }> {
   return new Promise(async (resolve) => {
     try {
-      const targetUrl = normalizeApiUrl(apiUrl);
-      if (!targetUrl) {
+      let targetUrl: string;
+      try {
+        targetUrl = normalizeApiUrl(apiUrl);
+      } catch (err: any) {
         return resolve({
           ok: false,
           status: 400,
-          data: { error: "Invalid provider URL" },
-          raw: "Invalid provider URL",
-          targetUrl
+          data: { error: err.message },
+          raw: err.message,
+          targetUrl: apiUrl
         });
       }
 
       const urlObj = new URL(targetUrl);
-      if (urlObj.protocol !== "http:" && urlObj.protocol !== "https:") {
+      if (urlObj.protocol !== "https:") {
         return resolve({
           ok: false,
           status: 400,
-          data: { error: "Invalid URL protocol. Only HTTP and HTTPS are permitted" },
+          data: { error: "Invalid URL protocol. HTTPS is strictly required." },
           raw: "Invalid protocol",
           targetUrl
         });
       }
 
-      if (urlObj.hostname === "localhost" || isPrivateIP(urlObj.hostname)) {
-        console.error(`[SSRF BLOCK] Attempted to connect to local/private hostname: ${urlObj.hostname}`);
+      if (isPrivateHostname(urlObj.hostname)) {
+        console.error(`[SSRF BLOCK] Attempted to connect to private host: ${urlObj.hostname}`);
         return resolve({
           ok: false,
           status: 400,
@@ -408,7 +438,6 @@ export function makeProviderApiCall(
       data.append("action", action);
       data.append("requestformat", "JSON");
 
-      // Format parameters
       Object.entries(parameters).forEach(([k, v]) => {
         data.append(`parameters[${k}]`, v);
       });
@@ -417,24 +446,22 @@ export function makeProviderApiCall(
 
       const options = {
         hostname: safeAddress,
-        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        port: urlObj.port ? parseInt(urlObj.port, 10) : 443,
         path: urlObj.pathname + urlObj.search,
         method: "POST",
         family: 4, 
         servername: urlObj.hostname,
         headers: {
-          "Host": urlObj.hostname,
+          Host: urlObj.hostname,
           "Content-Type": "application/x-www-form-urlencoded",
           "Content-Length": Buffer.byteLength(postData),
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": "ArabTechPro/1.0",
           Accept: "application/json, text/plain, */*"
         },
         timeout: 60000
       };
 
-      const client = urlObj.protocol === "https:" ? https : http;
-      
-      const req = client.request(options, (res) => {
+      const req = https.request(options, (res) => {
         let rawText = "";
         res.on("data", (chunk) => { rawText += chunk; });
         res.on("end", () => {
@@ -528,7 +555,7 @@ router.get("/", async (req, res) => {
     return res.json({
       success: true,
       providers: providers.map(p => ({
-        ...p,
+        ...sanitizeProvider(p),
         servicesCount: p._count?.services || p.servicesCount || 0
       }))
     });
@@ -543,7 +570,15 @@ router.post("/test-connection", async (req, res) => {
   try {
     const apiUrl = (req.body.apiUrl || req.body.api_url || "").trim();
     const username = (req.body.username || "").trim() || null;
-    const apiKey = (req.body.apiKey || req.body.api_key || "").trim();
+    let apiKey = (req.body.apiKey || req.body.api_key || "").trim();
+    const providerId = req.body.providerId || req.body.id;
+
+    if (providerId && (isMaskedApiKey(apiKey) || !apiKey)) {
+      const existing = await prisma.apiProvider.findUnique({ where: { id: String(providerId) } });
+      if (existing) {
+        apiKey = existing.apiKey;
+      }
+    }
 
     if (!apiUrl || !apiKey) {
       return res.status(400).json({ error: "رابط الـ API ومفتاح الـ API مطلوبان لاختبار الاتصال" });
@@ -620,7 +655,7 @@ router.post("/", async (req, res) => {
 
     return res.json({
       success: true,
-      provider: newProvider,
+      provider: sanitizeProvider(newProvider),
       message: `تمت إضافة المزود (${newProvider.name}) بنجاح!`
     });
   } catch (error: any) {
@@ -629,7 +664,7 @@ router.post("/", async (req, res) => {
   }
 });
 
-// PUT /api/providers/:id - Update provider
+// PUT /api/providers/:id - Update provider details
 router.put("/:id", async (req, res) => {
   try {
     const { id } = req.params;
@@ -641,7 +676,16 @@ router.put("/:id", async (req, res) => {
     const name = req.body.name !== undefined ? req.body.name.trim() : existing.name;
     const apiUrl = (req.body.apiUrl || req.body.api_url) !== undefined ? normalizeApiUrl((req.body.apiUrl || req.body.api_url).trim()) : existing.apiUrl;
     const username = req.body.username !== undefined ? (req.body.username ? req.body.username.trim() : null) : existing.username;
-    const apiKey = (req.body.apiKey || req.body.api_key) !== undefined ? (req.body.apiKey || req.body.api_key).trim() : existing.apiKey;
+    
+    const incomingApiKey = req.body.apiKey || req.body.api_key;
+    const shouldKeepExistingKey = incomingApiKey === undefined ||
+      incomingApiKey === null ||
+      typeof incomingApiKey !== "string" ||
+      incomingApiKey.trim() === "" ||
+      isMaskedApiKey(incomingApiKey, existing.apiKey);
+
+    const apiKey = shouldKeepExistingKey ? existing.apiKey : incomingApiKey.trim();
+
     const type = (req.body.type || req.body.provider_type) !== undefined ? (req.body.type || req.body.provider_type) : existing.type;
     const isActive = req.body.isActive !== undefined ? Boolean(req.body.isActive) : (req.body.is_active !== undefined ? Boolean(req.body.is_active) : existing.isActive);
     const balance = req.body.balance !== undefined ? parseFloat(req.body.balance) : existing.balance;
@@ -663,7 +707,7 @@ router.put("/:id", async (req, res) => {
 
     return res.json({
       success: true,
-      provider: updated,
+      provider: sanitizeProvider(updated),
       message: `تم تحديث بيانات المزود (${updated.name}) بنجاح!`
     });
   } catch (error: any) {
@@ -736,7 +780,7 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
       balance: accountInfo.balance,
       credit: `${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`,
       currency: accountInfo.currency,
-      provider: updated,
+      provider: sanitizeProvider(updated),
       message: `تم تحديث الرصيد للمزود (${provider.name}): ${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`
     });
   } catch (error: any) {
@@ -1109,7 +1153,7 @@ async function buildProviderExportData(provider: any, includeRaw = true) {
       name: provider.name,
       apiUrl: provider.apiUrl,
       username: provider.username,
-      apiKey: provider.apiKey,
+      apiKey: maskApiKey(provider.apiKey),
       type: provider.type,
       isActive: provider.isActive,
       balance: provider.balance,

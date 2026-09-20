@@ -2,9 +2,13 @@ const axios = require('axios');
 const FormData = require('form-data');
 
 async function testUpload() {
-  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '8520796422:AAEwT2cu1NU4IGdYjjxh627zC8cen01rftE';
+  const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+  if (!TELEGRAM_BOT_TOKEN) {
+    console.error('TELEGRAM_BOT_TOKEN is required in environment variables');
+    process.exit(1);
+  }
   const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
-  const chatId = '7457813524'; // Using dummy or a known one, it will fail with "chat not found" if fake, but if it passes format validation, we know buffer logic is fine.
+  const chatId = process.env.TELEGRAM_ADMIN_CHAT_ID || '7457813524';
 
   try {
     const base64Data = "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAGBAQABAAAA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQAAPwA=";

@@ -35,11 +35,34 @@ app.use(cors({
   },
   credentials: true,
 }));
-app.use(express.json({ limit: '5mb' }));
+const generalJsonParser = express.json({ limit: '5mb' });
+const imageJsonParser = express.json({ limit: '15mb' });
+
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api/upload') || req.path.startsWith('/api/transactions')) {
+    return imageJsonParser(req, res, next);
+  }
+  return generalJsonParser(req, res, next);
+});
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
 
 import path from 'path';
-import { getUploadDir, ensureUploadDir } from './utils/uploads';
+import { getUploadDir, ensureUploadDir, restoreImagesToDisk } from './utils/uploads';
+import { bootstrapDatabase } from './utils/bootstrap';
+import { initOrderSyncCron } from './cron/orderSync';
+import { initBackupCron } from './cron/backupDb';
+
+// S12: Block direct unauthenticated access to receipts under /uploads or public/uploads BEFORE static middleware
+app.use((req, res, next) => {
+  const reqPath = req.path.toLowerCase();
+  if (reqPath.includes('/receipt') || reqPath.includes('receipt_')) {
+    if (req.path.startsWith('/uploads') || req.path.startsWith('/public/uploads')) {
+      return res.status(403).json({ error: 'Access forbidden: receipts require authenticated access' });
+    }
+  }
+  next();
+});
+
 ensureUploadDir();
 app.use(express.static(path.join(__dirname, '../public')));
 app.use('/uploads', express.static(getUploadDir(), { maxAge: '30d', immutable: true }));
@@ -81,23 +104,17 @@ app.use('/api/providers', providersRoutes);
 app.use('/api/api-providers', providersRoutes);
 app.use('/api/videos', videoRoutes);
 app.use('/api/homepage', homepageRoutes);
-// upload and transactions accept base64 images — allow larger body for those routes only
-const imageBodyParser = express.json({ limit: '15mb' });
-app.use('/api/upload', imageBodyParser, uploadRoutes);
-app.use('/api/media', imageBodyParser, uploadRoutes);
-app.use('/uploads', uploadRoutes);
-app.use('/api/transactions', imageBodyParser, transactionsRoutes);
+app.use('/api/upload', uploadRoutes);
 app.use('/api/users', usersRoutes);
-app.use('/api/memberships', membershipsRoutes);
+app.use('/api/transactions', transactionsRoutes);
 app.use('/api/analytics', analyticsRoutes);
 app.use('/api/telemetry', analyticsRoutes);
-app.use('/api/app-events', analyticsRoutes);
 app.use('/api/backup', backupRoutes);
 app.use('/api/newsletter', newsletterRoutes);
-app.use('/api/v1/provider', externalApiRoutes); // Dhru compatible API endpoint
-app.use('/api/reseller', externalApiRoutes);
+app.use('/api/memberships', membershipsRoutes);
 app.use('/api/external', externalApiRoutes);
 app.use('/api/dhru/api', externalApiRoutes);
+app.use('/api/v1/provider', externalApiRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/ip-access', ipAccessRoutes);
 app.use('/api/admin/ip-access', ipAccessRoutes);
@@ -107,15 +124,20 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running' });
 });
 
-import { initOrderSyncCron } from './cron/orderSync';
-import { initBackupCron } from './cron/backupDb';
-import { bootstrapDatabase } from './utils/bootstrap';
-import { restoreImagesToDisk } from './utils/uploads';
+async function startServer() {
+  try {
+    await bootstrapDatabase();
+    await restoreImagesToDisk(prisma).catch(() => {});
+    initOrderSyncCron();
+    initBackupCron();
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
-  initOrderSyncCron();
-  initBackupCron();
-  bootstrapDatabase();
-  restoreImagesToDisk(prisma).catch(() => {});
-});
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
+    });
+  } catch (error) {
+    console.error('Failed to initialize and start server:', error);
+    process.exit(1);
+  }
+}
+
+startServer();

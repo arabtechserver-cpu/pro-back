@@ -30,13 +30,31 @@ router.post('/', isAdmin, async (req, res) => {
     }
 
     const base64Data = matches[2];
-
-    const cleanFilename = (filename || 'uploaded_image').replace(/[^a-zA-Z0-9_.-]/g, '_');
-    const uniqueFilename = `${Date.now()}_${cleanFilename}`;
     const buffer = Buffer.from(base64Data, 'base64');
     if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
       return res.status(413).json({ success: false, error: 'حجم الصورة يجب ألا يتجاوز 10 ميجابايت' });
     }
+
+    // Verify image magic bytes signature
+    const isValidSignature = (
+      (mimeType === 'image/jpeg' && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) ||
+      (mimeType === 'image/png' && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) ||
+      (mimeType === 'image/gif' && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) ||
+      (mimeType === 'image/webp' && buffer.length >= 12 && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50)
+    );
+
+    if (!isValidSignature) {
+      return res.status(400).json({ success: false, error: 'محتوى الملف لا يطابق صيغة الصورة المصرح بها' });
+    }
+
+    const mimeToExt: Record<string, string> = {
+      'image/jpeg': '.jpg',
+      'image/png': '.png',
+      'image/webp': '.webp',
+      'image/gif': '.gif'
+    };
+    const cleanBasename = (filename || 'uploaded_image').replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
+    const uniqueFilename = `${Date.now()}_${cleanBasename}${mimeToExt[mimeType] || '.jpg'}`;
 
     // 1. Save directly into persistent volume /app/uploads on disk
     try {
@@ -74,6 +92,11 @@ router.post('/', isAdmin, async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const id = String(req.params.id);
+
+    // S12: Block any receipt access from the public upload endpoint
+    if (id.toLowerCase().includes('receipt')) {
+      return res.status(403).json({ error: 'Access forbidden: receipts require authenticated transaction access' });
+    }
 
     res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
 
@@ -135,10 +158,33 @@ router.get('/', isAdmin, async (req, res) => {
   }
 });
 
-// DELETE /api/upload/:id - Delete Image from Database
+// DELETE /api/upload/:id - Delete Image from Disk and Database
 router.delete('/:id', isAdmin, async (req, res) => {
   try {
     const id = String(req.params.id);
+    const existing = await prisma.storedImage.findFirst({
+      where: {
+        OR: [{ id }, { filename: id }]
+      }
+    });
+
+    const targetFilename = existing?.filename || id;
+    const diskPath = getUploadFilePath(targetFilename);
+    if (diskPath && fs.existsSync(diskPath)) {
+      try {
+        fs.unlinkSync(diskPath);
+      } catch (err) {
+        console.error('[Uploads] Error removing file from disk:', err);
+      }
+    }
+
+    try {
+      const pubPath = path.join(process.cwd(), 'public', 'uploads', targetFilename);
+      if (fs.existsSync(pubPath)) {
+        fs.unlinkSync(pubPath);
+      }
+    } catch (_) {}
+
     await prisma.storedImage.deleteMany({
       where: {
         OR: [

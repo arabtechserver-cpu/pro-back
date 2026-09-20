@@ -91,7 +91,8 @@ export function serializeAdminServiceCategories(
 
 export function serializePricingServiceCategories(
   categories: AdminCategory[],
-  cleanName: (name: string, info: string, groupName: string) => string
+  cleanName: (name: string, info: string, groupName: string) => string,
+  isAdmin: boolean = false
 ) {
   return categories.map(({ id, name, dhruServices }) => ({
     id,
@@ -106,8 +107,7 @@ export function serializePricingServiceCategories(
         dhruId: service.dhruId,
         name: cleanName(service.name, service.info || "", service.groupName || ""),
         groupName: service.groupName,
-        credit,
-        margin,
+        ...(isAdmin ? { credit, margin } : {}),
         price: finalPrice,
         finalPrice,
         sellingPrice: finalPrice,

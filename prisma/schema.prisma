@@ -113,24 +113,31 @@ model NewsletterBroadcast {
 }
 
 model Order {
-  id          String   @id @default(uuid())
-  userId      String?
-  serviceName String
-  serviceId   String
-  targetInput String
-  quantity    Int      @default(1)
-  price       Float
-  status      String   @default("pending")
-  apiOrderId  String?
-  reply       String?
-  notes       String?
-  couponCode  String?
-  discount    Float    @default(0.0)
-  createdAt        DateTime @default(now())
-  updatedAt        DateTime @default(now()) @updatedAt
-  user             User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
-  source           String   @default("web")
+  id               String    @id @default(uuid())
+  userId           String?
+  serviceName      String
+  serviceId        String
+  targetInput      String
+  quantity         Int       @default(1)
+  price            Float
+  status           String    @default("pending")
+  apiOrderId       String?
+  reply            String?
+  notes            String?
+  couponCode       String?
+  discount         Float     @default(0.0)
+  refundedAt       DateTime?
+  refundRefNo      String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @default(now()) @updatedAt
+  user             User?     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  source           String    @default("web")
   apiClientOrderId String?
+
+  @@index([userId])
+  @@index([status])
+  @@index([apiOrderId])
+  @@index([apiClientOrderId])
 }
 
 model Transaction {
@@ -142,12 +149,34 @@ model Transaction {
   status       String   @default("pending")
   refNo        String
   receiptImage String?
+  adminActorId String?
+  notes        String?
   createdAt    DateTime @default(now())
   updatedAt    DateTime @default(now()) @updatedAt
-  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User     @relation(fields: [userId], references: [id], onDelete: Restrict)
 
+  @@index([refNo])
   @@index([createdAt])
   @@index([status, createdAt])
+}
+
+model PaymentIntent {
+  id        String   @id @default(uuid())
+  userId    String
+  provider  String   @default("paypal")
+  orderId   String
+  captureId String?
+  amount    Float
+  currency  String   @default("USD")
+  status    String   @default("created")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @default(now()) @updatedAt
+  user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([provider, orderId])
+  @@unique([provider, captureId])
+  @@index([userId])
+  @@index([status])
 }
 
 model User {
@@ -163,10 +192,14 @@ model User {
   balance          Float           @default(0.0)
   membershipTierId String?
   customDiscount   Float           @default(0.0)
+  googleSub        String?         @unique
+  tokenVersion     Int             @default(1)
+  deletedAt        DateTime?
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @default(now()) @updatedAt
   orders           Order[]
   transactions     Transaction[]
+  paymentIntents   PaymentIntent[]
   membershipTier   MembershipTier? @relation(fields: [membershipTierId], references: [id])
   apiEnabled       Boolean         @default(false)
   apiKey           String?         @unique

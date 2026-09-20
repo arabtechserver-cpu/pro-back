@@ -134,14 +134,17 @@ export function initOrderSyncCron() {
           }
           else if (isRejected) {
             const rejectReason = replyCode || statusData.REASON || statusData.reason || 'مرفوض من المزود';
+            const refundRef = `REF-${order.id.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
 
             try {
               await prisma.$transaction(async (tx) => {
                 const updateRes = await tx.order.updateMany({
-                  where: { id: order.id, status: 'processing' },
+                  where: { id: order.id, refundedAt: null },
                   data: {
                     status: 'rejected',
-                    reply: `مرفوض: ${rejectReason}`
+                    reply: `مرفوض: ${rejectReason}`,
+                    refundedAt: new Date(),
+                    refundRefNo: refundRef
                   }
                 });
 
@@ -161,7 +164,7 @@ export function initOrderSyncCron() {
                       type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
                       amount: order.price,
                       method: 'استرجاع تلقائي',
-                      refNo: `REF-#${order.id.slice(-6)}`,
+                      refNo: refundRef,
                       status: 'completed'
                     }
                   });

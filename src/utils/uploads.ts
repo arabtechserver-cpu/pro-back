@@ -56,6 +56,7 @@ export function saveBufferToUploads(filename: string, buffer: Buffer): string {
     fs.writeFileSync(filePath, buffer);
   } catch (err) {
     console.error(`[Uploads] Error writing file to primary upload dir ${filePath}:`, err);
+    throw new Error(`Failed to write file to storage volume: ${filePath}`);
   }
 
   // Also write to local public/uploads if different, to ensure server static serving

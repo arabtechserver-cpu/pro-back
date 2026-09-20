@@ -92,7 +92,8 @@ export function resendAdminOtp(
   const challenge = challengeStore.get(challengeToken);
   const now = Date.now();
 
-  if (!challenge) {
+  if (!challenge || now > challenge.expiresAt) {
+    if (challenge) challengeStore.delete(challengeToken);
     return { success: false, error: 'انتهت صلاحية جلسة التحقق، يرجى تسجيل الدخول مجدداً' };
   }
 

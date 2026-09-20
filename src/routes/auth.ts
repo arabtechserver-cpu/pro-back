@@ -1,7 +1,7 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { prisma } from "../utils/prisma";
-import { generateToken } from '../middleware/auth';
+import { generateToken, authenticateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
 import { sendTelegramMessage, sendTelegramAlert, sendTelegramAdminOtp, sendTelegramAdminLoginSuccess } from '../utils/telegramService';
 import { createAdminOtpChallenge, verifyAdminOtp, resendAdminOtp } from '../utils/adminOtp';
@@ -95,7 +95,12 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
 
     sendTelegramAlert(newRegMsg).catch(() => {});
 
-    const token = generateToken({ id: newUser.id, email: newUser.email, role: newUser.role });
+    const token = generateToken({
+      id: newUser.id,
+      email: newUser.email,
+      role: newUser.role,
+      tokenVersion: newUser.tokenVersion ?? 1
+    }, '7d');
 
     return res.json({
       success: true,
@@ -195,7 +200,10 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
     const hashedPassword = await bcrypt.hash(newPassword, 10);
     await prisma.user.update({
       where: { id: userObj.id },
-      data: { password: hashedPassword }
+      data: {
+        password: hashedPassword,
+        tokenVersion: { increment: 1 }
+      }
     });
 
     otpStore.delete(cleanEmail);
@@ -207,6 +215,22 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
   } catch (error: any) {
     console.error('Forgot password error:', error);
     return res.status(200).json({ success: false, error: 'حدث خطأ أثناء تغيير كلمة المرور' });
+  }
+});
+
+// POST /api/auth/logout - Server-Side Session Invalidation
+router.post('/logout', authenticateToken, async (req: any, res) => {
+  try {
+    if (req.user?.id) {
+      await prisma.user.update({
+        where: { id: req.user.id },
+        data: { tokenVersion: { increment: 1 } }
+      });
+    }
+    return res.json({ success: true, message: 'تم تسجيل الخروج وإبطال الجلسة بنجاح' });
+  } catch (error: any) {
+    console.error('Logout error:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء تسجيل الخروج' });
   }
 });
 
@@ -292,7 +316,12 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
       });
     }
 
-    const token = generateToken({ id: dbUser.id, email: dbUser.email, role: dbUser.role });
+    const token = generateToken({
+      id: dbUser.id,
+      email: dbUser.email,
+      role: dbUser.role,
+      tokenVersion: dbUser.tokenVersion ?? 1
+    }, '7d');
 
     const effectiveDiscount = Math.max(
       dbUser.customDiscount || 0,
@@ -390,7 +419,12 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
 
     sendTelegramAdminLoginSuccess({ username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch(() => {});
 
-    const token = generateToken({ id: dbUser.id, email: dbUser.email, role: dbUser.role });
+    const token = generateToken({
+      id: dbUser.id,
+      email: dbUser.email,
+      role: dbUser.role,
+      tokenVersion: dbUser.tokenVersion ?? 1
+    }, '12h');
     const effectiveDiscount = Math.max(
       dbUser.customDiscount || 0,
       dbUser.membershipTier?.discountPercentage || 0
@@ -475,8 +509,16 @@ router.post('/google', async (req, res) => {
 
     // Validate audience to prevent token reuse across applications
     const expectedClientId = process.env.GOOGLE_CLIENT_ID;
-    if (expectedClientId && payload.aud !== expectedClientId) {
+    if (!expectedClientId) {
+      return res.status(500).json({ success: false, error: 'Google authentication service is not configured' });
+    }
+    if (payload.aud !== expectedClientId) {
       return res.status(401).json({ success: false, error: 'Invalid token: audience mismatch' });
+    }
+
+    const emailVerified = payload.email_verified === true || payload.email_verified === 'true';
+    if (!emailVerified) {
+      return res.status(401).json({ success: false, error: 'البريد الإلكتروني لحساب Google غير مؤكد' });
     }
 
     // Validate token is not expired
@@ -492,10 +534,38 @@ router.post('/google', async (req, res) => {
 
     // Check if user already exists
     let user = await prisma.user.findFirst({
-      where: { email: cleanEmail }
+      where: {
+        OR: [
+          { googleSub: String(googleId) },
+          { email: cleanEmail }
+        ]
+      }
     });
 
-    if (!user) {
+    if (user) {
+      // S03: Block admin accounts from bypassing MFA challenge via Google login
+      if (['admin', 'super_admin'].includes(user.role)) {
+        return res.status(403).json({
+          success: false,
+          error: 'حسابات الإدارة تتطلب تسجيل الدخول عبر البوابة الإدارية المخصصة واستكمال التحقق بخطوتين (OTP/MFA).'
+        });
+      }
+
+      // S03: Prevent account hijacking if email matches but registered with a different Google account
+      if (user.googleSub && user.googleSub !== String(googleId)) {
+        return res.status(403).json({
+          success: false,
+          error: 'هذا الحساب مرتبط بالفعل بحساب Google آخر مختلف.'
+        });
+      }
+
+      if (!user.googleSub && googleId) {
+        await prisma.user.update({
+          where: { id: user.id },
+          data: { googleSub: String(googleId) }
+        });
+      }
+    } else {
       // Create new user automatically
       const generatedUsername = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + Math.random().toString(36).substring(2, 5);
       const randomPassword = await bcrypt.hash(Math.random().toString(36) + Date.now(), 10);
@@ -504,12 +574,14 @@ router.post('/google', async (req, res) => {
         data: {
           fullName: name || cleanEmail.split('@')[0],
           email: cleanEmail,
+          googleSub: String(googleId),
           username: generatedUsername.toLowerCase(),
           password: randomPassword,
           country: 'EG',
           status: 'active',
           balance: 0.0,
-          role: 'user'
+          role: 'user',
+          tokenVersion: 1
         }
       });
 
@@ -520,7 +592,12 @@ router.post('/google', async (req, res) => {
       return res.status(403).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة' });
     }
 
-    const token = generateToken({ id: user.id, email: user.email, role: user.role });
+    const token = generateToken({
+      id: user.id,
+      email: user.email,
+      role: user.role,
+      tokenVersion: user.tokenVersion ?? 1
+    }, '7d');
 
     return res.json({
       success: true,

@@ -65,6 +65,14 @@ const authenticateApi = async (req: any, res: any, next: any) => {
       });
     }
 
+    if (user.status === 'suspended') {
+      return res.status(403).json({
+        SUCCESS: [{
+          ERROR: "Account is suspended. API access is blocked."
+        }]
+      });
+    }
+
     req.apiUser = user;
     next();
   } catch (error) {
@@ -80,6 +88,15 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
   const action = req.body?.action || req.query?.action || req.headers?.['x-action'];
   const parameters = req.body?.parameters || req.query?.parameters;
   const user = req.apiUser;
+
+  const writeActions = ['placeimeiorder', 'placeserverorder'];
+  if (writeActions.includes(String(action).toLowerCase()) && req.method === 'GET') {
+    return res.status(405).json({
+      SUCCESS: [{
+        ERROR: "HTTP GET method is not allowed for order placement. Please use POST."
+      }]
+    });
+  }
 
   try {
     // 1. Parse incoming parameters from various formats (JSON string, Object, or flat form fields)
@@ -332,7 +349,34 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
         }
 
         const rawQty = parseInt(parsedParams.QNT || parsedParams.quantity || parsedParams.custom_QNT || '1', 10) || 1;
-        const finalQty = service.supportsQty ? Math.max(service.minQty || 1, rawQty) : 1;
+        if (service.supportsQty) {
+          if (service.minQty && rawQty < service.minQty) {
+            return res.json({ SUCCESS: [{ ERROR: `Quantity is less than minimum allowed limit (${service.minQty})` }] });
+          }
+          if (service.maxQty && service.maxQty > 0 && rawQty > service.maxQty) {
+            return res.json({ SUCCESS: [{ ERROR: `Quantity exceeds maximum allowed limit (${service.maxQty})` }] });
+          }
+        }
+        const finalQty = service.supportsQty ? rawQty : 1;
+
+        const clientOrderId = parsedParams.clientorderid || parsedParams.apiClientOrderId;
+        if (clientOrderId) {
+          const cleanClientOrderId = String(clientOrderId).trim();
+          const existingClientOrder = await prisma.order.findFirst({
+            where: {
+              userId: user.id,
+              apiClientOrderId: cleanClientOrderId
+            }
+          });
+          if (existingClientOrder) {
+            return res.json({
+              SUCCESS: [{
+                REFERENCEID: existingClientOrder.id,
+                MESSAGE: "Order already submitted with this client order ID"
+              }]
+            });
+          }
+        }
 
         // Base provider cost + 8% margin
         const baseCost = Math.max(0, service.credit || 0);

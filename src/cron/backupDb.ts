@@ -22,11 +22,14 @@ export async function performJSONBackupAndSend() {
   try {
     const dateStr = new Date().toISOString().split('T')[0];
     const jsonFilename = `backup_report_${dateStr}.json`;
-    const jsonFilePath = path.join(__dirname, `../../../${jsonFilename}`);
+    const backupsDir = path.join(process.cwd(), 'backups');
+    if (!fs.existsSync(backupsDir)) {
+      fs.mkdirSync(backupsDir, { recursive: true });
+    }
+    const jsonFilePath = path.join(backupsDir, jsonFilename);
 
     console.log(`[Backup] Fetching data from database for JSON report...`);
     
-    // Fetch users (with balances and info, omitting sensitive credentials)
     const users = await prisma.user.findMany({
       select: {
         id: true,
@@ -49,10 +52,7 @@ export async function performJSONBackupAndSend() {
       }
     });
     
-    // Fetch orders
     const orders = await prisma.order.findMany();
-    
-    // Fetch transactions (wallet deposits/deductions)
     const transactions = await prisma.transaction.findMany();
     const walletTransactions = await prisma.walletTransaction.findMany();
 
@@ -78,14 +78,15 @@ export async function performJSONBackupAndSend() {
     
     const caption = `[REPORT] <b>تقرير النسخة الاحتياطية اليومي (JSON)</b>\n\n<b>التاريخ:</b> ${dateStr}\n<b>المستخدمين:</b> ${users.length}\n<b>الطلبات:</b> ${orders.length}\n<b>المعاملات:</b> ${transactions.length}\n<b>الحجم:</b> ${fileSizeMB} MB`;
     
-    // Send to Telegram
-    await sendDocumentToAdmins(jsonFilePath, caption);
-    console.log('[Backup] JSON Backup sent to Telegram successfully.');
-
-    // Delete the JSON file after sending
-    if (fs.existsSync(jsonFilePath)) {
-      fs.unlinkSync(jsonFilePath);
-      console.log(`[Backup] Deleted local JSON file ${jsonFilePath} to save space.`);
+    const delivered = await sendDocumentToAdmins(jsonFilePath, caption);
+    if (delivered) {
+      console.log('[Backup] JSON Backup sent to Telegram successfully.');
+      if (fs.existsSync(jsonFilePath)) {
+        fs.unlinkSync(jsonFilePath);
+        console.log(`[Backup] Cleaned up temporary backup file ${jsonFilePath}.`);
+      }
+    } else {
+      console.warn(`[Backup] Telegram delivery could not be completed. Local backup preserved at: ${jsonFilePath}`);
     }
   } catch (err) {
     console.error('[Backup] Error creating or sending JSON backup:', err);

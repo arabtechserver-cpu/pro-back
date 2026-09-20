@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import fs from 'fs';
+import path from 'path';
 import { prisma } from "../utils/prisma";
 import {
   sendTelegramPhotoNotification,
@@ -8,32 +10,34 @@ import {
   escapeHtml
 } from '../utils/telegramService';
 import { isAdmin, authenticateToken, optionalAuth } from '../middleware/auth';
+import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emailService';
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
-import { saveBufferToUploads } from '../utils/uploads';
+import { getUploadDir, ensureUploadDir } from '../utils/uploads';
 
 const router = Router();
 
 // GET /api/transactions?userId=... - Fetch Real User Transactions
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', authenticateToken, async (req: any, res) => {
   try {
     const { userId, email } = req.query;
 
     let targetUserId = userId as string;
-    const authUser = (req as any).user;
-    const isAdminUser = authUser && (authUser.role === 'admin' || authUser.role === 'super_admin');
+    const authUser = req.user;
+    const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
 
     // Prevent IDOR: force own user id if not an admin
     if (!isAdminUser && authUser) {
       targetUserId = authUser.id;
     } else if (!targetUserId && email) {
-      const u = await prisma.user.findUnique({ where: { email: (email as string).trim().toLowerCase() } });
+      const u = await prisma.user.findUnique({ where: { email: String(email).trim().toLowerCase() } });
       if (u) targetUserId = u.id;
     }
 
-    if (!targetUserId && isAdminUser) {
-      const listQuery = normalizeTransactionListQuery(req.query as Record<string, unknown>);
+    const executeTransactionFetch = async () => {
+      if (!targetUserId && isAdminUser) {
+        const listQuery = normalizeTransactionListQuery(req.query as Record<string, unknown>);
         const pageQuery = buildAdminTransactionPageQuery(listQuery);
 
         const [rows, filteredTotal, statusCounts] = await Promise.all([
@@ -81,53 +85,165 @@ router.get('/', authenticateToken, async (req, res) => {
         });
       }
 
+      if (!targetUserId) {
+        return res.json({ success: true, transactions: [] });
+      }
 
-    if (!targetUserId) {
-      return res.json({ success: true, transactions: [] });
+      const txs = await prisma.transaction.findMany({
+        where: { userId: targetUserId },
+        orderBy: { createdAt: 'desc' }
+      });
+
+      return res.json({ success: true, transactions: txs });
+    };
+
+    const isInspectingAdminTransactions = isAdminUser && (!targetUserId || targetUserId !== authUser.id);
+    if (isInspectingAdminTransactions) {
+      return dashboardIpGuard(req, res, executeTransactionFetch);
     }
 
-    const txs = await prisma.transaction.findMany({
-      where: { userId: targetUserId },
-      orderBy: { createdAt: 'desc' }
-    });
-
-    return res.json({ success: true, transactions: txs });
+    return executeTransactionFetch();
   } catch (error: any) {
     console.error('Error fetching transactions:', error);
     return res.status(500).json({ error: 'حدث خطأ أثناء جلب سجل المعاملات' });
   }
 });
 
-// GET /api/transactions/:transactionId/receipt - Load a large receipt only when opened by an admin
-router.get('/:transactionId/receipt', isAdmin, async (req, res) => {
+// GET /api/transactions/:transactionId/receipt - Load receipt payload for authorized caller
+router.get('/:transactionId/receipt', authenticateToken, async (req: any, res) => {
   try {
+    const authUser = req.user;
     const transaction = await prisma.transaction.findUnique({
       where: { id: String(req.params.transactionId) },
-      select: { receiptImage: true }
+      select: { id: true, userId: true, receiptImage: true }
     });
 
     if (!transaction) return res.status(404).json({ error: 'العملية غير موجودة' });
     if (!transaction.receiptImage) return res.status(404).json({ error: 'لا توجد صورة إيصال لهذه العملية' });
 
-    return res.json({ success: true, receiptImage: transaction.receiptImage });
+    const isOwner = authUser && transaction.userId === authUser.id;
+    const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
+    if (!isOwner && !isAdminUser) {
+      return res.status(403).json({ error: 'غير مصرح لك بعرض هذا الإيصال' });
+    }
+
+    const sendReceipt = () => res.json({ success: true, receiptImage: transaction.receiptImage });
+    if (!isOwner && isAdminUser) {
+      return dashboardIpGuard(req, res, sendReceipt);
+    }
+    return sendReceipt();
   } catch (error: any) {
     console.error('Error fetching transaction receipt:', error);
     return res.status(500).json({ error: 'حدث خطأ أثناء جلب صورة الإيصال' });
   }
 });
 
-// POST /api/transactions - Submit New Deposit Transaction (SQLite DB & Telegram)
-router.post('/', authenticateToken, async (req, res) => {
+// GET /api/transactions/:transactionId/receipt-file - Stream receipt image securely
+router.get('/:transactionId/receipt-file', authenticateToken, async (req: any, res) => {
   try {
-    const { userId, email, type, amount, method, refNo, receiptImage } = req.body;
+    const authUser = req.user;
+    const transaction = await prisma.transaction.findUnique({
+      where: { id: String(req.params.transactionId) },
+      select: { id: true, userId: true, receiptImage: true }
+    });
+
+    if (!transaction || !transaction.receiptImage) {
+      return res.status(404).json({ error: 'الإيصال غير موجود' });
+    }
+
+    const isOwner = authUser && transaction.userId === authUser.id;
+    const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
+    if (!isOwner && !isAdminUser) {
+      return res.status(403).json({ error: 'غير مصرح لك بالوصول' });
+    }
+
+    const streamFile = () => {
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+
+      if (transaction.receiptImage!.startsWith('data:image/')) {
+        const match = transaction.receiptImage!.match(/^data:(image\/[a-zA-Z0-9+.-]+);base64,(.+)$/s);
+        if (match) {
+          res.setHeader('Content-Type', match[1]);
+          return res.send(Buffer.from(match[2], 'base64'));
+        }
+      }
+
+      const filename = path.basename(transaction.receiptImage!);
+      const filePath = path.join(getUploadDir(), 'receipts', filename);
+      if (fs.existsSync(filePath)) {
+        return res.sendFile(filePath);
+      }
+
+      const legacyPath = path.join(getUploadDir(), filename);
+      if (fs.existsSync(legacyPath)) {
+        return res.sendFile(legacyPath);
+      }
+
+      return res.status(404).json({ error: 'ملف الإيصال غير موجود على الخادم' });
+    };
+
+    if (!isOwner && isAdminUser) {
+      return dashboardIpGuard(req, res, streamFile);
+    }
+    return streamFile();
+  } catch (error: any) {
+    console.error('Error streaming receipt file:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء تحميل ملف الإيصال' });
+  }
+});
+
+// GET /api/transactions/receipts/:filename - Direct file endpoint for saved receipt paths
+router.get('/receipts/:filename', authenticateToken, async (req: any, res) => {
+  try {
+    const authUser = req.user;
+    const filename = path.basename(String(req.params.filename));
+
+    const transaction = await prisma.transaction.findFirst({
+      where: {
+        receiptImage: { contains: filename }
+      },
+      select: { id: true, userId: true, receiptImage: true }
+    });
+
+    if (!transaction) {
+      return res.status(404).json({ error: 'الإيصال غير موجود' });
+    }
+
+    const isOwner = authUser && transaction.userId === authUser.id;
+    const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
+    if (!isOwner && !isAdminUser) {
+      return res.status(403).json({ error: 'غير مصرح لك بالوصول إلى هذا الإيصال' });
+    }
+
+    const streamReceipt = () => {
+      res.setHeader('Cache-Control', 'private, no-store, max-age=0');
+      const filePath = path.join(getUploadDir(), 'receipts', filename);
+      if (fs.existsSync(filePath)) {
+        return res.sendFile(filePath);
+      }
+      return res.status(404).json({ error: 'ملف الإيصال غير موجود على الخادم' });
+    };
+
+    if (!isOwner && isAdminUser) {
+      return dashboardIpGuard(req, res, streamReceipt);
+    }
+    return streamReceipt();
+  } catch (error: any) {
+    console.error('Error serving receipt by filename:', error);
+    return res.status(500).json({ error: 'حدث خطأ أثناء تحميل الإيصال' });
+  }
+});
+
+// POST /api/transactions - Submit New Deposit Transaction
+router.post('/', authenticateToken, async (req: any, res) => {
+  try {
+    const { amount, method, refNo, receiptImage, type } = req.body;
 
     if (!amount || !method || !refNo) {
       return res.status(400).json({ error: 'جميع الحقول مطلوبة (المبلغ، طريقة الدفع، رقم المرجع)' });
     }
 
-    // 1. Authenticated user from token has highest priority and is guaranteed to exist
-    const targetUserId = (req as any).user?.id;
-
+    const targetUserId = req.user?.id;
     if (!targetUserId) {
       return res.status(401).json({ error: 'يُرجى تسجيل الدخول بحسابك أولاً لإتمام طلب الشحن' });
     }
@@ -140,46 +256,7 @@ router.post('/', authenticateToken, async (req, res) => {
       return res.status(400).json({ error: 'المبلغ غير صالح، يرجى إدخال قيمة صحيحة' });
     }
 
-    // 1. Check duplicate reference number (same refNo already pending or completed)
-    const existingSameRef = await prisma.transaction.findFirst({
-      where: {
-        refNo: { equals: cleanRefNo, mode: 'insensitive' },
-        status: { in: ['pending', 'completed'] }
-      }
-    });
-
-    if (existingSameRef) {
-      if (existingSameRef.status === 'pending') {
-        return res.status(400).json({
-          error: `رقم المعاملة أو الإشعار (${cleanRefNo}) مسجل مسبقا وهو قيد المراجعة حاليا من قبل الإدارة. يرجى الانتظار لتفادي التكرار.`
-        });
-      } else {
-        return res.status(400).json({
-          error: `تم اعتماد هذا الإشعار/الرقم المرجعي (${cleanRefNo}) مسبقا وشحن الرصيد به. لا يمكن إعادة استخدامه.`
-        });
-      }
-    }
-
-    // 2. Prevent spam / rapid consecutive deposit requests from the same user (within 30 seconds)
-    const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
-    const recentPendingTx = await prisma.transaction.findFirst({
-      where: {
-        userId: targetUserId,
-        status: 'pending',
-        createdAt: { gte: thirtySecondsAgo }
-      }
-    });
-
-    if (recentPendingTx) {
-      return res.status(429).json({
-        error: 'تم إرسال طلب إيداع من حسابك قبل قليل وهو قيد المراجعة. يرجى الانتظار بضع لحظات قبل إرسال طلب جديد لتجنب التكرار.'
-      });
-    }
-
-    // 3. Handle receipt image with strict MIME validation to prevent Stored XSS
-    let savedReceiptUrl = null;
-    let localDiskPath: string | null = null;
-    
+    let savedReceiptPath: string | null = null;
     if (receiptImage && typeof receiptImage === 'string') {
       if (!receiptImage.startsWith('data:image/')) {
         return res.status(400).json({ error: 'صيغة الصورة غير صالحة. يجب أن تكون Base64 تبدأ بـ data:image/' });
@@ -206,9 +283,15 @@ router.post('/', authenticateToken, async (req, res) => {
             return res.status(400).json({ error: 'حجم صورة الإيصال يجب ألا يتجاوز 10 ميجابايت.' });
           }
 
+          const receiptsDir = path.join(getUploadDir(), 'receipts');
+          if (!fs.existsSync(receiptsDir)) {
+            fs.mkdirSync(receiptsDir, { recursive: true });
+          }
+
           const filename = `receipt_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
-          localDiskPath = saveBufferToUploads(filename, buffer);
-          savedReceiptUrl = `/uploads/${filename}`;
+          const filePath = path.join(receiptsDir, filename);
+          fs.writeFileSync(filePath, buffer);
+          savedReceiptPath = `/api/transactions/receipts/${filename}`;
         } else {
           return res.status(400).json({ error: 'تنسيق الصورة (Base64) غير صالح أو معطوب.' });
         }
@@ -218,17 +301,65 @@ router.post('/', authenticateToken, async (req, res) => {
       }
     }
 
-    const newTransaction = await prisma.transaction.create({
-      data: {
-        userId: targetUserId,
-        type: type || 'شحن محفظة',
-        amount: parseFloat(amount),
-        method: method.trim(),
-        refNo: refNo.trim(),
-        receiptImage: savedReceiptUrl,
-        status: 'pending'
+    let newTransaction: any;
+    try {
+      newTransaction = await prisma.$transaction(async (tx) => {
+        const existingSameRef = await tx.transaction.findFirst({
+          where: {
+            refNo: { equals: cleanRefNo, mode: 'insensitive' },
+            status: { in: ['pending', 'completed'] }
+          }
+        });
+
+        if (existingSameRef) {
+          throw new Error(existingSameRef.status === 'pending'
+            ? `DUPLICATE_PENDING:${cleanRefNo}`
+            : `DUPLICATE_COMPLETED:${cleanRefNo}`);
+        }
+
+        const thirtySecondsAgo = new Date(Date.now() - 30 * 1000);
+        const recentPendingTx = await tx.transaction.findFirst({
+          where: {
+            userId: targetUserId,
+            status: 'pending',
+            createdAt: { gte: thirtySecondsAgo }
+          }
+        });
+
+        if (recentPendingTx) {
+          throw new Error('SPAM_COOLDOWN');
+        }
+
+        return tx.transaction.create({
+          data: {
+            userId: targetUserId,
+            type: type || 'شحن محفظة',
+            amount: parsedAmount,
+            method: cleanMethod,
+            refNo: cleanRefNo,
+            receiptImage: savedReceiptPath,
+            status: 'pending'
+          }
+        });
+      }, { isolationLevel: 'Serializable' });
+    } catch (txErr: any) {
+      if (txErr.message.startsWith('DUPLICATE_PENDING:')) {
+        return res.status(400).json({
+          error: `رقم المعاملة أو الإشعار (${cleanRefNo}) مسجل مسبقا وهو قيد المراجعة حاليا من قبل الإدارة.`
+        });
       }
-    });
+      if (txErr.message.startsWith('DUPLICATE_COMPLETED:')) {
+        return res.status(400).json({
+          error: `تم اعتماد هذا الإشعار/الرقم المرجعي (${cleanRefNo}) مسبقا وشحن الرصيد به. لا يمكن إعادة استخدامه.`
+        });
+      }
+      if (txErr.message === 'SPAM_COOLDOWN') {
+        return res.status(429).json({
+          error: 'تم إرسال طلب إيداع من حسابك قبل قليل وهو قيد المراجعة. يرجى الانتظار بضع لحظات قبل إرسال طلب جديد.'
+        });
+      }
+      throw txErr;
+    }
 
     console.log(`[Pending Deposit Submitted] Saved: ${newTransaction.id} ($${amount}) via ${method} - Awaiting Admin Approval`);
 
@@ -240,8 +371,8 @@ router.post('/', authenticateToken, async (req, res) => {
     const safeMethod = escapeHtml(method);
     const safeRefNo = escapeHtml(refNo);
 
-    const receiptLink = savedReceiptUrl
-      ? `\nصورة الإيصال: <a href="https://arabtechproserver.tech${savedReceiptUrl}">عرض الصورة كاملة</a>`
+    const receiptLink = savedReceiptPath
+      ? `\nصورة الإيصال: <a href="https://arabtechproserver.tech${savedReceiptPath}">عرض الصورة كاملة</a>`
       : '';
 
     const caption = `
@@ -259,9 +390,9 @@ ${receiptLink}
     `.trim();
 
     const inlineKeyboard: any[][] = [];
-    if (savedReceiptUrl) {
+    if (savedReceiptPath) {
       inlineKeyboard.push([
-        { text: "فتح الإيصال بالدقة الكاملة", url: `https://arabtechproserver.tech${savedReceiptUrl}` }
+        { text: "فتح الإيصال بالدقة الكاملة", url: `https://arabtechproserver.tech${savedReceiptPath}` }
       ]);
     }
     inlineKeyboard.push([
@@ -272,7 +403,7 @@ ${receiptLink}
     const replyMarkup = { inline_keyboard: inlineKeyboard };
 
     sendTelegramPhotoNotification({
-      imageSource: localDiskPath || savedReceiptUrl || receiptImage,
+      imageSource: receiptImage || undefined,
       caption,
       replyMarkup
     }).catch((err) => console.error('[Telegram Async Error]:', err));

@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { prisma } from "../utils/prisma";
-import { isAdmin } from '../middleware/auth';
+import { isAdmin, optionalAuth } from '../middleware/auth';
 import { processBase64Images } from '../utils/imageHandler';
+import { sanitizeTutorialAccess } from './video';
 
 const router = Router();
 
@@ -62,17 +63,22 @@ router.get('/posts/:id', async (req, res) => {
 });
 
 // GET all tutorials
-router.get('/tutorials', async (req, res) => {
+router.get('/tutorials', optionalAuth, async (req: any, res) => {
   try {
-    const tutorials = await prisma.videoTutorial.findMany({ orderBy: { createdAt: 'desc' } });
-    res.json(tutorials);
+    const tutorials = await prisma.videoTutorial.findMany({
+      orderBy: { createdAt: 'desc' },
+      include: { videoSeries: true }
+    });
+    const caller = req.user;
+    const sanitized = tutorials.map(t => sanitizeTutorialAccess(t, caller, t.videoSeries));
+    res.json(sanitized);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch tutorials' });
   }
 });
 
 // GET single tutorial
-router.get('/tutorials/:id', async (req, res) => {
+router.get('/tutorials/:id', optionalAuth, async (req: any, res) => {
   try {
     const rawId = req.params.id;
     let decodedId = rawId;
@@ -81,12 +87,14 @@ router.get('/tutorials/:id', async (req, res) => {
     } catch (_) {}
 
     let tutorial = await prisma.videoTutorial.findUnique({
-      where: { id: rawId }
+      where: { id: rawId },
+      include: { videoSeries: true }
     });
 
     if (!tutorial && decodedId !== rawId) {
       tutorial = await prisma.videoTutorial.findUnique({
-        where: { id: decodedId }
+        where: { id: decodedId },
+        include: { videoSeries: true }
       });
     }
 
@@ -98,14 +106,16 @@ router.get('/tutorials/:id', async (req, res) => {
             { titleAr: decodedId },
             { titleEn: decodedId },
           ]
-        }
+        },
+        include: { videoSeries: true }
       });
     }
 
     if (!tutorial) {
       return res.status(404).json({ error: 'Tutorial not found' });
     }
-    res.json(tutorial);
+    const caller = req.user;
+    res.json(sanitizeTutorialAccess(tutorial, caller, tutorial.videoSeries));
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch tutorial' });
   }

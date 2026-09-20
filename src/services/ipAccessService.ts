@@ -1,3 +1,4 @@
+import crypto from 'crypto';
 import { prisma } from '../utils/prisma';
 import { normalizeIp, isValidIp, areIpsEqual, isPrivateOrLocalIp } from '../utils/ipUtils';
 
@@ -30,8 +31,9 @@ export async function isIpRestrictionEnabled(): Promise<boolean> {
     cachedRestrictionState = { enabled: isEnabled, cachedAt: now };
     return isEnabled;
   } catch (err) {
-    // If setting does not exist or DB error, fail open or safely default to false
-    return false;
+    console.error('[IP Access] Error reading IP restriction setting from DB:', err);
+    // Fail-closed in production
+    return process.env.NODE_ENV === 'production';
   }
 }
 
@@ -298,7 +300,9 @@ export async function logDashboardAccess(params: {
         username: params.username || null,
         ipAddress: normalizeIp(params.ipAddress),
         localIp: params.localIp ? normalizeIp(params.localIp) : null,
-        deviceToken: params.deviceToken ? params.deviceToken.slice(0, 50) : null,
+        deviceToken: params.deviceToken
+          ? crypto.createHash('sha256').update(params.deviceToken.trim()).digest('hex').slice(0, 16) + '...'
+          : null,
         userAgent: params.userAgent || null,
         status: params.status,
         reason: params.reason || null

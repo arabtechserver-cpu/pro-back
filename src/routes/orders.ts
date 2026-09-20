@@ -6,6 +6,7 @@ import { buildOrderFieldDetails, resolveOrderServiceType, parseOrderMetadata } f
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
+import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { getServiceQuantityConfig } from '../utils/provider-quantity';
 
 const router = Router();
@@ -22,7 +23,7 @@ function safeJsonParse(val: any, fallback: any = null) {
 }
 
 // Helper to enrich orders with Provider and Service information
-export async function enrichOrdersWithProviderData(orders: any[]) {
+export async function enrichOrdersWithProviderData(orders: any[], isAdmin = false) {
   if (!orders || orders.length === 0) return [];
 
   const serviceIds = Array.from(
@@ -63,8 +64,8 @@ export async function enrichOrdersWithProviderData(orders: any[]) {
     return {
       ...order,
       notes: metadata.visibleNote,
-      apiDetails: metadata.apiDetails || null,
-      provider: srv?.apiProvider
+      apiDetails: isAdmin ? (metadata.apiDetails || null) : null,
+      provider: isAdmin && srv?.apiProvider
         ? {
             id: srv.apiProvider.id,
             name: srv.apiProvider.name,
@@ -78,8 +79,8 @@ export async function enrichOrdersWithProviderData(orders: any[]) {
       serviceType: resolveOrderServiceType(srv?.apiServiceType, srv?.dhruCategory?.name, srv?.groupName),
       groupName: srv?.groupName || null,
       fieldDetails: buildOrderFieldDetails(srv?.requiresCustom, metadata.customFields),
-      cost,
-      profit,
+      cost: isAdmin ? cost : undefined,
+      profit: isAdmin ? profit : undefined,
       customFields: metadata.customFields,
       events: metadata.events,
       rawNotes: metadata.visibleNote
@@ -88,11 +89,11 @@ export async function enrichOrdersWithProviderData(orders: any[]) {
 }
 
 // GET /api/orders - Fetch customer order history or all orders for admin
-router.get('/', authenticateToken, async (req, res) => {
+router.get('/', authenticateToken, async (req: any, res) => {
   try {
     const { userId, email, all } = req.query;
 
-    const authenticatedUser = (req as any).user;
+    const authenticatedUser = req.user;
     if (!authenticatedUser) {
       return res.status(401).json({ error: 'الرجاء تسجيل الدخول أولاً' });
     }
@@ -100,64 +101,69 @@ router.get('/', authenticateToken, async (req, res) => {
     const isAdminUser = authenticatedUser.role === 'admin' || authenticatedUser.role === 'super_admin';
 
     // 1. Admin Dashboard request: Only return all orders if the user is admin AND explicitly requesting all orders
-    // (e.g. from admin panel where all=true or no specific user is targeted AND neither userId nor email is supplied)
     const isExplicitAdminAllRequest = isAdminUser && (all === 'true' || all === '1' || (!userId && !email));
 
     if (isExplicitAdminAllRequest) {
-      const allOrders = await prisma.order.findMany({
-        take: 2000,
-        orderBy: { createdAt: 'desc' },
-        include: {
-          user: {
-            select: {
-              id: true,
-              fullName: true,
-              email: true,
-              username: true,
-              phone: true,
-              balance: true,
-              apiEnabled: true,
-              apiSiteName: true,
-              apiSiteUrl: true,
-              apiKey: true,
-              apiMargin: true
+      const fetchAllOrders = async () => {
+        const allOrders = await prisma.order.findMany({
+          take: 2000,
+          orderBy: { createdAt: 'desc' },
+          include: {
+            user: {
+              select: {
+                id: true,
+                fullName: true,
+                email: true,
+                username: true,
+                phone: true,
+                balance: true,
+                apiEnabled: true,
+                apiSiteName: true,
+                apiSiteUrl: true,
+                apiMargin: true
+              }
             }
           }
-        }
-      });
+        });
 
-      const enriched = await enrichOrdersWithProviderData(allOrders);
-      return res.json({ success: true, orders: enriched });
+        const enriched = await enrichOrdersWithProviderData(allOrders, true);
+        return res.json({ success: true, orders: enriched });
+      };
+
+      return dashboardIpGuard(req, res, fetchAllOrders);
     }
 
-    // 2. Customer Order History request:
-    // Non-admin users are strictly forced to their OWN user ID and email (cannot spy on other users).
-    // Admin users in customer portal scope strictly to their own ID unless specifically inspecting another user.
-    const targetUserId = !isAdminUser
-      ? authenticatedUser.id
-      : (userId ? String(userId).trim() : authenticatedUser.id);
-    const targetEmail = !isAdminUser
-      ? authenticatedUser.email
-      : (email ? String(email).trim().toLowerCase() : authenticatedUser.email);
+    // 2. Customer Order History request
+    const isQueryingOtherUser = isAdminUser && (
+      (userId && String(userId).trim() !== authenticatedUser.id) ||
+      (email && String(email).trim().toLowerCase() !== (authenticatedUser.email || '').toLowerCase())
+    );
 
-    if (!targetUserId && !targetEmail) {
-      return res.json({ success: true, orders: [] });
-    }
+    const executeCustomerOrdersFetch = async () => {
+      const targetUserId = !isAdminUser
+        ? authenticatedUser.id
+        : (userId ? String(userId).trim() : authenticatedUser.id);
+      const targetEmail = !isAdminUser
+        ? authenticatedUser.email
+        : (email ? String(email).trim().toLowerCase() : authenticatedUser.email);
 
-    const orClauses: any[] = [];
-    if (targetUserId) {
-      orClauses.push({ userId: targetUserId });
-    }
-    if (targetEmail) {
-      orClauses.push({ user: { email: targetEmail } });
-    }
+      if (!targetUserId && !targetEmail) {
+        return res.json({ success: true, orders: [] });
+      }
 
-    // Customer request - fetch strictly this user's orders
-    const userOrders = await prisma.order.findMany({
-      where: {
-        OR: orClauses
-      },
-      orderBy: { createdAt: 'desc' },
+      const orClauses: any[] = [];
+      if (targetUserId) {
+        orClauses.push({ userId: targetUserId });
+      }
+      if (targetEmail) {
+        orClauses.push({ user: { email: targetEmail } });
+      }
+
+      const userOrders = await prisma.order.findMany({
+        where: {
+          OR: orClauses
+        },
+        orderBy: { createdAt: 'desc' },
       include: {
         user: {
           select: {
@@ -170,15 +176,20 @@ router.get('/', authenticateToken, async (req, res) => {
             apiEnabled: true,
             apiSiteName: true,
             apiSiteUrl: true,
-            apiKey: true,
             apiMargin: true
           }
         }
       }
     });
 
-    const enriched = await enrichOrdersWithProviderData(userOrders);
-    return res.json({ success: true, orders: enriched });
+      const enriched = await enrichOrdersWithProviderData(userOrders, false);
+      return res.json({ success: true, orders: enriched });
+    };
+
+    if (isQueryingOtherUser) {
+      return dashboardIpGuard(req, res, executeCustomerOrdersFetch);
+    }
+    return executeCustomerOrdersFetch();
   } catch (error: any) {
     console.error('Error fetching orders:', error);
     return res.status(500).json({ error: 'حدث خطأ أثناء جلب سجل الطلبات' });
@@ -398,10 +409,17 @@ router.post('/', authenticateToken, async (req, res) => {
 
         // C. Record Coupon Usage in DB if coupon was used
         if (appliedCoupon) {
-          await tx.coupon.update({
-            where: { id: appliedCoupon.id },
+          const couponUpdate = await tx.coupon.updateMany({
+            where: {
+              id: appliedCoupon.id,
+              usedCount: { lt: appliedCoupon.maxUses }
+            },
             data: { usedCount: { increment: 1 } }
           });
+
+          if (couponUpdate.count === 0) {
+            throw new Error('COUPON_EXHAUSTED');
+          }
 
           await tx.couponUsage.create({
             data: {
@@ -526,6 +544,24 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'الطلب غير موجود' });
     }
 
+    const reservation = await prisma.order.updateMany({
+      where: {
+        id: orderId,
+        status: 'pending',
+        apiOrderId: null,
+        refundedAt: null
+      },
+      data: {
+        status: 'dispatching'
+      }
+    });
+
+    if (reservation.count === 0) {
+      return res.status(400).json({
+        error: 'لا يمكن إرسال الطلب: الطلب قيد الإرسال، أو تم إرساله مسبقاً، أو مسترد، أو ليس في حالة انتظار.'
+      });
+    }
+
     // Look up DhruService & Provider
     const dhruService = await prisma.dhruService.findFirst({
       where: {
@@ -535,6 +571,10 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
     });
 
     if (!dhruService || !dhruService.dhruId) {
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { status: 'pending' }
+      });
       return res.status(400).json({
         error: 'عذراً، هذه الخدمة غير مربوطة بكود خدمة صحيح لدى المزود (Missing Dhru ID)'
       });
@@ -612,7 +652,10 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
 
       await prisma.order.update({
         where: { id: orderId },
-        data: { notes: JSON.stringify(parsedNotes) }
+        data: {
+          status: 'pending',
+          notes: JSON.stringify(parsedNotes)
+        }
       });
 
       // Send immediate Telegram alert to Admin if provider balance is exhausted
@@ -669,6 +712,10 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Error dispatching order to provider:', error);
+    await prisma.order.updateMany({
+      where: { id: req.body?.orderId, status: 'dispatching' },
+      data: { status: 'pending' }
+    });
     return res.status(500).json({ error: 'حدث خطأ أثناء الإرسال للمزود' });
   }
 });
@@ -737,12 +784,13 @@ router.post('/refund', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'الطلب غير موجود' });
     }
 
-    if (['rejected', 'cancelled', 'failed'].includes(order.status)) {
+    if (order.refundedAt) {
       return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقا' });
     }
 
     const refundAmount = order.price || 0;
     const cancelReason = reason ? String(reason).trim() : 'تم إلغاء الطلب من قبل الإدارة واسترجاع المبلغ';
+    const refundRef = `REFUND-#${order.id.slice(-6)}`;
 
     let parsedNotes: any = {};
     try {
@@ -760,16 +808,17 @@ router.post('/refund', isAdmin, async (req, res) => {
 
     parsedNotes.events = events;
 
-    // 1. Wrap in a single Prisma Transaction to prevent Lost Updates
     let updatedOrder: any;
 
     try {
       updatedOrder = await prisma.$transaction(async (tx) => {
         const orderResult = await tx.order.updateMany({
-          where: { id: orderId, status: { notIn: ['rejected', 'cancelled', 'failed'] } },
+          where: { id: orderId, refundedAt: null },
           data: {
             status: 'rejected',
             reply: `ملغي ومسترجع: ${cancelReason}`,
+            refundedAt: now,
+            refundRefNo: refundRef,
             notes: JSON.stringify(parsedNotes)
           }
         });
@@ -835,8 +884,13 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'الطلب غير موجود' });
     }
 
+    if (order.refundedAt) {
+      return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقا' });
+    }
+
     const refundAmount = order.price || 0;
     const cancelReason = reason ? String(reason).trim() : 'تم إلغاء الطلب من المزود واسترجاع المبلغ';
+    const refundRef = `REFUND-PRV-#${order.id.slice(-6)}`;
 
     let parsedNotes: any = {};
     try {
@@ -854,16 +908,17 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
 
     parsedNotes.events = events;
 
-    // Fix Double Refund Race Condition & Lost Updates
     let updatedOrder: any;
 
     try {
       updatedOrder = await prisma.$transaction(async (tx) => {
         const updatedOrderResult = await tx.order.updateMany({
-          where: { id: orderId, status: { notIn: ['rejected', 'cancelled'] } },
+          where: { id: orderId, refundedAt: null },
           data: {
             status: 'rejected',
             reply: `ملغي من المزود: ${cancelReason}`,
+            refundedAt: now,
+            refundRefNo: refundRef,
             notes: JSON.stringify(parsedNotes)
           }
         });
@@ -1001,24 +1056,86 @@ router.post('/check-status', isAdmin, async (req, res) => {
     if (isCompleted) {
       nextStatus = 'completed';
       reply = replyCode || 'تم بنجاح من المزود';
+
+      const updatedOrder = await prisma.order.update({
+        where: { id: orderId },
+        data: { status: nextStatus, reply }
+      });
+
+      return res.json({
+        success: true,
+        message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
+        order: updatedOrder,
+        statusData
+      });
     } else if (isRejected) {
       nextStatus = 'rejected';
       reply = replyCode || statusData.REASON || 'مرفوض من المزود';
+
+      let updatedOrder: any;
+      const targetUserId = order.userId;
+      if (targetUserId && order.price > 0) {
+        const refundRef = `REF-SYNC-${order.id.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+        updatedOrder = await prisma.$transaction(async (tx) => {
+          const updateRes = await tx.order.updateMany({
+            where: { id: orderId, refundedAt: null },
+            data: {
+              status: 'rejected',
+              reply,
+              refundedAt: new Date(),
+              refundRefNo: refundRef
+            }
+          });
+
+          if (updateRes.count === 0) {
+            return await tx.order.findUnique({ where: { id: orderId } });
+          }
+
+          await tx.user.update({
+            where: { id: targetUserId },
+            data: { balance: { increment: order.price } }
+          });
+
+          await tx.transaction.create({
+            data: {
+              userId: targetUserId,
+              type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
+              amount: order.price,
+              method: 'استرجاع تلقائي',
+              refNo: refundRef,
+              status: 'completed'
+            }
+          });
+
+          return await tx.order.findUnique({ where: { id: orderId } });
+        });
+      } else {
+        updatedOrder = await prisma.order.update({
+          where: { id: orderId },
+          data: { status: 'rejected', reply }
+        });
+      }
+
+      return res.json({
+        success: true,
+        message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
+        order: updatedOrder,
+        statusData
+      });
     } else {
       nextStatus = 'processing';
+      const updatedOrder = await prisma.order.update({
+        where: { id: orderId },
+        data: { status: nextStatus, reply }
+      });
+
+      return res.json({
+        success: true,
+        message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
+        order: updatedOrder,
+        statusData
+      });
     }
-
-    const updatedOrder = await prisma.order.update({
-      where: { id: orderId },
-      data: { status: nextStatus, reply }
-    });
-
-    return res.json({
-      success: true,
-      message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
-      order: updatedOrder,
-      statusData
-    });
   } catch (error: any) {
     console.error('Error checking order status:', error);
     return res.status(500).json({ error: 'حدث خطأ أثناء فحص حالة الطلب من المزود' });

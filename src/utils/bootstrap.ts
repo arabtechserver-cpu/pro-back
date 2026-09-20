@@ -66,88 +66,7 @@ export async function bootstrapDatabase() {
       await refreshAdminIds();
     } catch (_) {}
 
-    // Auto-migrate User table to add phone column if missing
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "phone" TEXT;`);
-    } catch (colErr) {
-      // Ignore if column exists or unsupported syntax
-    }
-
-    // Auto-create AllowedDashboardDevice table and missing columns
-    try {
-      await prisma.$executeRawUnsafe(`
-        CREATE TABLE IF NOT EXISTS "AllowedDashboardDevice" (
-          "id" TEXT PRIMARY KEY,
-          "deviceToken" TEXT UNIQUE NOT NULL,
-          "fingerprint" TEXT,
-          "label" TEXT,
-          "localIp" TEXT,
-          "lastIp" TEXT,
-          "isActive" BOOLEAN NOT NULL DEFAULT true,
-          "createdBy" TEXT,
-          "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          "lastAccessAt" TIMESTAMP(3)
-        );
-      `);
-      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AllowedDashboardDevice_deviceToken_idx" ON "AllowedDashboardDevice"("deviceToken");`);
-      await prisma.$executeRawUnsafe(`CREATE INDEX IF NOT EXISTS "AllowedDashboardDevice_isActive_idx" ON "AllowedDashboardDevice"("isActive");`);
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DashboardAccessLog" ADD COLUMN IF NOT EXISTS "localIp" TEXT;`);
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DashboardAccessLog" ADD COLUMN IF NOT EXISTS "deviceToken" TEXT;`);
-    } catch (_) {}
-
-    // 2. Ensure columns exist via auto-migration helpers
-    // Newsletter tables (Subscriber, NewsletterBroadcast) are managed by prisma db push.
-    // Add any missing columns that may not be covered by db push due to data-loss protection:
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "updatedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "createdAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "source" TEXT DEFAULT 'website';`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "Subscriber" ADD COLUMN IF NOT EXISTS "lastNotifiedAt" TIMESTAMP(3);`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "membershipTierId" TEXT;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "customDiscount" DOUBLE PRECISION NOT NULL DEFAULT 0;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiEnabled" BOOLEAN NOT NULL DEFAULT false;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiKey" TEXT;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiSiteName" TEXT;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiSiteUrl" TEXT;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiMargin" DOUBLE PRECISION NOT NULL DEFAULT 0;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "originalPrice" DOUBLE PRECISION;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "api_service_type" TEXT;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "supportsQty" BOOLEAN NOT NULL DEFAULT false;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "minQty" INTEGER NOT NULL DEFAULT 1;`);
-    } catch (_) { /* already exists */ }
-    try {
-      await prisma.$executeRawUnsafe(`ALTER TABLE "DhruService" ADD COLUMN IF NOT EXISTS "maxQty" INTEGER NOT NULL DEFAULT 0;`);
-    } catch (_) { /* already exists */ }
-    console.log('[Bootstrap] Column migration helpers completed.');
+    // Seed and configuration tasks continue below
 
     // 2.5 Auto-backfill quantity support & limits for DhruService records
     try {
@@ -278,6 +197,7 @@ export async function bootstrapDatabase() {
     }
 
   } catch (error) {
-    console.error('[Bootstrap] Error during database bootstrap:', error);
+    console.error('[Bootstrap] Fatal error during database bootstrap:', error);
+    throw error;
   }
 }

@@ -6,14 +6,61 @@ import { promisify } from "util";
 const lookup = promisify(dns.lookup);
 
 export function isPrivateIP(ip: string): boolean {
+  if (!ip) return true;
+
+  const cleanIp = ip.startsWith("::ffff:") ? ip.slice(7) : ip;
+
+  const ipv4Parts = cleanIp.split(".").map(Number);
+  if (ipv4Parts.length === 4 && ipv4Parts.every((p) => !isNaN(p) && p >= 0 && p <= 255)) {
+    const [b0, b1, b2] = ipv4Parts;
+    if (b0 === 0) return true;
+    if (b0 === 10) return true;
+    if (b0 === 100 && b1 >= 64 && b1 <= 127) return true;
+    if (b0 === 127) return true;
+    if (b0 === 169 && b1 === 254) return true;
+    if (b0 === 172 && b1 >= 16 && b1 <= 31) return true;
+    if (b0 === 192 && b1 === 0 && b2 === 0) return true;
+    if (b0 === 192 && b1 === 0 && b2 === 2) return true;
+    if (b0 === 192 && b1 === 88 && b2 === 99) return true;
+    if (b0 === 192 && b1 === 168) return true;
+    if (b0 === 198 && (b1 === 18 || b1 === 19)) return true;
+    if (b0 === 198 && b1 === 51 && b2 === 100) return true;
+    if (b0 === 203 && b1 === 0 && b2 === 113) return true;
+    if (b0 >= 224) return true;
+    return false;
+  }
+
+  const lower = cleanIp.toLowerCase();
+  if (
+    lower === "::" ||
+    lower === "::1" ||
+    lower.startsWith("fe8") ||
+    lower.startsWith("fe9") ||
+    lower.startsWith("fea") ||
+    lower.startsWith("feb") ||
+    lower.startsWith("fc") ||
+    lower.startsWith("fd") ||
+    lower.startsWith("ff") ||
+    lower.startsWith("2001:db8:") ||
+    lower.startsWith("64:ff9b:")
+  ) {
+    return true;
+  }
+
+  return false;
+}
+
+export function isPrivateHostname(hostname: string): boolean {
+  if (!hostname) return true;
+  const lower = hostname.toLowerCase();
   return (
-    ip === "127.0.0.1" ||
-    ip === "::1" ||
-    ip.startsWith("10.") ||
-    ip.startsWith("192.168.") ||
-    /^172\.(1[6-9]|2[0-9]|3[0-1])\./.test(ip) ||
-    ip.startsWith("169.254.") ||
-    ip === "0.0.0.0"
+    lower === "localhost" ||
+    lower.endsWith(".localhost") ||
+    lower.endsWith(".local") ||
+    lower.endsWith(".internal") ||
+    lower.endsWith(".lan") ||
+    lower === "metadata.google.internal" ||
+    isPrivateIP(lower)
   );
 }
 
@@ -39,10 +86,19 @@ type DhruAction =
 
 export function normalizeTargetApiUrl(rawUrl?: string): string {
   let url = (rawUrl || DHRU_API_URL).trim();
-  if (!url.startsWith("http://") && !url.startsWith("https://")) {
+  if (!url) return "";
+
+  if (url.startsWith("http://")) {
+    throw new Error("Insecure HTTP provider URLs are prohibited. HTTPS is strictly required.");
+  }
+  if (!url.startsWith("https://")) {
     url = "https://" + url;
   }
+
   const urlObj = new URL(url);
+  urlObj.username = "";
+  urlObj.password = "";
+
   const path = urlObj.pathname.replace(/\/+$/, "");
   const hasExplicitApiEndpoint =
     /\/api\/index\.php$/i.test(path) ||
@@ -51,12 +107,13 @@ export function normalizeTargetApiUrl(rawUrl?: string): string {
 
   if (!hasExplicitApiEndpoint) {
     if (/\/api$/i.test(path)) {
-      url = url.replace(/\/$/, '') + '/index.php';
+      urlObj.pathname = path + "/index.php";
     } else {
-      url = url.replace(/\/$/, '') + '/api/index.php';
+      urlObj.pathname = path + "/api/index.php";
     }
   }
-  return url;
+
+  return urlObj.toString();
 }
 
 export function dhruApiRequest(
@@ -65,7 +122,13 @@ export function dhruApiRequest(
   provider?: ProviderConfig
 ): Promise<any> {
   return new Promise(async (resolve) => {
-    const targetUrl = normalizeTargetApiUrl(provider?.apiUrl);
+    let targetUrl: string;
+    try {
+      targetUrl = normalizeTargetApiUrl(provider?.apiUrl);
+    } catch (err: any) {
+      return resolve({ error: err.message, SUCCESS: false });
+    }
+
     const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
     const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
 
@@ -76,7 +139,6 @@ export function dhruApiRequest(
     data.append("action", action);
     data.append("requestformat", "JSON");
 
-    // Format parameters standardly for Dhru Fusion
     Object.entries(parameters).forEach(([key, value]) => {
       data.append(`parameters[${key}]`, value);
       data.append(key, value);
@@ -85,11 +147,14 @@ export function dhruApiRequest(
     try {
       const postData = data.toString();
       const urlObj = new URL(targetUrl);
-      
-      // SSRF Mitigation: Block private IPs / localhost
-      if (urlObj.hostname === 'localhost' || isPrivateIP(urlObj.hostname)) {
-        console.error(`[SSRF BLOCK] Attempted to connect to local/private hostname: ${urlObj.hostname}`);
-        return resolve({ error: 'SSRF Attempt Detected: Blocked local/private network address' });
+
+      if (urlObj.protocol !== "https:") {
+        return resolve({ error: "Only HTTPS provider connections are permitted.", SUCCESS: false });
+      }
+
+      if (isPrivateHostname(urlObj.hostname)) {
+        console.error(`[SSRF BLOCK] Attempted to connect to private host: ${urlObj.hostname}`);
+        return resolve({ error: "SSRF Attempt Detected: Blocked local/private network address", SUCCESS: false });
       }
 
       let safeAddress: string;
@@ -97,34 +162,32 @@ export function dhruApiRequest(
         const { address } = await lookup(urlObj.hostname);
         if (isPrivateIP(address)) {
           console.error(`[SSRF BLOCK] Hostname ${urlObj.hostname} resolved to private IP: ${address}`);
-          return resolve({ error: 'SSRF Attempt Detected: Resolved to local/private network address' });
+          return resolve({ error: "SSRF Attempt Detected: Resolved to local/private network address", SUCCESS: false });
         }
         safeAddress = address;
       } catch (dnsErr) {
         console.error(`[DNS Lookup Error] Failed to resolve ${urlObj.hostname}:`, dnsErr);
-        return resolve({ error: 'Failed to resolve provider hostname' });
+        return resolve({ error: "Failed to resolve provider hostname", SUCCESS: false });
       }
 
       const options = {
-        hostname: safeAddress, // Mitigate DNS rebinding by connecting to the checked IP
-        port: urlObj.port || (urlObj.protocol === "https:" ? 443 : 80),
+        hostname: safeAddress,
+        port: urlObj.port ? parseInt(urlObj.port, 10) : 443,
         path: urlObj.pathname + urlObj.search,
         method: "POST",
         family: 4,
-        servername: urlObj.hostname, // SNI for TLS
+        servername: urlObj.hostname,
         headers: {
-          "Host": urlObj.hostname, // Necessary for virtual hosting
+          Host: urlObj.hostname,
           "Content-Type": "application/x-www-form-urlencoded",
           "Content-Length": Buffer.byteLength(postData),
-          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": "ArabTechPro/1.0",
           Accept: "application/json, text/plain, */*"
         },
         timeout: 60000
       };
 
-      const client = urlObj.protocol === "https:" ? https : http;
-
-      const req = client.request(options, (res) => {
+      const req = https.request(options, (res) => {
         let rawText = "";
         res.on("data", (chunk) => { rawText += chunk; });
         res.on("end", () => {

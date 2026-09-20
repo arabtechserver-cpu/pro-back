@@ -1,36 +1,33 @@
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 RUN apk add --no-cache openssl libc6-compat
 
 WORKDIR /app
 
-# Install dependencies
 COPY package*.json ./
 COPY prisma ./prisma/
 RUN npm ci
 
-# Copy source files and build
 COPY . .
 RUN npm run build
 
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 RUN apk add --no-cache openssl libc6-compat
 
 WORKDIR /app
 
-# Copy package files and install production dependencies
 COPY package*.json ./
 COPY prisma ./prisma/
 RUN npm ci --only=production
 RUN npx prisma generate
 
-# Copy built artifacts from builder
-COPY --from=builder /app/dist ./dist
+COPY --from=builder --chown=node:node /app/dist ./dist
 
-# Create persistent upload directory for volume mount
-RUN mkdir -p /app/uploads
+RUN mkdir -p /app/uploads /app/backups && chown -R node:node /app/uploads /app/backups
+
+USER node
 
 EXPOSE 5000
 
-CMD ["npm", "run", "start"]
+CMD ["node", "dist/server.js"]

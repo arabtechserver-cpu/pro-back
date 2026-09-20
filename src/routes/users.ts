@@ -2,10 +2,32 @@ import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import bcrypt from "bcryptjs";
 import { isAdmin, authenticateToken } from "../middleware/auth";
+import { dashboardIpGuard } from "../middleware/dashboardIpGuard";
 import { checkAndAutoUpgradeMembership } from "../utils/membershipUpgrade";
 import { prepareApiActivation } from "../utils/api-activation";
 
 const router = Router();
+
+export const safeUserSelect = {
+  id: true,
+  fullName: true,
+  email: true,
+  username: true,
+  phone: true,
+  country: true,
+  role: true,
+  status: true,
+  balance: true,
+  membershipTierId: true,
+  membershipTier: true,
+  customDiscount: true,
+  apiEnabled: true,
+  apiSiteName: true,
+  apiSiteUrl: true,
+  apiMargin: true,
+  createdAt: true,
+  updatedAt: true
+};
 
 // GET all registered users for Admin Dashboard
 router.get("/", isAdmin, async (req, res) => {
@@ -24,19 +46,18 @@ router.get("/", isAdmin, async (req, res) => {
     if (status && status !== "all") {
       whereClause.status = String(status);
     }
-    if (apiOnly === 'true') {
-      whereClause.AND.push({
-        apiEnabled: true
-      });
+
+    if (apiOnly === "true") {
+      whereClause.apiEnabled = true;
     }
-    if (q) {
-      const searchStr = String(q).trim();
+
+    if (q && typeof q === 'string' && q.trim()) {
+      const searchStr = q.trim();
       whereClause.AND.push({
         OR: [
-          { fullName: { contains: searchStr, mode: 'insensitive' } },
-          { email: { contains: searchStr, mode: 'insensitive' } },
           { username: { contains: searchStr, mode: 'insensitive' } },
-          { phone: { contains: searchStr, mode: 'insensitive' } },
+          { email: { contains: searchStr, mode: 'insensitive' } },
+          { fullName: { contains: searchStr, mode: 'insensitive' } },
           { country: { contains: searchStr, mode: 'insensitive' } }
         ]
       });
@@ -48,6 +69,7 @@ router.get("/", isAdmin, async (req, res) => {
 
     const users = await prisma.user.findMany({
       where: whereClause,
+      select: safeUserSelect,
       orderBy: { createdAt: "desc" }
     });
 
@@ -64,8 +86,8 @@ router.get("/", isAdmin, async (req, res) => {
       }
     });
   } catch (error: any) {
-    console.error("Error fetching users:", error);
-    return res.status(500).json({ error: "Failed to fetch users" });
+    console.error("Fetch users error:", error);
+    return res.status(500).json({ error: "فشل جلب قائمة المستخدمين" });
   }
 });
 
@@ -75,70 +97,60 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
     const { email, userId } = req.query;
     const requestedId = userId ? String(userId) : null;
     const requestedEmail = email ? String(email).trim().toLowerCase() : null;
-
-    // المستخدم المصادَق عليه من الـ token
     const authUser = req.user;
 
-    let u: any = null;
+    const executeProfileFetch = async () => {
+      let u: any = null;
+      const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
 
-    // الأدمن يمكنه الاطلاع على بيانات أي مستخدم
-    if (authUser && ['admin', 'super_admin'].includes(authUser.role)) {
-      if (requestedId) {
-        u = await prisma.user.findUnique({ where: { id: requestedId }, include: { membershipTier: true } });
-      } else if (requestedEmail) {
-        u = await prisma.user.findUnique({ where: { email: requestedEmail }, include: { membershipTier: true } });
+      if (isAdminUser) {
+        if (requestedId) {
+          u = await prisma.user.findUnique({ where: { id: requestedId }, select: safeUserSelect });
+        } else if (requestedEmail) {
+          u = await prisma.user.findUnique({ where: { email: requestedEmail }, select: safeUserSelect });
+        } else {
+          u = await prisma.user.findUnique({ where: { id: authUser.id }, select: safeUserSelect });
+        }
       } else {
-        u = await prisma.user.findUnique({ where: { id: authUser.id }, include: { membershipTier: true } });
+        u = await prisma.user.findUnique({ where: { id: authUser.id }, select: safeUserSelect });
       }
-    } else {
-      // المستخدم العادي يحصل على بياناته فقط — تجاهل أي query param
-      u = await prisma.user.findUnique({ where: { id: authUser.id }, include: { membershipTier: true } });
-    }
 
-    if (!u) {
-      return res.status(404).json({ success: false, error: "User not found" });
-    }
+      if (!u) {
+        return res.status(404).json({ success: false, error: "User not found" });
+      }
 
-    // Auto-check for VIP upgrade
-    const autoUpgraded = await checkAndAutoUpgradeMembership(u.id);
-    if (autoUpgraded) {
-      u = autoUpgraded;
-    }
+      await checkAndAutoUpgradeMembership(u.id);
 
-    const effectiveDiscount = Math.max(
-      u.customDiscount || 0,
-      u.membershipTier?.discountPercentage || 0
+      const effectiveDiscount = Math.max(
+        u.customDiscount || 0,
+        u.membershipTier?.discountPercentage || 0
+      );
+
+      return res.json({
+        success: true,
+        user: {
+          ...u,
+          effectiveDiscount
+        }
+      });
+    };
+
+    const isInspectingOther = authUser && ['admin', 'super_admin'].includes(authUser.role) && (
+      (requestedId && requestedId !== authUser.id) ||
+      (requestedEmail && requestedEmail !== authUser.email)
     );
 
-    return res.json({
-      success: true,
-      user: {
-        id: u.id,
-        fullName: u.fullName,
-        username: u.username,
-        email: u.email,
-        phone: u.phone,
-        country: u.country,
-        balance: u.balance,
-        role: u.role,
-        status: u.status,
-        membershipTierId: u.membershipTierId,
-        membershipTier: u.membershipTier,
-        customDiscount: u.customDiscount || 0,
-        effectiveDiscount: effectiveDiscount,
-        apiEnabled: u.apiEnabled,
-        apiKey: u.apiKey,
-        apiSiteName: u.apiSiteName,
-        apiSiteUrl: u.apiSiteUrl,
-        createdAt: u.createdAt
-      }
-    });
+    if (isInspectingOther) {
+      return dashboardIpGuard(req, res, executeProfileFetch);
+    }
+
+    return executeProfileFetch();
   } catch (error: any) {
     return res.status(500).json({ success: false, error: "Failed to fetch user profile" });
   }
 });
 
-// POST /api/users/update-credentials - Update self profile credentials (username, email, password, phone, fullName)
+// POST /api/users/update-credentials - Update self profile credentials
 router.post("/update-credentials", authenticateToken, async (req: any, res) => {
   try {
     const userId = req.user?.id;
@@ -161,16 +173,20 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
       updateData.fullName = fullName.trim();
     }
 
-    if (username && username !== currentUser.username) {
-      const existingUser = await prisma.user.findUnique({ where: { username } });
+    if (username && username.trim() !== currentUser.username) {
+      const normalizedUsername = username.trim();
+      const existingUser = await prisma.user.findUnique({ where: { username: normalizedUsername } });
       if (existingUser) return res.status(400).json({ error: "اسم المستخدم مسجل بالفعل" });
-      updateData.username = username;
+      updateData.username = normalizedUsername;
     }
 
-    if (email && email !== currentUser.email) {
-      const existingEmail = await prisma.user.findUnique({ where: { email } });
-      if (existingEmail) return res.status(400).json({ error: "البريد الإلكتروني مسجل بالفعل" });
-      updateData.email = email;
+    if (email) {
+      const normalizedEmail = String(email).trim().toLowerCase();
+      if (normalizedEmail !== currentUser.email) {
+        const existingEmail = await prisma.user.findUnique({ where: { email: normalizedEmail } });
+        if (existingEmail) return res.status(400).json({ error: "البريد الإلكتروني مسجل بالفعل" });
+        updateData.email = normalizedEmail;
+      }
     }
 
     if (phone !== undefined && phone !== currentUser.phone) {
@@ -180,6 +196,7 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
     if (newPassword) {
       if (newPassword.length < 8) return res.status(400).json({ error: "كلمة المرور الجديدة يجب أن لا تقل عن 8 أحرف" });
       updateData.password = await bcrypt.hash(newPassword, 10);
+      updateData.tokenVersion = { increment: 1 };
     }
 
     if (Object.keys(updateData).length === 0) {
@@ -188,28 +205,20 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
 
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: updateData
+      data: updateData,
+      select: safeUserSelect
     });
 
     return res.json({
       success: true,
       message: "تم تحديث بيانات الحساب بنجاح",
-      user: {
-        id: updatedUser.id,
-        fullName: updatedUser.fullName,
-        username: updatedUser.username,
-        email: updatedUser.email,
-        phone: updatedUser.phone
-      }
+      user: updatedUser
     });
   } catch (error: any) {
     console.error("Error updating credentials:", error);
     return res.status(500).json({ error: "حدث خطأ أثناء تحديث البيانات" });
   }
 });
-
-// REMOVED: Duplicate /register endpoint (VULN-006)
-// Use /api/auth/register which includes Turnstile + rate limiting
 
 // POST Toggle User Status (Activate / Suspend)
 router.post("/toggle-status", isAdmin, async (req: any, res) => {
@@ -233,9 +242,15 @@ router.post("/toggle-status", isAdmin, async (req: any, res) => {
       return res.status(403).json({ success: false, error: "لا يمكن تعديل حالة حسابات المسؤولين" });
     }
 
+    const updateData: any = { status: newStatus };
+    if (newStatus === "suspended") {
+      updateData.tokenVersion = { increment: 1 };
+    }
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
-      data: { status: newStatus }
+      data: updateData,
+      select: safeUserSelect
     });
 
     return res.json({
@@ -272,6 +287,21 @@ router.delete("/:id", isAdmin, async (req: any, res) => {
       if (targetUser.role === 'super_admin') {
         return res.status(403).json({ error: "لا يمكن حذف حساب المدير العام" });
       }
+    }
+
+    const hasFinancialRecords = await prisma.transaction.findFirst({ where: { userId: id as string } }) ||
+      await prisma.order.findFirst({ where: { userId: id as string } });
+
+    if (hasFinancialRecords) {
+      await prisma.user.update({
+        where: { id: id as string },
+        data: {
+          status: 'suspended',
+          deletedAt: new Date(),
+          tokenVersion: { increment: 1 }
+        }
+      });
+      return res.json({ success: true, message: "تم إيقاف حساب المستخدم وأرشفته للحفاظ على السجلات المالية" });
     }
 
     await prisma.user.delete({ where: { id: id as string } });
@@ -315,7 +345,10 @@ router.post("/change-password", isAdmin, async (req: any, res) => {
 
     await prisma.user.update({
       where: { id: userId },
-      data: { password: hashedPassword }
+      data: {
+        password: hashedPassword,
+        tokenVersion: { increment: 1 }
+      }
     });
 
     return res.json({
@@ -331,7 +364,7 @@ router.post("/change-password", isAdmin, async (req: any, res) => {
 // POST /api/users/update-balance - Admin manually update user wallet balance
 router.post("/update-balance", isAdmin, async (req: any, res) => {
   try {
-    const { userId, newBalance, action, amount } = req.body;
+    const { userId, newBalance, action, amount, reason } = req.body;
     const callerId = req.user?.id;
     const callerRole = req.user?.role;
 
@@ -352,22 +385,52 @@ router.post("/update-balance", isAdmin, async (req: any, res) => {
       return res.status(403).json({ error: "غير مصرح لك بتعديل أرصدة حسابات المسؤولين" });
     }
 
-    let updatedBalance = existingUser.balance;
+    const refNo = "ADJ-" + Date.now().toString(36).toUpperCase() + "-" + Math.random().toString(36).substring(2, 6).toUpperCase();
 
-    if (newBalance !== undefined && newBalance !== null && !isNaN(parseFloat(newBalance))) {
-      updatedBalance = parseFloat(newBalance);
-    } else if (action === "add" && amount) {
-      updatedBalance = existingUser.balance + parseFloat(amount);
-    } else if (action === "subtract" && amount) {
-      updatedBalance = Math.max(0, existingUser.balance - parseFloat(amount));
-    }
+    const { updatedUser, delta } = await prisma.$transaction(async (tx) => {
+      const freshUser = await tx.user.findUnique({ where: { id: userId } });
+      if (!freshUser) {
+        throw new Error("USER_NOT_FOUND");
+      }
 
-    const updatedUser = await prisma.user.update({
-      where: { id: userId },
-      data: { balance: updatedBalance }
+      let finalDelta = 0;
+      let finalType = "manual_adjustment_credit";
+
+      if (newBalance !== undefined && newBalance !== null && !isNaN(parseFloat(newBalance))) {
+        const target = Math.max(0, parseFloat(newBalance));
+        finalDelta = target - freshUser.balance;
+        finalType = finalDelta >= 0 ? "manual_adjustment_credit" : "manual_adjustment_debit";
+      } else if (action === "add" && amount) {
+        finalDelta = Math.abs(parseFloat(amount));
+        finalType = "manual_adjustment_credit";
+      } else if (action === "subtract" && amount) {
+        finalDelta = -Math.abs(parseFloat(amount));
+        finalType = "manual_adjustment_debit";
+      }
+
+      const uUser = await tx.user.update({
+        where: { id: userId },
+        data: { balance: { increment: finalDelta } },
+        select: safeUserSelect
+      });
+
+      await tx.transaction.create({
+        data: {
+          userId,
+          amount: Math.abs(finalDelta),
+          type: finalType,
+          status: "completed",
+          method: "admin_adjustment",
+          refNo,
+          adminActorId: callerId,
+          notes: reason ? String(reason).trim() : `Manual balance adjustment by admin ${callerId}`
+        }
+      });
+
+      return { updatedUser: uUser, delta: Math.abs(finalDelta) };
     });
 
-    const upgraded = await checkAndAutoUpgradeMembership(userId, amount ? parseFloat(amount) : undefined);
+    const upgraded = await checkAndAutoUpgradeMembership(userId, delta);
 
     return res.json({
       success: true,
@@ -386,7 +449,6 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
     const { userId, apiEnabled, apiSiteName, apiSiteUrl, apiMargin } = req.body;
     if (!userId) return res.status(400).json({ error: "معرف المستخدم مطلوب" });
 
-    // Generate API key if enabling for the first time
     let apiKey = req.body.apiKey;
     if (apiEnabled && !apiKey) {
       apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
@@ -404,7 +466,8 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
         apiSiteUrl: apiSiteUrl !== undefined ? (apiSiteUrl ? String(apiSiteUrl).trim() : null) : undefined,
         apiMargin: marginValue,
         ...(apiKey && { apiKey })
-      }
+      },
+      select: safeUserSelect
     });
 
     return res.json({

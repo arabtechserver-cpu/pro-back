@@ -193,7 +193,8 @@ router.post("/assign-user", isAdmin, async (req, res) => {
       }
     });
 
-    return res.json({ success: true, user: updatedUser });
+    const { password, apiKey, ...safeUser } = updatedUser;
+    return res.json({ success: true, user: safeUser });
   } catch (error: any) {
     console.error("Error assigning membership to user:", error);
     return res.status(500).json({ success: false, error: "Failed to assign membership" });

@@ -1,11 +1,27 @@
 import { Router } from 'express';
 import { prisma } from "../utils/prisma";
-import { isAdmin } from '../middleware/auth';
+import { isAdmin, optionalAuth } from '../middleware/auth';
 
 const router = Router();
 
+export function sanitizeTutorialAccess(tutorial: any, user?: any, parentSeries?: any) {
+  if (!tutorial) return tutorial;
+  const series = parentSeries || tutorial.videoSeries;
+  const isPaid = Boolean(series?.isSubscriptionRequired || tutorial.isSubscriptionRequired || tutorial.isFree === false);
+  const isFreePreview = tutorial.isFreePreview === true && tutorial.isFree !== false;
+  const isAdminUser = Boolean(user && (user.role === 'admin' || user.role === 'super_admin'));
+  const hasAccess = isAdminUser || (isPaid ? isFreePreview : true);
+
+  return {
+    ...tutorial,
+    videoUrl: hasAccess ? tutorial.videoUrl : null,
+    hasAccess,
+    isLocked: !hasAccess
+  };
+}
+
 // GET all video series (with their videos)
-router.get('/series', async (req, res) => {
+router.get('/series', optionalAuth, async (req, res) => {
   try {
     const series = await prisma.videoSeries.findMany({
       include: {
@@ -19,17 +35,25 @@ router.get('/series', async (req, res) => {
         createdAt: 'desc'
       }
     });
-    res.json(series);
+
+    const user = (req as any).user;
+    const sanitized = series.map((s) => ({
+      ...s,
+      videoTutorials: s.videoTutorials.map((t) => sanitizeTutorialAccess(t, user, s))
+    }));
+
+    res.json(sanitized);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch video series' });
   }
 });
 
 // GET a specific video series by ID
-router.get('/series/:id', async (req, res) => {
+router.get('/series/:id', optionalAuth, async (req, res) => {
   try {
+    const id = req.params.id as string;
     const series = await prisma.videoSeries.findUnique({
-      where: { id: req.params.id },
+      where: { id },
       include: {
         videoTutorials: {
           orderBy: {
@@ -41,7 +65,14 @@ router.get('/series/:id', async (req, res) => {
     if (!series) {
       return res.status(404).json({ error: 'Video series not found' });
     }
-    res.json(series);
+
+    const user = (req as any).user;
+    const sanitized = {
+      ...series,
+      videoTutorials: (series as any).videoTutorials.map((t: any) => sanitizeTutorialAccess(t, user, series))
+    };
+
+    res.json(sanitized);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch video series' });
   }
@@ -117,7 +148,7 @@ router.delete('/series/:id', isAdmin, async (req, res) => {
 });
 
 // GET all video tutorials (optionally filter by seriesId)
-router.get('/tutorials', async (req, res) => {
+router.get('/tutorials', optionalAuth, async (req, res) => {
   try {
     const { seriesId } = req.query;
     
@@ -137,17 +168,21 @@ router.get('/tutorials', async (req, res) => {
         { createdAt: 'desc' }
       ]
     });
-    res.json(tutorials);
+
+    const user = (req as any).user;
+    const sanitized = tutorials.map((t) => sanitizeTutorialAccess(t, user));
+    res.json(sanitized);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch tutorials' });
   }
 });
 
 // GET single video tutorial
-router.get('/tutorials/:id', async (req, res) => {
+router.get('/tutorials/:id', optionalAuth, async (req, res) => {
   try {
+    const id = req.params.id as string;
     const tutorial = await prisma.videoTutorial.findUnique({
-      where: { id: req.params.id },
+      where: { id },
       include: {
         videoSeries: {
           include: {
@@ -163,7 +198,16 @@ router.get('/tutorials/:id', async (req, res) => {
     if (!tutorial) {
       return res.status(404).json({ error: 'Tutorial not found' });
     }
-    res.json(tutorial);
+
+    const user = (req as any).user;
+    const sanitized = sanitizeTutorialAccess(tutorial, user);
+    if (sanitized.videoSeries?.videoTutorials) {
+      sanitized.videoSeries.videoTutorials = sanitized.videoSeries.videoTutorials.map((t: any) =>
+        sanitizeTutorialAccess(t, user, sanitized.videoSeries)
+      );
+    }
+
+    res.json(sanitized);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch tutorial' });
   }

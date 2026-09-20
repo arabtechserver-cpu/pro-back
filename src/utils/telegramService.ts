@@ -128,7 +128,6 @@ async function answerCallbackQuery(callbackQueryId: string, text?: string, showA
 
 // Handle Incoming Telegram Commands, Text, & Interactive Button Clicks
 async function handleIncomingTelegramUpdate(update: any) {
-  // Determine the chat ID for all incoming updates
   const incomingChatId: string = (
     update?.callback_query?.message?.chat?.id ||
     update?.message?.chat?.id ||
@@ -137,12 +136,20 @@ async function handleIncomingTelegramUpdate(update: any) {
     ''
   ).toString().trim();
 
+  const incomingSenderId: string = (
+    update?.callback_query?.from?.id ||
+    update?.message?.from?.id ||
+    update?.edited_message?.from?.id ||
+    incomingChatId
+  ).toString().trim();
+
   if (!incomingChatId) return;
 
   // Refresh admin IDs from DB on every update so dashboard changes apply immediately
   await refreshAdminIds();
   const currentAdminIds = getAdminChatIds();
-  let isAuthorized = currentAdminIds.includes(incomingChatId);
+  // Authorization requires the individual sender to be an explicitly approved admin (prevents group member bypass)
+  const isAuthorized = currentAdminIds.includes(incomingSenderId);
 
   // -------------------------------------------------------------
   // A. Handle Interactive Inline Button Clicks (callback_query)
@@ -182,14 +189,6 @@ async function handleIncomingTelegramUpdate(update: any) {
         return;
       }
 
-      if (data === 'admin_kick_all') {
-        const keptAdmins = Array.from(new Set([chatId, DEFAULT_ADMIN_CHAT_ID].filter(Boolean)));
-        await saveAdminChatIdsToDb(keptAdmins);
-        await answerCallbackQuery(cbId, 'تم طرد جميع المشرفين الاخرين بنجاح', true);
-        await sendTelegramMessage(chatId, '<b>تم طرد جميع المشرفين الاخرين.</b>\nانت المشرف الوحيد المسجل الان.');
-        return;
-      }
-
       if (data === 'admin_logout') {
         await removeAdminChatId(chatId);
         await answerCallbackQuery(cbId, 'تم تسجيل الخروج بنجاح', true);
@@ -200,7 +199,7 @@ async function handleIncomingTelegramUpdate(update: any) {
       // 1. Send Order to Dhru Provider API: send_dhru_{orderId}
       if (data.startsWith('send_dhru_')) {
         const orderId = data.replace('send_dhru_', '').trim();
-        await answerCallbackQuery(cbId, '⏳ جاري إرسال الطلب للمزود (Dhru)...', false);
+        await answerCallbackQuery(cbId, 'جاري ارسال الطلب للمزود...', false);
 
         const order = await prisma.order.findUnique({
           where: { id: orderId },
@@ -212,8 +211,20 @@ async function handleIncomingTelegramUpdate(update: any) {
           return;
         }
 
-        if (order.apiOrderId) {
-          await sendTelegramMessage(chatId, `[WARNING] <b>تم إرسال هذا الطلب للمزود مسبقاً!</b> (Dhru ID: <code>${order.apiOrderId}</code>)`);
+        const reservation = await prisma.order.updateMany({
+          where: {
+            id: orderId,
+            status: 'pending',
+            apiOrderId: null,
+            refundedAt: null
+          },
+          data: {
+            status: 'dispatching'
+          }
+        });
+
+        if (reservation.count === 0) {
+          await sendTelegramMessage(chatId, `[WARNING] <b>لا يمكن إرسال الطلب:</b> تم إرساله مسبقاً، أو قيد الإرسال، أو مسترد.`);
           return;
         }
 
@@ -223,6 +234,10 @@ async function handleIncomingTelegramUpdate(update: any) {
         });
 
         if (!dhruService || !dhruService.dhruId) {
+          await prisma.order.update({
+            where: { id: orderId },
+            data: { status: 'pending' }
+          });
           await sendTelegramMessage(chatId, `[ERROR] <b>تعذر العثور على معرّف الخدمة (Dhru ID) للخدمة "${order.serviceName}"!</b>`);
           return;
         }
@@ -239,6 +254,10 @@ async function handleIncomingTelegramUpdate(update: any) {
         }
 
         if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
+          await prisma.order.update({
+            where: { id: orderId },
+            data: { status: 'pending' }
+          });
           const rawErrMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION || 'خطأ غير معروف من المزود';
           const isCredit = JSON.stringify(dhruResponse || {}).toLowerCase().includes('credit');
           const finalErrMsg = isCredit
@@ -461,42 +480,11 @@ async function handleIncomingTelegramUpdate(update: any) {
 
   // 1. Handle unauthorized users
   if (!isAuthorized) {
-    const parts = text.split(/\s+/);
-    if (parts.length === 2 && lowerText !== '/start' && lowerText !== '/admin') {
-      const [identifier, password] = parts;
-      try {
-        const user = await prisma.user.findFirst({
-          where: {
-            OR: [{ email: identifier }, { username: identifier }],
-            role: 'admin'
-          }
-        });
-        if (user && await bcrypt.compare(password, user.password)) {
-          await saveAdminChatIdsToDb([...currentAdminIds, chatId]);
-          isAuthorized = true;
-          await sendTelegramMessage(
-            chatId,
-            `<b>تم تسجيل الدخول وتفعيل حساب المشرف بنجاح</b>\n\nمعرف حسابك (Chat ID: <code>${chatId}</code>) تم اعتماده وحفظه في قاعدة البيانات.\nارسل /start لعرض خيارات التحكم.`
-          );
-          return;
-        } else {
-          await sendTelegramMessage(
-            chatId,
-            `<b>بيانات الدخول غير صحيحة</b>\nتاكد من اسم المستخدم وكلمة المرور الخاصة بلوحة التحكم.`
-          );
-          return;
-        }
-      } catch (err: any) {
-        console.error('[Telegram Bot] DB auth error:', err?.message || err);
-        return;
-      }
-    }
-
     if (lowerText === '/start' || lowerText === '/admin') {
-      console.warn(`[Telegram Bot] Unauthorized /start from chat ID: ${chatId}`);
+      console.warn(`[Telegram Bot] Unauthorized access attempt from chat ID: ${chatId}, sender: ${incomingSenderId}`);
       await sendTelegramMessage(
         chatId,
-        `<b>حساب غير مسجل كمشرف</b>\n\nمعرف حسابك (Chat ID): <code>${chatId}</code>\n\nلتفعيل هذا الحساب:\n1. قم باضافة هذا المعرف في لوحة التحكم في صفحة (الاعدادات &gt; معرفات مشرفي تليجرام).\n2. او ارسل اسم المستخدم وكلمة المرور الخاصة بحساب الادمن في رسالة واحدة لتفعيله مباشرة:\n<code>admin password</code>`
+        `<b>حساب غير مسجل كمشرف</b>\n\nمعرف حسابك (Chat ID): <code>${chatId}</code>\n\nلتفعيل هذا الحساب:\nيجب إضافة المعرف حصراً من داخل لوحة تحكم الإدارة (صفحة الإعدادات) بواسطة المدير العام بعد اجتياز التحقق الثنائي (MFA). لا يُقبل تفعيل الحسابات عبر الرسائل النصية المباشرة.`
       );
     }
     return;
@@ -510,7 +498,6 @@ async function handleIncomingTelegramUpdate(update: any) {
       {
         inline_keyboard: [
           [{ text: "عدد المشرفين المسجلين", callback_data: "admin_count" }],
-          [{ text: "طرد جميع المشرفين الاخرين", callback_data: "admin_kick_all" }],
           [{ text: "تسجيل الخروج (الغاء الربط)", callback_data: "admin_logout" }]
         ]
       }
@@ -834,11 +821,16 @@ export async function sendTelegramPhotoNotification({
 }
 
 // Send Document (e.g., Backup ZIP) to Telegram Admins
-export async function sendDocumentToAdmins(filePath: string, caption: string) {
+export async function sendDocumentToAdmins(filePath: string, caption: string): Promise<boolean> {
   try {
     await refreshAdminIds();
     const targetChatIds = getAdminChatIds();
+    if (targetChatIds.length === 0) {
+      console.warn('[Telegram Document Delivery] No admin chat IDs registered');
+      return false;
+    }
 
+    let successCount = 0;
     for (const chatId of targetChatIds) {
       try {
         if (fs.existsSync(filePath)) {
@@ -852,6 +844,7 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
             headers: form.getHeaders(),
             timeout: 60000
           });
+          successCount++;
           console.log(`[Telegram Bot] Document sent successfully to Admin Chat ID: ${chatId}`);
         } else {
           console.error(`[Telegram Bot] Document not found at path: ${filePath}`);
@@ -862,8 +855,10 @@ export async function sendDocumentToAdmins(filePath: string, caption: string) {
         await sendTelegramMessage(chatId, caption + `\n\n<i>[WARNING] تعذر إرسال الملف إليك بسبب مشكلة في الرفع. (${errorMsg})</i>`);
       }
     }
+    return successCount > 0;
   } catch (error: any) {
     console.error('[Telegram Document Delivery Fatal Error]:', error?.message);
+    return false;
   }
 }
 
@@ -894,9 +889,9 @@ export async function sendTelegramAdminOtp(
       '<i>هذا الرمز صالح لمدة 5 دقائق فقط. لا تشارك هذا الرمز مع أي شخص لحماية لوحة التحكم.</i>'
     ].join('\n');
 
-    for (const chatId of chatIds) {
-      await sendTelegramMessage(chatId, message);
-    }
+    // Deliver exclusively to the primary designated admin channel to prevent arbitrary broadcast
+    const primaryChatId = chatIds[0];
+    await sendTelegramMessage(primaryChatId, message);
     return true;
   } catch (error: any) {
     console.error('[Telegram sendTelegramAdminOtp Error]:', error?.message);

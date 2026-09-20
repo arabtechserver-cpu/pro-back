@@ -23,7 +23,16 @@ const optionalAuth = async (req: any, res: any, next: any) => {
       if (token) {
         const decoded: any = jwt.verify(token, JWT_SECRET);
         if (decoded && decoded.id) {
-          req.user = decoded;
+          const user = await prisma.user.findUnique({ where: { id: decoded.id } });
+          if (user) {
+            if (user.status === 'suspended') {
+              return res.status(403).json({ error: 'عذراً، هذا الحساب موقوف حالياً' });
+            }
+            if (decoded.tokenVersion !== undefined && user.tokenVersion !== undefined && decoded.tokenVersion !== user.tokenVersion) {
+              return res.status(401).json({ error: 'انتهت صلاحية الجلسة' });
+            }
+            req.user = user;
+          }
         }
       }
     }
@@ -350,6 +359,7 @@ async function callOpenRouter(messages: any[]) {
       'HTTP-Referer': 'https://arabtechproserver.tech',
       'X-Title': 'Arab Tech Pro Server'
     },
+    signal: AbortSignal.timeout(20000),
     body: JSON.stringify({
       model,
       messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
@@ -380,8 +390,17 @@ router.post('/chat', aiChatLimiter, optionalAuth, async (req: any, res: any) => 
 
     const isComplaintIntent = /شكوى|شكوه|اشتكي|أشتكي|مشكلة|مشكله|تأخر|تأخير|معلق|تذكرة|تذكره|تظلم|نصب|خسارة|حقوق|استرجاع|استرداد|مش شغال|ما وصل|كود غلط/i.test(message);
 
-    let conversation = Array.isArray(history) ? [...history] : [];
-    conversation.push({ role: 'user', content: message });
+    let conversation: any[] = [];
+    if (Array.isArray(history)) {
+      conversation = history
+        .slice(-10)
+        .filter((h: any) => h && (h.role === 'user' || h.role === 'assistant') && typeof h.content === 'string')
+        .map((h: any) => ({
+          role: h.role as 'user' | 'assistant',
+          content: String(h.content).slice(0, 1000)
+        }));
+    }
+    conversation.push({ role: 'user', content: String(message).slice(0, 1000) });
 
     // Try OpenRouter AI
     try {

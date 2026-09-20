@@ -151,6 +151,13 @@ router.delete("/:id", isAdmin, async (req, res) => {
   try {
     const { id } = req.params;
 
+    const existingTier = await prisma.membershipTier.findUnique({
+      where: { id: String(id) }
+    });
+    if (!existingTier) {
+      return res.status(404).json({ success: false, error: "رتبة العضوية غير موجودة" });
+    }
+
     // Unassign users first
     await prisma.user.updateMany({
       where: { membershipTierId: String(id) },
@@ -177,12 +184,40 @@ router.post("/assign-user", isAdmin, async (req, res) => {
       return res.status(400).json({ success: false, error: "معرف المستخدم مطلوب" });
     }
 
+    // Verify user exists
+    const user = await prisma.user.findUnique({
+      where: { id: String(userId) }
+    });
+    if (!user) {
+      return res.status(404).json({ success: false, error: "المستخدم غير موجود" });
+    }
+
     const updateData: any = {};
     if (membershipTierId !== undefined) {
-      updateData.membershipTierId = membershipTierId === "" || membershipTierId === "none" ? null : String(membershipTierId);
+      const isUnassign =
+        membershipTierId === null ||
+        membershipTierId === "" ||
+        membershipTierId === "none" ||
+        membershipTierId === "null" ||
+        membershipTierId === "undefined";
+
+      if (isUnassign) {
+        updateData.membershipTierId = null;
+      } else {
+        const cleanTierId = String(membershipTierId).trim();
+        const tier = await prisma.membershipTier.findUnique({
+          where: { id: cleanTierId }
+        });
+        if (!tier) {
+          return res.status(400).json({ success: false, error: "رتبة العضوية المحددة غير موجودة" });
+        }
+        updateData.membershipTierId = tier.id;
+      }
     }
+
     if (customDiscount !== undefined) {
-      updateData.customDiscount = parseFloat(customDiscount) || 0;
+      const parsedDiscount = parseFloat(customDiscount);
+      updateData.customDiscount = Number.isNaN(parsedDiscount) ? 0 : Math.max(0, Math.min(100, parsedDiscount));
     }
 
     const updatedUser = await prisma.user.update({

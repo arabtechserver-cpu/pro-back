@@ -182,7 +182,12 @@ router.get('/', authenticateToken, async (req: any, res) => {
       }
     });
 
-      const enriched = await enrichOrdersWithProviderData(userOrders, false);
+      let enriched: any[] = userOrders;
+      try {
+        enriched = await enrichOrdersWithProviderData(userOrders, false);
+      } catch (enrichError) {
+        console.error('Error enriching customer orders:', enrichError);
+      }
       return res.json({ success: true, orders: enriched });
     };
 

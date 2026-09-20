@@ -109,7 +109,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             return res.status(403).json({ error: 'Account is suspended' });
           }
           const expectedVersion = user.tokenVersion || 1;
-          if (decoded.tokenVersion !== expectedVersion) {
+          if (decoded.tokenVersion !== undefined && decoded.tokenVersion !== expectedVersion) {
             continue;
           }
           req.user = user;
@@ -143,7 +143,7 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
             return res.status(403).json({ error: 'Account is suspended' });
           }
           const expectedVersion = user.tokenVersion || 1;
-          if (decoded.tokenVersion !== expectedVersion) {
+          if (decoded.tokenVersion !== undefined && decoded.tokenVersion !== expectedVersion) {
             continue;
           }
           req.user = user;

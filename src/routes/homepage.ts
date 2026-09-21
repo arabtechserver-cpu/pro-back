@@ -18,29 +18,29 @@ const defaultConfig = {
     email: "arabtechserver@gmail.com"
   },
   heroSection: {
-    liveTagEn: "Live service portal",
-    liveTagAr: "البوابة المباشرة للخدمات",
+    liveTagEn: "All-in-One Platform for GSM Services",
+    liveTagAr: "منصة متكاملة لخدمات الـ GSM",
     eyebrowEn: "Built for GSM professionals",
     eyebrowAr: "مصممة خصيصاً لمحترفي الـ GSM",
-    title1En: "The complete",
-    title1Ar: "كل ما تحتاجه",
-    title2En: "GSM service portal.",
-    title2Ar: "لإدارة أعمال الـ GSM",
-    leadEn: "Unlock, activate, fund, and track every GSM job from one verified workspace.",
-    leadAr: "افتح، تجاوز، وقم بتفعيل الخدمات فوراً مع منصتنا المؤتمتة عبر الـ API.",
-    btnBrowseEn: "Browse services",
+    title1En: "Everything You Need to Manage",
+    title1Ar: "كل ما تحتاجه لإدارة",
+    title2En: "Your GSM Business",
+    title2Ar: "أعمال الـ GSM",
+    leadEn: "Reliable Services ... Powerful Tools ... Continuous Support\nBecause your success is our mission",
+    leadAr: "خدمات موثوقة ... أدوات قوية ... دعم دائم\nلأن نجاحك هو هدفنا",
+    btnBrowseEn: "Explore All Services",
     btnBrowseAr: "عرض كافة الخدمات",
     btnBrowseUrl: "/pricing",
-    btnJoinEn: "Join free",
+    btnJoinEn: "Join Free Network",
     btnJoinAr: "انضم للشبكة مجاناً",
     btnJoinUrl: "/register",
-    badge1En: "Clear ETAs",
-    badge1Ar: "وقت تسليم حقيقي",
-    badge2En: "Secure checkout",
-    badge2Ar: "مدفوعات آمنة",
-    badge3En: "Direct support",
-    badge3Ar: "دعم على مدار الساعة",
-    heroImage: "/images/promo_hero.webp"
+    badge1En: "+100K Orders",
+    badge1Ar: "+100K طلب منجز",
+    badge2En: "99.9% Success",
+    badge2Ar: "99.9% نسبة النجاح",
+    badge3En: "+1500 Models",
+    badge3Ar: "+1500 طراز مدعوم",
+    heroImage: "/images/hero_phone_mockup.jpg"
   },
   sidebarPromos: {
     featuredTitleEn: "Borneo Schematics",
@@ -57,24 +57,24 @@ const defaultConfig = {
   },
   serviceLanes: {
     imeiTitleEn: "IMEI Services",
-    imeiTitleAr: "خدمات الـ IMEI",
-    imeiDescEn: "Unlocks, checks, and device services",
-    imeiDescAr: "فك شفرات، تقارير فحص، وخدمات الأجهزة",
+    imeiTitleAr: "خدمات IMEI وفك الشبكات",
+    imeiDescEn: "Network Unlock - IMEI Repair - All Global Brands",
+    imeiDescAr: "فك الشبكات - إصلاح IMEI - فك أجهزة - جميع الماركات",
     imeiUrl: "/pricing?cat=imei",
     serverTitleEn: "Server Services",
-    serverTitleAr: "خدمات السيرفرات",
-    serverDescEn: "Credits, activations, and tools",
-    serverDescAr: "أرصدة، تفعيلات، وتراخيص البرامج",
+    serverTitleAr: "خدمات السيرفرات والأرصدة والتراخيص",
+    serverDescEn: "Server activations & credits at competitive prices",
+    serverDescAr: "تفعيل السيرفرات المختلفة بأسعار منافسة",
     serverUrl: "/pricing?cat=server",
     remoteTitleEn: "Remote Services",
     remoteTitleAr: "خدمات التحكم عن بعد",
-    remoteDescEn: "Assisted sessions and support",
-    remoteDescAr: "جلسات صيانة وتفعيل موجهة",
+    remoteDescEn: "Fast & secure remote technical support by specialists",
+    remoteDescAr: "حلول فنية سريعة وآمنة بواسطة فريق متخصص",
     remoteUrl: "/pricing?cat=remote",
     storeTitleEn: "Tools & Store",
-    storeTitleAr: "الأدوات والمتجر",
-    storeDescEn: "Licenses, products, and bundles",
-    storeDescAr: "منتجات رقمية وباقات محترفين",
+    storeTitleAr: "الأدوات والمتجر وباقات المحترفين",
+    storeDescEn: "Exclusive professional software tools and bundles",
+    storeDescAr: "أدوات مميزة وباقات حصرية للمحترفين",
     storeUrl: "/pricing?cat=store"
   },
   toolMarquee: [
@@ -115,6 +115,110 @@ const defaultConfig = {
       image: "/images/promo_chimera.webp",
       url: "/pricing"
     }
+  ],
+  featuredPackages: [
+    {
+      id: "chimera",
+      nameAr: "Chimera Tool",
+      nameEn: "Chimera Tool",
+      subAr: "Activation / Credits",
+      subEn: "Activation / Credits",
+      badgeAr: "Best Seller",
+      badgeEn: "Best Seller",
+      isPopular: true,
+      startingPrice: "$106.59",
+      categoryAr: "Official",
+      categoryEn: "Official",
+      deliveryTimeAr: "فوري 24/7",
+      deliveryTimeEn: "Instant 24/7",
+      iconName: "build",
+      image: "",
+      url: "/pricing?section=Chimera%20Tool",
+      featuresAr: [
+        "تراخيص Chimera Basic و Samsung و All Brands Pro",
+        "فك شبكات وتصليح السيريال وإصلاح IMEI وتعديل الموديل",
+        "تفعيل رسمي مباشر على حساب المستخدم خلال دقيقة",
+        "تحديثات متواصلة لدعم أحدث إصدارات الأندرويد"
+      ],
+      featuresEn: [
+        "Chimera Basic, Samsung, and All Brands Pro licenses",
+        "Carrier unlock, serial repair, and network patching",
+        "Official 1-minute automated account activation",
+        "Continuous support for latest Android security patches"
+      ]
+    },
+    {
+      id: "amt",
+      nameAr: "Android Multi Tool",
+      nameEn: "Android Multi Tool",
+      subAr: "AMT Credits",
+      subEn: "AMT Credits",
+      badgeAr: "Popular",
+      badgeEn: "Popular",
+      isPopular: false,
+      startingPrice: "$0.92",
+      categoryAr: "Instant",
+      categoryEn: "Instant",
+      deliveryTimeAr: "فوري 24/7",
+      deliveryTimeEn: "Instant 24/7",
+      iconName: "bolt",
+      image: "",
+      url: "/pricing?section=Android%20Multi%20Tool",
+      featuresAr: [
+        "دعم كامل لهواتف VIVO و XIAOMI و TECNO و INFINIX",
+        "عمليات FRP وتخطي حسابات وحذف الديمو (Demo Removal)",
+        "شحن فوري بالكريدت مباشرة إلى اسم المستخدم لحسابك",
+        "لا يحتاج إلى بوكس أو دونجل خارجي للعمل"
+      ],
+      featuresEn: [
+        "Full support for Vivo, Xiaomi, Tecno & Infinix",
+        "One-click FRP bypass, factory reset, and demo removal",
+        "Instant credit top-up directly to your username",
+        "No hardware box or dongle required to run"
+      ]
+    },
+    {
+      id: "xiaomi",
+      nameAr: "Xiaomi Remove Account",
+      nameEn: "Xiaomi Remove Account",
+      subAr: "",
+      subEn: "",
+      badgeAr: "Official",
+      badgeEn: "Official",
+      isPopular: false,
+      startingPrice: "$3.41",
+      categoryAr: "Fast Service",
+      categoryEn: "Fast Service",
+      deliveryTimeAr: "1 - 12 ساعة",
+      deliveryTimeEn: "1 - 12 Hours",
+      iconName: "smartphone",
+      image: "",
+      url: "/pricing?section=Xiaomi%20Remove%20Account",
+      featuresAr: [
+        "حذف دائم ونظيف من سيرفر شاومي الرسمي (Clean IMEI)",
+        "دعم الأجهزة من جميع دول العالم (Worldwide Support)",
+        "إمكانية إعادة ضبط المصنع والتحديث بعد الحذف بأمان",
+        "تنفيذ تلقائي عبر الـ API مع استرجاع الرصيد في حال الرفض"
+      ],
+      featuresEn: [
+        "Permanent clean removal from official Xiaomi servers",
+        "Worldwide device support across all regions",
+        "Safe factory reset and OTA updates after completion",
+        "Automated API execution with full refund protection"
+      ]
+    }
+  ],
+  supportedTools: [
+    { id: "chimera", name: "Chimera", url: "/pricing?search=Chimera", image: "" },
+    { id: "unlocktool", name: "UnlockTool", url: "/pricing?search=UnlockTool", image: "" },
+    { id: "borneo", name: "Borneo", url: "/pricing?search=Borneo", image: "" },
+    { id: "iremoval", name: "iRemoval Pro", url: "/pricing?search=iRemoval%20Pro", image: "" },
+    { id: "dft", name: "DFT Pro", url: "/pricing?search=DFT%20Pro", image: "" },
+    { id: "mobilesea", name: "MobileSea Tool", url: "/pricing?search=MobileSea%20Tool", image: "" },
+    { id: "amt", name: "AMT", url: "/pricing?search=AMT", image: "" },
+    { id: "phoenix", name: "Phoenix", url: "/pricing?search=Phoenix", image: "" },
+    { id: "cheetah", name: "Cheetah", url: "/pricing?search=Cheetah", image: "" },
+    { id: "fkey", name: "FKey", url: "/pricing?search=FKey", image: "" }
   ]
 };
 
@@ -171,13 +275,53 @@ function normalizeCampaigns(c: any): any[] {
   return defaultConfig.campaigns;
 }
 
+function normalizeFeaturedPackages(pkgs: any): any[] {
+  if (Array.isArray(pkgs)) {
+    return pkgs.map((p: any, idx: number) => ({
+      id: p.id || `pkg_${idx + 1}`,
+      nameAr: p.nameAr || "",
+      nameEn: p.nameEn || "",
+      subAr: p.subAr || "",
+      subEn: p.subEn || "",
+      badgeAr: p.badgeAr || "",
+      badgeEn: p.badgeEn || "",
+      isPopular: Boolean(p.isPopular),
+      startingPrice: p.startingPrice || "",
+      categoryAr: p.categoryAr || "",
+      categoryEn: p.categoryEn || "",
+      deliveryTimeAr: p.deliveryTimeAr || "",
+      deliveryTimeEn: p.deliveryTimeEn || "",
+      iconName: p.iconName || "inventory_2",
+      image: p.image || "",
+      url: p.url || "/pricing",
+      featuresAr: Array.isArray(p.featuresAr) ? p.featuresAr : [],
+      featuresEn: Array.isArray(p.featuresEn) ? p.featuresEn : []
+    }));
+  }
+  return defaultConfig.featuredPackages;
+}
+
+function normalizeSupportedTools(tools: any): any[] {
+  if (Array.isArray(tools)) {
+    return tools.map((t: any, idx: number) => ({
+      id: t.id || `tool_${idx + 1}`,
+      name: t.name || "",
+      url: t.url || (t.name ? `/pricing?search=${encodeURIComponent(t.name)}` : "/pricing"),
+      image: t.image || ""
+    }));
+  }
+  return defaultConfig.supportedTools;
+}
+
 async function loadConfig() {
   try {
     const dbSetting = await prisma.setting.findUnique({ where: { key: 'homepage_config' } });
     if (dbSetting?.value) {
       const parsed = JSON.parse(dbSetting.value);
       const merged = { ...defaultConfig, ...parsed };
-      merged.campaigns = normalizeCampaigns(parsed.campaigns || defaultConfig.campaigns);
+      merged.campaigns = normalizeCampaigns(parsed.campaigns !== undefined ? parsed.campaigns : defaultConfig.campaigns);
+      merged.featuredPackages = normalizeFeaturedPackages(parsed.featuredPackages !== undefined ? parsed.featuredPackages : defaultConfig.featuredPackages);
+      merged.supportedTools = normalizeSupportedTools(parsed.supportedTools !== undefined ? parsed.supportedTools : defaultConfig.supportedTools);
       return merged;
     }
   } catch (dbErr) {
@@ -189,7 +333,9 @@ async function loadConfig() {
       const data = fs.readFileSync(CONFIG_FILE, 'utf-8');
       const parsed = JSON.parse(data);
       const merged = { ...defaultConfig, ...parsed };
-      merged.campaigns = normalizeCampaigns(parsed.campaigns || defaultConfig.campaigns);
+      merged.campaigns = normalizeCampaigns(parsed.campaigns !== undefined ? parsed.campaigns : defaultConfig.campaigns);
+      merged.featuredPackages = normalizeFeaturedPackages(parsed.featuredPackages !== undefined ? parsed.featuredPackages : defaultConfig.featuredPackages);
+      merged.supportedTools = normalizeSupportedTools(parsed.supportedTools !== undefined ? parsed.supportedTools : defaultConfig.supportedTools);
       return merged;
     }
   } catch (err) {
@@ -199,12 +345,18 @@ async function loadConfig() {
 }
 
 async function saveConfig(config: any) {
-  if (config && config.campaigns) {
+  if (config && config.campaigns !== undefined) {
     config.campaigns = normalizeCampaigns(config.campaigns);
+  }
+  if (config && config.featuredPackages !== undefined) {
+    config.featuredPackages = normalizeFeaturedPackages(config.featuredPackages);
+  }
+  if (config && config.supportedTools !== undefined) {
+    config.supportedTools = normalizeSupportedTools(config.supportedTools);
   }
   const serialized = JSON.stringify(config, null, 2);
 
-  // 1. Save to File
+  // 1. Save to Backend File
   try {
     ensureDirectoryExistence(CONFIG_FILE);
     fs.writeFileSync(CONFIG_FILE, serialized, 'utf-8');
@@ -212,7 +364,17 @@ async function saveConfig(config: any) {
     console.error("Error writing homepage config to file:", fileErr);
   }
 
-  // 2. Save to DB Setting for permanent persistence
+  // 2. Sync to Frontend File if accessible
+  try {
+    const frontendConfigFile = path.join(__dirname, '../../../frontend/src/data/homepage_config.json');
+    if (fs.existsSync(path.dirname(frontendConfigFile))) {
+      fs.writeFileSync(frontendConfigFile, serialized, 'utf-8');
+    }
+  } catch (feErr) {
+    // Non-fatal if frontend directory is elsewhere
+  }
+
+  // 3. Save to DB Setting for permanent persistence
   try {
     await prisma.setting.upsert({
       where: { key: 'homepage_config' },

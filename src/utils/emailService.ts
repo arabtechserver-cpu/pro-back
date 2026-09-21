@@ -135,10 +135,10 @@ export async function sendEmail({
       res.on("data", (c) => (data += c));
       res.on("end", () => {
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-          console.log(`[Resend Success] Email delivered to: ${to} (Subject: ${subject})`);
+          console.log(`[Resend Success] Email delivered`);
           resolve(true);
         } else {
-          console.warn(`[Resend Error ${res.statusCode}]:`, data);
+          console.warn(`[Resend Error] Email provider returned status ${res.statusCode}`);
           if (data && data.includes("domain is not verified")) {
             console.warn(`[Resend Action Required] The domain arabtechproserver.tech is unverified in Resend. Please verify DNS records at https://resend.com/domains.`);
           }
@@ -194,7 +194,7 @@ export async function sendLoopsTransactionalEmail(
           console.log(`[Loops Success] Transactional email sent to: ${email}`);
           resolve(true);
         } else {
-          console.warn(`[Loops Error ${res.statusCode}]:`, data);
+          console.warn(`[Loops Error] Email provider returned status ${res.statusCode}`);
           resolve(false);
         }
       });
@@ -219,7 +219,7 @@ export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<
   const title = `كود التحقق الخاص بك: ${payload.code}`;
   const message = `كود التحقق الخاص بك هو: <b>${payload.code}</b>.\nيرجى إدخاله في الموقع لتأكيد العملية.\nهذا الكود صالح لمدة 10 دقائق فقط للحفاظ على أمان حسابك.`;
 
-  console.log(`[OTP DISPATCH] Destination: ${cleanEmail} | OTP Code: [ ${payload.code} ] | Purpose: ${payload.actionLabel || 'Verification'}`);
+  console.log(`[OTP DISPATCH] Verification email queued for delivery`);
 
   const html = generateLuxuryEmailHtml({
     title,
@@ -237,7 +237,7 @@ export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<
   });
 
   if (!sent) {
-    console.warn(`[OTP FALLBACK LOG] Email delivery failed for ${cleanEmail}. Valid OTP Code is: [ ${payload.code} ]`);
+    console.warn(`[OTP DELIVERY] Verification email delivery failed`);
   }
 
   return sent;

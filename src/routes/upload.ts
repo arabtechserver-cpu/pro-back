@@ -122,6 +122,11 @@ router.get('/:id', async (req, res) => {
     });
 
     if (stored) {
+      // A UUID must not bypass the same privacy rule applied to filenames.
+      if (stored.filename.toLowerCase().includes('receipt')) {
+        res.setHeader('Cache-Control', 'private, no-store');
+        return res.status(403).json({ error: 'Receipts require authenticated transaction access' });
+      }
       const imgBuffer = Buffer.from(stored.data, 'base64');
       res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
       res.setHeader('Content-Length', imgBuffer.length);

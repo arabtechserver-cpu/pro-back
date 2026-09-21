@@ -1,9 +1,10 @@
 import { Request, Response, NextFunction } from "express";
+import { extractClientIp } from '../utils/ipUtils';
 
 
 
 function getPublicClientIp(req: Request): string | null {
-  const candidate = req.headers["cf-connecting-ip"] || req.headers["x-real-ip"];
+  const candidate = extractClientIp(req);
   if (typeof candidate === "string" && candidate.trim()) {
     const ip = candidate.trim().split(",")[0].trim();
     // Exclude loopback and private ranges (RFC 1918)
@@ -40,7 +41,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   }
 
   const token = req.body?.["cf-turnstile-response"] || req.headers["cf-turnstile-response"] || req.body?.turnstileToken;
-  const clientIp = req.headers["cf-connecting-ip"] || req.headers["x-forwarded-for"] || req.socket?.remoteAddress;
+  const clientIp = extractClientIp(req);
 
   if (!token) {
     if (isDev) {

@@ -59,7 +59,7 @@ async function runTests() {
     ip: '10.0.0.4',
     socket: { remoteAddress: '127.0.0.1' }
   };
-  assert.strictEqual(extractClientIp(reqCloudflare), '203.0.113.195', 'Cloudflare CF-Connecting-IP takes highest precedence');
+  assert.strictEqual(extractClientIp(reqCloudflare), '10.0.0.4', 'Untrusted CF-Connecting-IP must not override Express resolution');
 
   const reqXRealIp = {
     headers: {
@@ -68,7 +68,7 @@ async function runTests() {
     },
     ip: '10.0.0.4'
   };
-  assert.strictEqual(extractClientIp(reqXRealIp), '198.51.100.42', 'X-Real-IP takes precedence over X-Forwarded-For');
+  assert.strictEqual(extractClientIp(reqXRealIp), '10.0.0.4', 'Untrusted X-Real-IP must not override Express resolution');
 
   const reqForwarded = {
     headers: {
@@ -76,7 +76,7 @@ async function runTests() {
     },
     ip: '10.0.0.1'
   };
-  assert.strictEqual(extractClientIp(reqForwarded), '203.0.113.50', 'First client in X-Forwarded-For is extracted');
+  assert.strictEqual(extractClientIp(reqForwarded), '10.0.0.1', 'Only the IP resolved against trusted proxies is used');
 
   const reqDirect = {
     headers: {},
@@ -123,6 +123,7 @@ async function runTests() {
   res = createMockResponse();
   req = {
     headers: { 'cf-connecting-ip': '198.51.100.99', 'user-agent': 'Mozilla/5.0 Test' },
+    ip: '198.51.100.99',
     user: { id: 'admin-1', role: 'admin', username: 'admin' }
   };
 
@@ -211,11 +212,11 @@ async function runTests() {
   // Simulate duplicate IP -> addAllowedIp must throw
   prisma.allowedDashboardIP.count = async () => 1;
   prisma.allowedDashboardIP.findMany = async () => [
-    { id: '1', ipAddress: '192.168.1.1', isActive: true }
+    { id: '1', ipAddress: '8.8.8.8', isActive: true }
   ];
   await assert.rejects(
     async () => {
-      await addAllowedIp({ ipAddress: '::ffff:192.168.1.1', label: 'Duplicate' });
+      await addAllowedIp({ ipAddress: '::ffff:8.8.8.8', label: 'Duplicate' });
     },
     /مسجل بالفعل|duplicate/i,
     'Duplicate IP must be rejected even with different formatting'

@@ -169,6 +169,8 @@ model PaymentIntent {
   amount    Float
   currency  String   @default("USD")
   status    String   @default("created")
+  refundedAmount Float @default(0)
+  refunds   PaymentRefund[]
   createdAt DateTime @default(now())
   updatedAt DateTime @default(now()) @updatedAt
   user      User     @relation(fields: [userId], references: [id], onDelete: Restrict)
@@ -177,6 +179,19 @@ model PaymentIntent {
   @@unique([provider, captureId])
   @@index([userId])
   @@index([status])
+}
+
+model PaymentRefund {
+  id                String        @id @default(uuid())
+  paymentIntentId   String
+  resourceId        String        @unique
+  eventId           String        @unique
+  amount            Float
+  currency          String
+  createdAt         DateTime      @default(now())
+  paymentIntent     PaymentIntent @relation(fields: [paymentIntentId], references: [id], onDelete: Cascade)
+
+  @@index([paymentIntentId])
 }
 
 model User {

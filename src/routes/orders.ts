@@ -8,6 +8,7 @@ import { sendOrderConfirmationEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
 import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { getServiceQuantityConfig } from '../utils/provider-quantity';
+import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
 
 const router = Router();
 
@@ -772,10 +773,10 @@ router.post('/complete-manual', isAdmin, async (req, res) => {
   }
 });
 
-// POST /api/orders/refund - Admin Cancel Order Locally & Refund User Balance
+// POST /api/orders/refund - Admin Cancel / Refund User Balance Manually
 router.post('/refund', isAdmin, async (req, res) => {
   try {
-    const { orderId, reason } = req.body;
+    const { orderId, reason, verifyProviderFirst } = req.body;
     if (!orderId) {
       return res.status(400).json({ error: 'معرف الطلب مطلوب' });
     }
@@ -790,11 +791,51 @@ router.post('/refund', isAdmin, async (req, res) => {
     }
 
     if (order.refundedAt) {
-      return res.status(400).json({ error: 'تم إلغاء هذا الطلب واسترجاع رصيده مسبقا' });
+      return res.status(400).json({ error: 'تم استرجاع رصيد هذا الطلب مسبقاً' });
+    }
+
+    let providerCheckResult: any = null;
+    if (verifyProviderFirst && order.apiOrderId) {
+      const dhruService = await prisma.dhruService.findFirst({
+        where: {
+          OR: [{ id: String(order.serviceId) }, { dhruId: String(order.serviceId) }]
+        },
+        include: { dhruCategory: true, apiProvider: true }
+      });
+
+      const providerConfig = dhruService?.apiProvider
+        ? {
+            apiUrl: dhruService.apiProvider.apiUrl,
+            username: dhruService.apiProvider.username,
+            apiKey: dhruService.apiProvider.apiKey
+          }
+        : undefined;
+
+      const serviceType = dhruService
+        ? resolveOrderServiceType(dhruService.apiServiceType, dhruService.dhruCategory?.name, dhruService.groupName)
+        : 'unknown';
+
+      if (dhruService && serviceType === 'imei') {
+        providerCheckResult = await getImeiOrder(order.apiOrderId, providerConfig);
+        if (!providerCheckResult || providerCheckResult.SUCCESS === false || providerCheckResult.ERROR || providerCheckResult.Error) {
+          const fallback = await getServerOrder(order.apiOrderId, providerConfig);
+          if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
+            providerCheckResult = fallback;
+          }
+        }
+      } else {
+        providerCheckResult = await getServerOrder(order.apiOrderId, providerConfig);
+        if (!providerCheckResult || providerCheckResult.SUCCESS === false || providerCheckResult.ERROR || providerCheckResult.Error) {
+          const fallback = await getImeiOrder(order.apiOrderId, providerConfig);
+          if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
+            providerCheckResult = fallback;
+          }
+        }
+      }
     }
 
     const refundAmount = order.price || 0;
-    const cancelReason = reason ? String(reason).trim() : 'تم إلغاء الطلب من قبل الإدارة واسترجاع المبلغ';
+    const cancelReason = reason ? String(reason).trim() : 'استرجاع يدوي من قبل الإدارة';
     const refundRef = `REFUND-#${order.id.slice(-6)}`;
 
     let parsedNotes: any = {};
@@ -806,9 +847,9 @@ router.post('/refund', isAdmin, async (req, res) => {
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
     events.push({
       time: now.toISOString(),
-      action: 'ORDER_CANCELLED_REFUNDED',
-      title: 'إلغاء الطلب واسترجاع الرصيد',
-      desc: `تم إلغاء الطلب وإرجاع كامل المبلغ ($${refundAmount.toFixed(2)} USD) إلى محفظة العميل. السبب: ${cancelReason}`
+      action: 'ORDER_MANUAL_REFUNDED',
+      title: 'استرجاع يدوي للمحفظة',
+      desc: `تم استرجاع كامل المبلغ ($${refundAmount.toFixed(2)} USD) إلى محفظة العميل بواسطة الإدارة. السبب: ${cancelReason}`
     });
 
     parsedNotes.events = events;
@@ -843,10 +884,10 @@ router.post('/refund', isAdmin, async (req, res) => {
           await tx.transaction.create({
             data: {
               userId: order.userId,
-              type: `استرجاع رصيد لطلب ملغي (#${order.id.slice(-6)})`,
+              type: `استرجاع رصيد لطلب (#${order.id.slice(-6)})`,
               amount: refundAmount,
-              method: 'استرجاع للمحفظة',
-              refNo: `REFUND-#${order.id.slice(-6)}`,
+              method: 'استرجاع يدوي للمحفظة',
+              refNo: refundRef,
               status: 'completed'
             }
           });
@@ -863,12 +904,13 @@ router.post('/refund', isAdmin, async (req, res) => {
 
     return res.json({
       success: true,
-      message: `تم إلغاء الطلب بنجاح واسترجاع $${refundAmount.toFixed(2)} USD إلى محفظة العميل!`,
-      order: updatedOrder
+      message: `تم استرجاع $${refundAmount.toFixed(2)} USD بنجاح إلى محفظة العميل!`,
+      order: updatedOrder,
+      providerCheckResult
     });
   } catch (error: any) {
     console.error('Error refunding order:', error);
-    return res.status(500).json({ error: 'حدث خطأ أثناء إلغاء الطلب واسترجاع الرصيد' });
+    return res.status(500).json({ error: 'حدث خطأ أثناء استرجاع الرصيد' });
   }
 });
 
@@ -1077,9 +1119,11 @@ router.post('/check-status', isAdmin, async (req, res) => {
       nextStatus = 'rejected';
       reply = replyCode || statusData.REASON || 'مرفوض من المزود';
 
+      const isNewOrderForAutoRefund = new Date(order.createdAt) >= AUTO_REFUND_CUTOFF_DATE;
       let updatedOrder: any;
       const targetUserId = order.userId;
-      if (targetUserId && order.price > 0) {
+
+      if (isNewOrderForAutoRefund && targetUserId && order.price > 0) {
         const refundRef = `REF-SYNC-${order.id.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
         updatedOrder = await prisma.$transaction(async (tx) => {
           const updateRes = await tx.order.updateMany({
@@ -1114,19 +1158,30 @@ router.post('/check-status', isAdmin, async (req, res) => {
 
           return await tx.order.findUnique({ where: { id: orderId } });
         });
+
+        return res.json({
+          success: true,
+          message: `تم التحقق من المزود: الطلب مرفوض، وتم استرجاع $${order.price.toFixed(2)} USD للمحفظة آلياً`,
+          order: updatedOrder,
+          statusData,
+          autoRefunded: true
+        });
       } else {
         updatedOrder = await prisma.order.update({
           where: { id: orderId },
           data: { status: 'rejected', reply }
         });
-      }
 
-      return res.json({
-        success: true,
-        message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
-        order: updatedOrder,
-        statusData
-      });
+        return res.json({
+          success: true,
+          message: isNewOrderForAutoRefund
+            ? `تم تحديث حالة الطلب من المزود: مرفوض`
+            : `تم التحقق من المزود: الطلب مرفوض (طلب سابق - لم يُسترجع رصيده آلياً لمنع التكرار، يمكنك الاسترجاع يدوياً عبر زر الاسترجاع)`,
+          order: updatedOrder,
+          statusData,
+          canManualRefund: !order.refundedAt
+        });
+      }
     } else {
       nextStatus = 'processing';
       const updatedOrder = await prisma.order.update({

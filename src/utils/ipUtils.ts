@@ -165,47 +165,12 @@ export function areIpsEqual(configuredIp: string, clientIp: string): boolean {
   return false;
 }
 
-/**
- * Extracts the real client IP from Express request, handling:
- * - Cloudflare (cf-connecting-ip)
- * - Standard Reverse Proxies (x-forwarded-for, x-real-ip)
- * - Express trust proxy (req.ip)
- * - Socket address
- */
+/** Use only Express's trusted proxy resolution, never caller-controlled headers. */
 export function extractClientIp(req: Request): string {
-  // 1. Cloudflare genuine client IP header
-  const cfConnectingIp = req.headers['cf-connecting-ip'];
-  if (typeof cfConnectingIp === 'string' && cfConnectingIp.trim()) {
-    const candidate = normalizeIp(cfConnectingIp.split(',')[0]);
+  for (const value of [req.ip, req.socket?.remoteAddress]) {
+    const candidate = normalizeIp(value);
     if (isValidSingleIp(candidate)) return candidate;
   }
-
-  // 2. X-Real-IP header (direct upstream proxy set)
-  const realIp = req.headers['x-real-ip'];
-  if (typeof realIp === 'string' && realIp.trim()) {
-    const candidate = normalizeIp(realIp.split(',')[0]);
-    if (isValidSingleIp(candidate)) return candidate;
-  }
-
-  // 3. Standard X-Forwarded-For header (first hop is client)
-  const forwardedFor = req.headers['x-forwarded-for'];
-  if (typeof forwardedFor === 'string' && forwardedFor.trim()) {
-    const candidate = normalizeIp(forwardedFor.split(',')[0]);
-    if (isValidSingleIp(candidate)) return candidate;
-  }
-
-  // 4. Express req.ip
-  if (req.ip) {
-    const candidate = normalizeIp(req.ip);
-    if (isValidSingleIp(candidate)) return candidate;
-  }
-
-  // 5. Socket remote address
-  const socketAddress = req.socket?.remoteAddress;
-  if (socketAddress) {
-    const candidate = normalizeIp(socketAddress);
-    if (isValidSingleIp(candidate)) return candidate;
-  }
-
-  return '127.0.0.1';
+  // An unknown address must not accidentally match a loopback whitelist entry.
+  return '';
 }

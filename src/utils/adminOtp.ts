@@ -23,7 +23,7 @@ setInterval(() => {
       challengeStore.delete(token);
     }
   }
-}, 60 * 1000);
+}, 60 * 1000).unref();
 
 export function createAdminOtpChallenge(user: { id: string; username: string; email: string }): { challengeToken: string; code: string } {
   const challengeToken = crypto.randomBytes(32).toString('hex');

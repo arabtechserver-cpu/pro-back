@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { getImeiOrder, getServerOrder } from '../utils/dhru-api';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';
+import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
 
 // Run every 3 minutes to avoid flooding provider APIs and triggering rate-limits
 export function initOrderSyncCron() {
@@ -135,32 +136,34 @@ export function initOrderSyncCron() {
           else if (isRejected) {
             const rejectReason = replyCode || statusData.REASON || statusData.reason || 'مرفوض من المزود';
             const refundRef = `REF-${order.id.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+            const isNewOrderForAutoRefund = new Date(order.createdAt) >= AUTO_REFUND_CUTOFF_DATE;
 
-            try {
-              await prisma.$transaction(async (tx) => {
-                const updateRes = await tx.order.updateMany({
-                  where: { id: order.id, refundedAt: null },
-                  data: {
-                    status: 'rejected',
-                    reply: `مرفوض: ${rejectReason}`,
-                    refundedAt: new Date(),
-                    refundRefNo: refundRef
+            const targetUserId = order.userId;
+            if (isNewOrderForAutoRefund && targetUserId && order.price > 0) {
+              try {
+                await prisma.$transaction(async (tx) => {
+                  const updateRes = await tx.order.updateMany({
+                    where: { id: order.id, refundedAt: null },
+                    data: {
+                      status: 'rejected',
+                      reply: `مرفوض: ${rejectReason}`,
+                      refundedAt: new Date(),
+                      refundRefNo: refundRef
+                    }
+                  });
+
+                  if (updateRes.count === 0) {
+                    return;
                   }
-                });
 
-                if (updateRes.count === 0) {
-                  return;
-                }
-
-                if (order.userId && order.price > 0) {
                   await tx.user.update({
-                    where: { id: order.userId },
+                    where: { id: targetUserId },
                     data: { balance: { increment: order.price } }
                   });
 
                   await tx.transaction.create({
                     data: {
-                      userId: order.userId,
+                      userId: targetUserId,
                       type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
                       amount: order.price,
                       method: 'استرجاع تلقائي',
@@ -168,17 +171,26 @@ export function initOrderSyncCron() {
                       status: 'completed'
                     }
                   });
+                });
+
+                // Notify User & Admin
+                const msg = `تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
+                sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
+                console.log(`[CRON] Order #${order.id.slice(-6)} marked as REJECTED and auto-refunded.`);
+              } catch (txErr) {
+                console.error(`[CRON] Transaction failed for rejected order ${order.id}:`, txErr);
+                continue;
+              }
+            } else {
+              await prisma.order.update({
+                where: { id: order.id },
+                data: {
+                  status: 'rejected',
+                  reply: `مرفوض من المزود: ${rejectReason}`
                 }
               });
-            } catch (txErr) {
-              console.error(`[CRON] Transaction failed for rejected order ${order.id}:`, txErr);
-              continue;
+              console.log(`[CRON] Order #${order.id.slice(-6)} marked as REJECTED without auto-refund (prior to cutoff date).`);
             }
-
-            // Notify User & Admin
-            const msg = `تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
-            sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
-            console.log(`[CRON] Order #${order.id.slice(-6)} marked as REJECTED and refunded.`);
           }
           else {
             // Still processing (status 0, 1, 2, "In Process", "Pending", etc.)

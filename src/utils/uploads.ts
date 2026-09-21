@@ -6,13 +6,7 @@ function isDirectoryWritable(dirPath: string): boolean {
     fs.accessSync(dirPath, fs.constants.W_OK);
     return true;
   } catch {
-    try {
-      fs.chmodSync(dirPath, 0o777);
-      fs.accessSync(dirPath, fs.constants.W_OK);
-      return true;
-    } catch {
-      return false;
-    }
+    return false;
   }
 }
 
@@ -154,5 +148,4 @@ export async function restoreImagesToDisk(prismaClient: any): Promise<number> {
     return 0;
   }
 }
-
 

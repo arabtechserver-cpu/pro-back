@@ -3,6 +3,9 @@ import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import { prisma } from './utils/prisma';
+import { publicFileGuard } from './middleware/publicFileGuard';
+import { getTrustedProxies } from './utils/trustedProxy';
+import { startTelegramBotPolling } from './utils/telegramService';
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
@@ -11,7 +14,7 @@ const allowedOrigins = (process.env.FRONTEND_URL || '')
   .map((origin) => origin.trim())
   .filter(Boolean);
 
-app.set('trust proxy', 1);
+app.set('trust proxy', getTrustedProxies());
 
 app.use(helmet({
   contentSecurityPolicy: {
@@ -52,20 +55,14 @@ import { bootstrapDatabase } from './utils/bootstrap';
 import { initOrderSyncCron } from './cron/orderSync';
 import { initBackupCron } from './cron/backupDb';
 
-// S12: Block direct unauthenticated access to receipts under /uploads or public/uploads BEFORE static middleware
-app.use((req, res, next) => {
-  const reqPath = req.path.toLowerCase();
-  if (reqPath.includes('/receipt') || reqPath.includes('receipt_')) {
-    if (req.path.startsWith('/uploads') || req.path.startsWith('/public/uploads')) {
-      return res.status(403).json({ error: 'Access forbidden: receipts require authenticated access' });
-    }
-  }
-  next();
-});
-
 ensureUploadDir();
-app.use(express.static(path.join(__dirname, '../public')));
-app.use('/uploads', express.static(getUploadDir(), { maxAge: '30d', immutable: true }));
+// Guard each static mount, after Express has stripped the mount prefix.
+// Authenticated transaction routes below are deliberately outside these mounts.
+app.use('/uploads', publicFileGuard, express.static(getUploadDir(), { maxAge: '30d', immutable: true }));
+app.use((req, res, next) => {
+  if (req.path.toLowerCase().startsWith('/api/')) return next();
+  return publicFileGuard(req, res, next);
+}, express.static(path.join(__dirname, '../public')));
 
 // Routes
 import authRoutes from './routes/auth';
@@ -127,6 +124,7 @@ app.get('/api/health', (req, res) => {
 async function startServer() {
   try {
     await bootstrapDatabase();
+    await startTelegramBotPolling();
     await restoreImagesToDisk(prisma).catch(() => {});
     initOrderSyncCron();
     initBackupCron();

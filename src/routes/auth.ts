@@ -3,7 +3,7 @@ import crypto from 'crypto';
 import { prisma } from "../utils/prisma";
 import { generateToken, authenticateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
-import { sendTelegramMessage, sendTelegramAlert, sendTelegramAdminOtp, sendTelegramAdminLoginSuccess, escapeHtml } from '../utils/telegramService';
+import { sendTelegramAlert, sendTelegramAdminOtp, sendTelegramAdminLoginSuccess } from '../utils/telegramService';
 import { createAdminOtpChallenge, verifyAdminOtp, resendAdminOtp } from '../utils/adminOtp';
 import { turnstileMiddleware } from '../middleware/turnstileMiddleware';
 import bcrypt from 'bcryptjs';
@@ -34,7 +34,7 @@ setInterval(() => {
   for (const [key, val] of otpStore.entries()) {
     if (now > val.expiresAt) otpStore.delete(key);
   }
-}, 15 * 60 * 1000);
+}, 15 * 60 * 1000).unref();
 
 // POST /api/auth/register - Direct & Fast Registration with Cloudflare Turnstile Protection
 router.post('/register', turnstileMiddleware, async (req, res) => {
@@ -146,14 +146,7 @@ router.post('/send-otp', async (req, res) => {
 
     otpStore.set(cleanEmail, { code: otpCode, expiresAt, attempts: 0 });
 
-    console.log(`[AUTH OTP DISPATCH] Email: ${cleanEmail} | OTP Code: [ ${otpCode} ] | Type: ${type || 'account_verification'} | Expires: 10m`);
-
-    sendTelegramAlert(
-      `<b>[رمز تحقق OTP جديد]</b>\n` +
-      `<b>البريد:</b> <code>${escapeHtml(cleanEmail)}</code>\n` +
-      `<b>رمز التحقق:</b> <code>${otpCode}</code>\n` +
-      `<b>النوع:</b> ${type === 'forgot_password' ? 'استعادة كلمة المرور' : 'تأكيد الحساب'}`
-    ).catch(() => {});
+    console.log(`[AUTH OTP DISPATCH] Verification code queued for delivery`);
 
     sendOtpEmailViaLoops(cleanEmail, {
       code: otpCode,
@@ -313,7 +306,7 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
         email: dbUser.email
       });
 
-      console.log(`[ADMIN OTP DISPATCH] Admin: ${dbUser.username} | OTP Code: [ ${code} ] | IP: ${clientIp || 'unknown'}`);
+      console.log(`[ADMIN OTP DISPATCH] Admin verification challenge created`);
 
       sendTelegramAdminOtp(code, { username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch((err) => {
         console.error('Failed to send admin OTP to telegram:', err?.message || err);
@@ -482,9 +475,9 @@ const handleAdminOtpResend = async (req: any, res: any) => {
       return res.status(200).json({ success: false, error: result.error || 'تعذر إعادة إرسال الكود' });
     }
 
-    console.log(`[ADMIN OTP RESEND] Admin: ${result.user.username} | OTP Code: [ ${result.code} ]`);
+    console.log(`[ADMIN OTP RESEND] Admin verification code queued for delivery`);
 
-    const clientIp = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').toString().split(',')[0].trim();
+    const clientIp = extractClientIp(req);
     sendTelegramAdminOtp(result.code, { username: result.user.username }, clientIp).catch((err) => {
       console.error('Failed to resend admin OTP to telegram:', err?.message || err);
     });

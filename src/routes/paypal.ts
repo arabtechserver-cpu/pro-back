@@ -4,6 +4,7 @@ import { createPayPalOrder, capturePayPalOrder, verifyPayPalWebhookSignature } f
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { authenticateToken } from '../middleware/auth';
+import { applyPayPalRefund, PayPalRefundError } from '../services/paypalRefunds';
 
 const router = Router();
 
@@ -97,7 +98,7 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
         return res.status(403).json({ error: 'غير مصرح لك بتحصيل هذا الطلب المالي' });
       }
 
-      if (paymentIntent.status === 'completed') {
+      if (['completed', 'partially_refunded', 'refunded'].includes(paymentIntent.status)) {
         const currentUser = await prisma.user.findUnique({ where: { id: userId } });
         return res.json({
           success: true,
@@ -258,7 +259,6 @@ router.post('/webhook', async (req, res) => {
 
     const eventType = event.event_type;
     const resource = event.resource;
-    const eventId = String(event.id || '');
 
     // 2. Handle PAYMENT.CAPTURE.COMPLETED (for out-of-band or browser-closed completions)
     if (eventType === 'PAYMENT.CAPTURE.COMPLETED') {
@@ -269,13 +269,14 @@ router.post('/webhook', async (req, res) => {
 
       const rawAmount = resource?.amount?.value;
       const capturedAmount = parseFloat(rawAmount);
-      if (isNaN(capturedAmount) || capturedAmount <= 0) {
+      if (!Number.isFinite(capturedAmount) || capturedAmount <= 0) {
         return res.status(400).json({ error: 'Invalid captured amount' });
       }
 
       const relatedOrderId = resource?.supplementary_data?.related_ids?.order_id;
       const intent = await prisma.paymentIntent.findFirst({
         where: {
+          provider: 'paypal',
           OR: [
             { captureId: captureId },
             ...(relatedOrderId ? [{ orderId: relatedOrderId }] : [])
@@ -294,6 +295,10 @@ router.post('/webhook', async (req, res) => {
       const resourceCurrency = (resource?.amount?.currency_code || 'USD').toUpperCase();
       if (resourceCurrency !== (intent.currency || 'USD').toUpperCase()) {
         return res.status(400).json({ error: 'Currency mismatch in webhook resource' });
+      }
+
+      if (Math.round(capturedAmount * 100) !== Math.round(intent.amount * 100)) {
+        return res.status(400).json({ error: 'Captured amount does not match the payment intent' });
       }
 
       const refNo = `PAYPAL_${intent.id}_${captureId}`;
@@ -330,69 +335,15 @@ router.post('/webhook', async (req, res) => {
 
     // 3. Handle PAYMENT.CAPTURE.REFUNDED / REVERSED
     if (eventType === 'PAYMENT.CAPTURE.REFUNDED' || eventType === 'PAYMENT.CAPTURE.REVERSED') {
-      const captureId = resource?.id || resource?.parent_payment;
-      if (!captureId) {
-        return res.status(400).json({ error: 'Missing capture ID in webhook resource' });
-      }
-
-      const rawAmount = resource?.amount?.value;
-      const refundAmount = parseFloat(rawAmount);
-
-      if (isNaN(refundAmount) || refundAmount <= 0) {
-        return res.status(400).json({ error: 'Invalid or negative refund amount rejected' });
-      }
-
-      const intent = await prisma.paymentIntent.findFirst({
-        where: { captureId: captureId, status: 'completed' }
-      });
-
-      if (!intent) {
-        return res.status(200).json({ received: true, ignored: 'Intent not found or already refunded' });
-      }
-
-      const resourceCurrency = resource?.amount?.currency_code || 'USD';
-      if (resourceCurrency.toUpperCase() !== (intent.currency || 'USD').toUpperCase()) {
-        return res.status(400).json({ error: 'Currency mismatch in webhook resource' });
-      }
-
-      if (refundAmount > intent.amount) {
-        return res.status(400).json({ error: 'Refund amount exceeds intent amount' });
-      }
-
-      const refNo = `PAYPAL_REVERSAL_${captureId}_${eventId || Date.now()}`;
-
-      await prisma.$transaction(async (tx) => {
-        const updateResult = await tx.paymentIntent.updateMany({
-          where: { id: intent.id, status: 'completed' },
-          data: { status: 'refunded' }
-        });
-
-        if (updateResult.count === 0) {
-          return;
-        }
-
-        await tx.transaction.create({
-          data: {
-            userId: intent.userId,
-            type: 'عكس عملية شحن (PayPal Refund/Reversal)',
-            amount: refundAmount,
-            method: 'PayPal Reversal',
-            status: 'completed',
-            refNo: refNo
-          }
-        });
-
-        await tx.user.update({
-          where: { id: intent.userId },
-          data: { balance: { decrement: refundAmount } }
-        });
-      });
-
-      console.log(`[PayPal Webhook] Processed refund/reversal for capture ${captureId}`);
+      const result = await applyPayPalRefund(prisma, event);
+      return res.status(200).json({ received: true, ...result });
     }
 
     return res.status(200).json({ received: true });
   } catch (err: any) {
+    if (err instanceof PayPalRefundError) {
+      return res.status(err.status).json({ error: err.message });
+    }
     console.error('[PayPal Webhook Error]:', err?.message || err);
     return res.status(500).json({ error: 'Webhook processing error' });
   }

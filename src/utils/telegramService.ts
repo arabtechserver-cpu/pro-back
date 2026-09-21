@@ -78,6 +78,7 @@ let lastUpdateId = 0;
 let isPolling = false;
 
 export async function startTelegramBotPolling() {
+  if (!process.env.TELEGRAM_BOT_TOKEN) return;
   if (isPolling) return;
   isPolling = true;
   await refreshAdminIds();
@@ -925,6 +926,4 @@ export async function sendTelegramAdminLoginSuccess(
   }
 }
 
-// Start listener automatically
-startTelegramBotPolling();
-
+// The server starts polling only after successful database initialization.

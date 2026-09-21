@@ -209,16 +209,16 @@ const defaultConfig = {
     }
   ],
   supportedTools: [
-    { id: "chimera", name: "Chimera", url: "/pricing?search=Chimera", image: "" },
-    { id: "unlocktool", name: "UnlockTool", url: "/pricing?search=UnlockTool", image: "" },
-    { id: "borneo", name: "Borneo", url: "/pricing?search=Borneo", image: "" },
-    { id: "iremoval", name: "iRemoval Pro", url: "/pricing?search=iRemoval%20Pro", image: "" },
-    { id: "dft", name: "DFT Pro", url: "/pricing?search=DFT%20Pro", image: "" },
-    { id: "mobilesea", name: "MobileSea Tool", url: "/pricing?search=MobileSea%20Tool", image: "" },
-    { id: "amt", name: "AMT", url: "/pricing?search=AMT", image: "" },
-    { id: "phoenix", name: "Phoenix", url: "/pricing?search=Phoenix", image: "" },
-    { id: "cheetah", name: "Cheetah", url: "/pricing?search=Cheetah", image: "" },
-    { id: "fkey", name: "FKey", url: "/pricing?search=FKey", image: "" }
+    { id: "chimera", name: "Chimera", url: "/pricing?search=Chimera", image: "/images/tools/tool_chimera.png" },
+    { id: "unlocktool", name: "UnlockTool", url: "/pricing?search=UnlockTool", image: "/images/tools/tool_unlocktool.png" },
+    { id: "borneo", name: "Borneo", url: "/pricing?search=Borneo", image: "/images/tools/tool_borneo.png" },
+    { id: "iremoval", name: "iRemoval Pro", url: "/pricing?search=iRemoval%20Pro", image: "/images/tools/tool_iremoval.png" },
+    { id: "dft", name: "DFT Pro", url: "/pricing?search=DFT%20Pro", image: "/images/tools/tool_dft.png" },
+    { id: "mobilesea", name: "MobileSea Tool", url: "/pricing?search=MobileSea%20Tool", image: "/images/tools/tool_mobilesea.png" },
+    { id: "amt", name: "AMT", url: "/pricing?search=AMT", image: "/images/tools/tool_amt.png" },
+    { id: "phoenix", name: "Phoenix", url: "/pricing?search=Phoenix", image: "/images/tools/tool_phoenix.png" },
+    { id: "cheetah", name: "Cheetah", url: "/pricing?search=Cheetah", image: "/images/tools/tool_cheetah.png" },
+    { id: "fkey", name: "FKey", url: "/pricing?search=FKey", image: "/images/tools/tool_fkey.png" }
   ]
 };
 
@@ -252,8 +252,8 @@ function normalizeCampaigns(c: any): any[] {
         tagAr: c.promo1TagAr || "عرض خاص",
         titleEn: c.promo1TitleEn || "Samsung FRP Remove",
         titleAr: c.promo1TitleAr || "حذف حساب جوجل لسامسونج",
-        descEn: c.promo1DescEn || "Instant via IMEI. Support all models.",
-        descAr: c.promo1DescAr || "فك فوري لجميع موديلات سامسونج.",
+        descEn: c.promo1DescEn || "",
+        descAr: c.promo1DescAr || "",
         image: c.promo1Image || "/images/promo_samsung.webp",
         url: c.promo1Url || "/pricing"
       });
@@ -264,8 +264,8 @@ function normalizeCampaigns(c: any): any[] {
         tagAr: c.promo2TagAr || "ترخيص رسمي",
         titleEn: c.promo2TitleEn || "Chimera Tool",
         titleAr: c.promo2TitleAr || "أداة شيميراChimera",
-        descEn: c.promo2DescEn || "Activations and credits available instantly.",
-        descAr: c.promo2DescAr || "تراخيص وأرصدة سريعة ومتاحة فوراً.",
+        descEn: c.promo2DescEn || "",
+        descAr: c.promo2DescAr || "",
         image: c.promo2Image || "/images/promo_chimera.webp",
         url: c.promo2Url || "/pricing"
       });
@@ -276,7 +276,7 @@ function normalizeCampaigns(c: any): any[] {
 }
 
 function normalizeFeaturedPackages(pkgs: any): any[] {
-  if (Array.isArray(pkgs)) {
+  if (Array.isArray(pkgs) && pkgs.length > 0) {
     return pkgs.map((p: any, idx: number) => ({
       id: p.id || `pkg_${idx + 1}`,
       nameAr: p.nameAr || "",
@@ -302,7 +302,7 @@ function normalizeFeaturedPackages(pkgs: any): any[] {
 }
 
 function normalizeSupportedTools(tools: any): any[] {
-  if (Array.isArray(tools)) {
+  if (Array.isArray(tools) && tools.length > 0) {
     return tools.map((t: any, idx: number) => ({
       id: t.id || `tool_${idx + 1}`,
       name: t.name || "",

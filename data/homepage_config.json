@@ -163,15 +163,15 @@
     }
   ],
   "supportedTools": [
-    { "id": "chimera", "name": "Chimera", "url": "/pricing?search=Chimera", "image": "" },
-    { "id": "unlocktool", "name": "UnlockTool", "url": "/pricing?search=UnlockTool", "image": "" },
-    { "id": "borneo", "name": "Borneo", "url": "/pricing?search=Borneo", "image": "" },
-    { "id": "iremoval", "name": "iRemoval Pro", "url": "/pricing?search=iRemoval%20Pro", "image": "" },
-    { "id": "dft", "name": "DFT Pro", "url": "/pricing?search=DFT%20Pro", "image": "" },
-    { "id": "mobilesea", "name": "MobileSea Tool", "url": "/pricing?search=MobileSea%20Tool", "image": "" },
-    { "id": "amt", "name": "AMT", "url": "/pricing?search=AMT", "image": "" },
-    { "id": "phoenix", "name": "Phoenix", "url": "/pricing?search=Phoenix", "image": "" },
-    { "id": "cheetah", "name": "Cheetah", "url": "/pricing?search=Cheetah", "image": "" },
-    { "id": "fkey", "name": "FKey", "url": "/pricing?search=FKey", "image": "" }
+    { "id": "chimera", "name": "Chimera", "url": "/pricing?search=Chimera", "image": "/images/tools/tool_chimera.png" },
+    { "id": "unlocktool", "name": "UnlockTool", "url": "/pricing?search=UnlockTool", "image": "/images/tools/tool_unlocktool.png" },
+    { "id": "borneo", "name": "Borneo", "url": "/pricing?search=Borneo", "image": "/images/tools/tool_borneo.png" },
+    { "id": "iremoval", "name": "iRemoval Pro", "url": "/pricing?search=iRemoval%20Pro", "image": "/images/tools/tool_iremoval.png" },
+    { "id": "dft", "name": "DFT Pro", "url": "/pricing?search=DFT%20Pro", "image": "/images/tools/tool_dft.png" },
+    { "id": "mobilesea", "name": "MobileSea Tool", "url": "/pricing?search=MobileSea%20Tool", "image": "/images/tools/tool_mobilesea.png" },
+    { "id": "amt", "name": "AMT", "url": "/pricing?search=AMT", "image": "/images/tools/tool_amt.png" },
+    { "id": "phoenix", "name": "Phoenix", "url": "/pricing?search=Phoenix", "image": "/images/tools/tool_phoenix.png" },
+    { "id": "cheetah", "name": "Cheetah", "url": "/pricing?search=Cheetah", "image": "/images/tools/tool_cheetah.png" },
+    { "id": "fkey", "name": "FKey", "url": "/pricing?search=FKey", "image": "/images/tools/tool_fkey.png" }
   ]
 }

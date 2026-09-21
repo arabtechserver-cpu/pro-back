@@ -96,24 +96,88 @@ const defaultConfig = {
   },
   campaigns: [
     {
-      tagEn: "Hot Offer",
-      tagAr: "عرض خاص",
+      tagEn: "Limited Time Offer",
+      tagAr: "عرض حصري لفترة محدودة",
       titleEn: "Samsung FRP Remove",
-      titleAr: "حذف حساب جوجل لسامسونج",
-      descEn: "Instant via IMEI. Support all models.",
-      descAr: "فك فوري لجميع موديلات سامسونج.",
-      image: "/images/promo_samsung.webp",
-      url: "/pricing"
+      titleAr: "حذف حساب سامسونج FRP الفوري",
+      descEn: "Instant removal for all Samsung models via direct official server API.",
+      descAr: "فك فوري وتلقائي لجميع طرازات سامسونج عبر السيرفر الرسمي بأعلى سرعة وأمان.",
+      badgeEn: "Direct API Link",
+      badgeAr: "ربط سيرفر مباشر",
+      turnaroundEn: "1 - 5 Mins",
+      turnaroundAr: "1 - 5 دقائق",
+      guaranteeEn: "100% REFUND",
+      guaranteeAr: "ضمان مالي 100%",
+      connectionEn: "DIRECT API",
+      connectionAr: "ربط فوري API",
+      theme: "purple",
+      image: "/images/promo_samsung_clean.png",
+      url: "/pricing?search=Samsung",
+      buttonTextEn: "Order & Activate Now",
+      buttonTextAr: "اطلب الآن وابدأ التفعيل"
     },
     {
       tagEn: "Official Reseller",
-      tagAr: "ترخيص رسمي",
-      titleEn: "Chimera Tool",
-      titleAr: "أداة شيميراChimera",
-      descEn: "Activations and credits available instantly.",
-      descAr: "تراخيص وأرصدة سريعة ومتاحة فوراً.",
-      image: "/images/promo_chimera.webp",
-      url: "/pricing"
+      tagAr: "موزع رسمي معتمد",
+      titleEn: "Official Reseller Campaigns",
+      titleAr: "عروض وحملات الموزعين الرسمية",
+      descEn: "Best wholesale rates, instant activations, and full warranty on tools.",
+      descAr: "أفضل أسعار الجملة المعتمدة، إصدارات جديدة، وتفعيل فوري مع ضمان كامل.",
+      badgeEn: "Full Warranty",
+      badgeAr: "ضمان معتمد كامل",
+      turnaroundEn: "Instant Delivery",
+      turnaroundAr: "تسليم فوري 24/7",
+      guaranteeEn: "100% Guaranteed",
+      guaranteeAr: "ضمان رسمي كامل",
+      connectionEn: "AUTO SERVER",
+      connectionAr: "سيرفر مؤتمت",
+      theme: "cyan",
+      image: "/images/promo_gift_box_clean.png",
+      url: "/pricing",
+      buttonTextEn: "View All Offers",
+      buttonTextAr: "عرض جميع العروض"
+    },
+    {
+      tagEn: "Best Seller Tool",
+      tagAr: "الأداة الأكثر طلباً",
+      titleEn: "Chimera Tool Pro",
+      titleAr: "أداة شيميرا (Chimera Tool)",
+      descEn: "All Brands and Samsung activations with instant server token generation.",
+      descAr: "تراخيص سنوية وتعبئة أرصدة شيميرا بأسعار منافسة وتسليم فوري خلال دقيقة.",
+      badgeEn: "Instant License",
+      badgeAr: "ترخيص فوري مباشر",
+      turnaroundEn: "Under 1 Min",
+      turnaroundAr: "أقل من دقيقة",
+      guaranteeEn: "100% REFUND",
+      guaranteeAr: "ضمان استرجاع 100%",
+      connectionEn: "GSM SERVER",
+      connectionAr: "سيرفر رسمي",
+      theme: "blue",
+      image: "/images/promo_chimera.png",
+      url: "/pricing?section=Chimera%20Tool",
+      buttonTextEn: "Get Chimera License",
+      buttonTextAr: "احصل على ترخيص شيميرا"
+    },
+    {
+      tagEn: "Hardware Diagnostics",
+      tagAr: "مخططات الهاردوير",
+      titleEn: "Borneo Schematics",
+      titleAr: "مخططات بورنيو (Borneo)",
+      descEn: "Official activation codes for 1-PC and 2-PC with instant daily updates.",
+      descAr: "تفعيل رسمي لمخططات بورنيو مع تحديثات يومية ودعم لجميع اللوحات الإلكترونية.",
+      badgeEn: "Daily Updates",
+      badgeAr: "تحديثات يومية متواصلة",
+      turnaroundEn: "Instant 24/7",
+      turnaroundAr: "فوري على مدار الساعة",
+      guaranteeEn: "Official Code",
+      guaranteeAr: "كود تفعيل أصلي",
+      connectionEn: "OFFICIAL DB",
+      connectionAr: "قاعدة بيانات رسمية",
+      theme: "emerald",
+      image: "/images/promo_borneo.png",
+      url: "/pricing?search=Borneo",
+      buttonTextEn: "Activate Borneo",
+      buttonTextAr: "تفعيل باقة بورنيو"
     }
   ],
   featuredPackages: [
@@ -233,40 +297,70 @@ function ensureDirectoryExistence(filePath: string) {
 
 function normalizeCampaigns(c: any): any[] {
   if (Array.isArray(c) && c.length > 0) {
-    return c.map((item: any) => ({
+    return c.map((item: any, idx: number) => ({
+      id: item.id || `camp_${idx + 1}`,
       tagEn: item.tagEn || "",
       tagAr: item.tagAr || "",
       titleEn: item.titleEn || "",
       titleAr: item.titleAr || "",
       descEn: item.descEn || "",
       descAr: item.descAr || "",
+      badgeEn: item.badgeEn || "",
+      badgeAr: item.badgeAr || "",
+      turnaroundEn: item.turnaroundEn || "",
+      turnaroundAr: item.turnaroundAr || "",
+      guaranteeEn: item.guaranteeEn || "",
+      guaranteeAr: item.guaranteeAr || "",
+      connectionEn: item.connectionEn || "",
+      connectionAr: item.connectionAr || "",
+      theme: item.theme || "purple",
       image: item.image || "",
-      url: item.url || "/pricing"
+      url: item.url || "/pricing",
+      buttonTextEn: item.buttonTextEn || "",
+      buttonTextAr: item.buttonTextAr || ""
     }));
   }
   if (c && typeof c === "object") {
     const list: any[] = [];
     if (c.promo1TitleAr || c.promo1Image || c.promo1TitleEn) {
       list.push({
-        tagEn: c.promo1TagEn || "Hot Offer",
-        tagAr: c.promo1TagAr || "عرض خاص",
+        tagEn: c.promo1TagEn || "Limited Time Offer",
+        tagAr: c.promo1TagAr || "عرض حصري",
         titleEn: c.promo1TitleEn || "Samsung FRP Remove",
-        titleAr: c.promo1TitleAr || "حذف حساب جوجل لسامسونج",
+        titleAr: c.promo1TitleAr || "حذف حساب سامسونج FRP",
         descEn: c.promo1DescEn || "",
         descAr: c.promo1DescAr || "",
-        image: c.promo1Image || "/images/promo_samsung.webp",
+        badgeEn: "Direct API",
+        badgeAr: "ربط مباشر",
+        turnaroundEn: "1 - 5 Mins",
+        turnaroundAr: "1 - 5 دقائق",
+        guaranteeEn: "100% REFUND",
+        guaranteeAr: "ضمان 100%",
+        connectionEn: "DIRECT API",
+        connectionAr: "ربط فوري",
+        theme: "purple",
+        image: c.promo1Image || "/images/promo_samsung_clean.png",
         url: c.promo1Url || "/pricing"
       });
     }
     if (c.promo2TitleAr || c.promo2Image || c.promo2TitleEn) {
       list.push({
         tagEn: c.promo2TagEn || "Official Reseller",
-        tagAr: c.promo2TagAr || "ترخيص رسمي",
-        titleEn: c.promo2TitleEn || "Chimera Tool",
-        titleAr: c.promo2TitleAr || "أداة شيميراChimera",
+        tagAr: c.promo2TagAr || "موزع رسمي معتمد",
+        titleEn: c.promo2TitleEn || "Official Reseller Campaigns",
+        titleAr: c.promo2TitleAr || "عروض وحملات الموزعين الرسمية",
         descEn: c.promo2DescEn || "",
         descAr: c.promo2DescAr || "",
-        image: c.promo2Image || "/images/promo_chimera.webp",
+        badgeEn: "Full Warranty",
+        badgeAr: "ضمان كامل",
+        turnaroundEn: "Instant",
+        turnaroundAr: "تسليم فوري",
+        guaranteeEn: "100% Guaranteed",
+        guaranteeAr: "ضمان رسمي",
+        connectionEn: "AUTO SERVER",
+        connectionAr: "سيرفر مؤتمت",
+        theme: "cyan",
+        image: c.promo2Image || "/images/promo_gift_box_clean.png",
         url: c.promo2Url || "/pricing"
       });
     }

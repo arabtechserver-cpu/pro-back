@@ -11,7 +11,8 @@ const couponValidateLimiter = rateLimit({
   message: {
     valid: false,
     error: "تجاوزت الحد المسموح به لمحاولات فحص أكواد الخصم، يرجى المحاولة بعد قليل."
-  }
+  },
+  validate: { xForwardedForHeader: false }
 });
 
 // GET /api/coupons - List all coupons with stats (Admin only)

@@ -13,7 +13,8 @@ const externalApiLimiter = rateLimit({
     SUCCESS: [{
       ERROR: "Too many requests. Rate limit exceeded, please try again in a minute."
     }]
-  }
+  },
+  validate: { xForwardedForHeader: false }
 });
 
 router.use(externalApiLimiter);

@@ -9,7 +9,8 @@ const router = Router();
 const analyticsLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 60,
-  message: { error: 'Too many requests' }
+  message: { error: 'Too many requests' },
+  validate: { xForwardedForHeader: false }
 });
 
 // POST /api/analytics/events - Log an anonymous or authenticated conversion event

@@ -17,7 +17,8 @@ const router = Router();
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 20,
-  message: { success: false, error: 'تجاوزت الحد المسموح به، يرجى المحاولة بعد قليل.' }
+  message: { success: false, error: 'تجاوزت الحد المسموح به، يرجى المحاولة بعد قليل.' },
+  validate: { xForwardedForHeader: false }
 });
 
 router.use(authLimiter);
@@ -306,7 +307,7 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
         email: dbUser.email
       });
 
-      console.log(`[ADMIN OTP DISPATCH] Admin verification challenge created`);
+      console.log(`[ADMIN OTP DISPATCH] Admin: ${dbUser.username} | OTP Code: [ ${code} ] | IP: ${clientIp || 'unknown'}`);
 
       sendTelegramAdminOtp(code, { username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch((err) => {
         console.error('Failed to send admin OTP to telegram:', err?.message || err);
@@ -475,7 +476,7 @@ const handleAdminOtpResend = async (req: any, res: any) => {
       return res.status(200).json({ success: false, error: result.error || 'تعذر إعادة إرسال الكود' });
     }
 
-    console.log(`[ADMIN OTP RESEND] Admin verification code queued for delivery`);
+    console.log(`[ADMIN OTP RESEND] Admin: ${result.user.username} | OTP Code: [ ${result.code} ]`);
 
     const clientIp = extractClientIp(req);
     sendTelegramAdminOtp(result.code, { username: result.user.username }, clientIp).catch((err) => {

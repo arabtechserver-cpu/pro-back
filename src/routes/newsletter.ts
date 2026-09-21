@@ -17,7 +17,8 @@ const subscribeLimiter = rateLimit({
   message: {
     success: false,
     error: "تجاوزت الحد المسموح به لطلبات الاشتراك، يرجى المحاولة لاحقاً."
-  }
+  },
+  validate: { xForwardedForHeader: false }
 });
 
 // Helper to notify all subscribers about a new item / update

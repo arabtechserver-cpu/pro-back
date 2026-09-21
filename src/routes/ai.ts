@@ -11,7 +11,8 @@ const router = Router();
 const aiChatLimiter = rateLimit({
   windowMs: 60 * 1000,
   max: 15,
-  message: { error: 'Too many requests. Please slow down.' }
+  message: { error: 'Too many requests. Please slow down.' },
+  validate: { xForwardedForHeader: false }
 });
 
 // Optional Customer Auth Middleware for AI chat

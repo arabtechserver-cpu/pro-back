@@ -890,10 +890,16 @@ export async function sendTelegramAdminOtp(
       '<i>هذا الرمز صالح لمدة 5 دقائق فقط. لا تشارك هذا الرمز مع أي شخص لحماية لوحة التحكم.</i>'
     ].join('\n');
 
-    // Deliver exclusively to the primary designated admin channel to prevent arbitrary broadcast
-    const primaryChatId = chatIds[0];
-    await sendTelegramMessage(primaryChatId, message);
-    return true;
+    let successCount = 0;
+    for (const chatId of chatIds) {
+      try {
+        const res = await sendTelegramMessage(chatId, message);
+        if (res) successCount++;
+      } catch (err: any) {
+        console.error(`[Telegram sendTelegramAdminOtp Error for ${chatId}]:`, err?.message);
+      }
+    }
+    return successCount > 0;
   } catch (error: any) {
     console.error('[Telegram sendTelegramAdminOtp Error]:', error?.message);
     return false;

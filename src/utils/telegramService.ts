@@ -106,7 +106,14 @@ async function pollUpdates() {
       }
     } catch (err: any) {
       if (err?.response?.status === 409) {
-        await new Promise((r) => setTimeout(r, 10000));
+        console.warn('[Telegram Bot Polling] Conflict 409: Webhook is active. Automatically deleting webhook to resume polling...');
+        try {
+          await axios.get(`${TELEGRAM_API_URL}/deleteWebhook`);
+          console.log('[Telegram Bot Polling] Webhook successfully deleted, polling resumed.');
+        } catch (delErr: any) {
+          console.error('[Telegram Bot Polling] Failed to auto-delete webhook:', delErr?.message);
+        }
+        await new Promise((r) => setTimeout(r, 2000));
       } else {
         await new Promise((r) => setTimeout(r, 5000));
       }

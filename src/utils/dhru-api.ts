@@ -250,7 +250,18 @@ export function normalizeProviderCustomFields(
   try {
     if (requiresCustom) {
       const parsed = JSON.parse(requiresCustom);
-      if (Array.isArray(parsed)) requiredMeta = parsed;
+      if (Array.isArray(parsed)) {
+        requiredMeta = parsed;
+      } else if (parsed && typeof parsed === "object") {
+        requiredMeta = Object.entries(parsed).map(([key, val]: [string, any]) => ({
+          ...(val && typeof val === "object" ? val : {}),
+          id: val?.id || val?.field_id || key,
+          field_id: val?.field_id || val?.reqid || val?.id || key,
+          name: val?.name || val?.fieldname || val?.label || key,
+          fieldname: val?.fieldname || key,
+          label: val?.label || key
+        }));
+      }
     }
   } catch {}
 
@@ -266,13 +277,16 @@ export function normalizeProviderCustomFields(
     const matchingField = requiredMeta.find((meta: any) => {
       const fieldId = String(meta?.id || meta?.field_id || meta?.reqid || meta?.REQID || "").replace(/^custom_/i, "").toLowerCase();
       const fieldName = String(meta?.name || meta?.field_name || meta?.fieldname || meta?.FIELDNAME || meta?.customname || "").toLowerCase();
+      const fieldLabel = String(meta?.label || "").toLowerCase();
       const fieldApiName = String(meta?.api_name || meta?.field_api_name || "").toLowerCase();
       return (
         fieldId === cleanKey ||
         fieldName === cleanKey ||
+        fieldLabel === cleanKey ||
         fieldApiName === cleanKey ||
         fieldId === inputKey.toLowerCase() ||
-        fieldName === inputKey.toLowerCase()
+        fieldName === inputKey.toLowerCase() ||
+        fieldLabel === inputKey.toLowerCase()
       );
     });
 
@@ -285,9 +299,6 @@ export function normalizeProviderCustomFields(
       || inputKey.replace(/^custom_/i, "");
 
     normalized[String(providerKey)] = String(value);
-    if (String(providerKey) !== inputKey) {
-      normalized[inputKey] = String(value);
-    }
   }
 
   return normalized;

@@ -47,7 +47,46 @@ app.use((req, res, next) => {
   }
   return generalJsonParser(req, res, next);
 });
+process.on('unhandledRejection', (reason: any) => {
+  console.error('[UNHANDLED REJECTION]', {
+    message: reason?.message || String(reason),
+    stack: reason?.stack || 'No stack trace',
+    reason
+  });
+});
+
+process.on('uncaughtException', (error: Error) => {
+  console.error('[UNCAUGHT EXCEPTION]', {
+    name: error.name,
+    message: error.message,
+    stack: error.stack
+  });
+});
+
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
+
+app.use((req, res, next) => {
+  const originalJson = res.json.bind(res);
+  const originalSend = res.send.bind(res);
+
+  res.json = function (body: any) {
+    if (res.statusCode >= 400) {
+      const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
+      console.error(`[HTTP ${res.statusCode} ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
+    }
+    return originalJson(body);
+  };
+
+  res.send = function (body: any) {
+    if (res.statusCode >= 400) {
+      const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
+      console.error(`[HTTP ${res.statusCode} ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+    }
+    return originalSend(body);
+  };
+
+  next();
+});
 
 import path from 'path';
 import { getUploadDir, ensureUploadDir, restoreImagesToDisk } from './utils/uploads';
@@ -119,6 +158,32 @@ app.use('/api/admin/ip-access', ipAccessRoutes);
 // Health check
 app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', message: 'Backend is running' });
+});
+
+// 404 Handler for unknown /api routes
+app.use('/api', (req, res) => {
+  console.warn(`[API 404 NOT FOUND] ${req.method} ${req.originalUrl} - IP: ${req.ip}`);
+  res.status(404).json({ error: `المسار المطلوب غير موجود: ${req.method} ${req.originalUrl}` });
+});
+
+// Global Express Error Handling Middleware
+app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
+  console.error(`[EXPRESS UNHANDLED ERROR] ${req.method} ${req.originalUrl}:`, {
+    message: err?.message || String(err),
+    stack: err?.stack || 'No stack trace',
+    ip: req.ip,
+    user: (req as any).user?.username || 'Guest',
+    body: req.body
+  });
+
+  if (res.headersSent) {
+    return next(err);
+  }
+
+  const statusCode = Number(err?.status || err?.statusCode) || 500;
+  res.status(statusCode).json({
+    error: err?.message || 'حدث خطأ داخلي في الخادم'
+  });
 });
 
 async function startServer() {

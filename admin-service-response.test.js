@@ -79,7 +79,7 @@ assert.equal(qtyService.supportsQty, true);
 assert.equal(qtyService.minQty, 5);
 assert.equal(qtyService.maxQty, 1000);
 
-const pricingResult = serializePricingServiceCategories(categories, (name) => `Clean: ${name}`);
+const pricingResult = serializePricingServiceCategories(categories, (name) => `Clean: ${name}`, true);
 assert.deepEqual(pricingResult[0].services[0], {
   id: "service-1",
   dhruId: "remote-1",

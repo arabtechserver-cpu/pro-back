@@ -560,16 +560,141 @@ export function escapeHtml(str: string): string {
     .replace(/"/g, '&quot;');
 }
 
-function stripHtml(html: string): string {
-  return html.replace(/<[^>]*>?/gm, '');
+export function stripHtml(html: string): string {
+  if (!html) return '';
+  return String(html)
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/br>/gi, '\n')
+    .replace(/<hr\s*\/?>/gi, '\n')
+    .replace(/<\/(p|div|li|tr|h[1-6])>/gi, '\n')
+    .replace(/<[^>]*>?/gm, '')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&nbsp;/g, ' ')
+    .trim();
+}
+
+export function sanitizeTelegramHtml(input: string): string {
+  if (!input) return '';
+  let str = String(input).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+
+  str = str.replace(/<br\s*\/?>/gi, '\n');
+  str = str.replace(/<\/br>/gi, '\n');
+  str = str.replace(/<hr\s*\/?>/gi, '\n---\n');
+  str = str.replace(/<p\b[^>]*>/gi, '\n');
+  str = str.replace(/<\/p>/gi, '\n');
+  str = str.replace(/<div\b[^>]*>/gi, '\n');
+  str = str.replace(/<\/div>/gi, '\n');
+  str = str.replace(/<li\b[^>]*>/gi, '\n- ');
+  str = str.replace(/<\/li>/gi, '');
+  str = str.replace(/<\/?(table|tbody|thead|tr|th|td)\b[^>]*>/gi, '\n');
+  str = str.replace(/<\/?(h[1-6])\b[^>]*>/gi, '\n');
+  str = str.replace(/&nbsp;/gi, ' ');
+
+  str = str.replace(/<span\s+class="tg-spoiler">/gi, '<tg-spoiler>');
+  str = str.replace(/<\/span>/gi, '</tg-spoiler>');
+
+  const tagRegex = /(<\/?[a-zA-Z0-9_-]+(?:\s+[^>]*)?>)/g;
+  const tokens = str.split(tagRegex);
+
+  const allowedTags = new Set([
+    'b', 'strong',
+    'i', 'em',
+    'u', 'ins',
+    's', 'strike', 'del',
+    'code', 'pre',
+    'blockquote',
+    'tg-spoiler',
+    'tg-emoji'
+  ]);
+
+  const tagStack: string[] = [];
+  let result = '';
+
+  for (const token of tokens) {
+    if (!token) continue;
+
+    const tagMatch = token.match(/^<(\/)?([a-zA-Z0-9_-]+)(\s+[^>]*)?>$/);
+    if (tagMatch) {
+      const isClosing = Boolean(tagMatch[1]);
+      const rawTagName = tagMatch[2].toLowerCase();
+      const rawAttrs = tagMatch[3] || '';
+
+      if (rawTagName === 'a') {
+        if (isClosing) {
+          const lastIndex = tagStack.lastIndexOf('a');
+          if (lastIndex !== -1) {
+            while (tagStack.length > lastIndex) {
+              const closed = tagStack.pop();
+              result += `</${closed}>`;
+            }
+          }
+        } else {
+          const hrefMatch = rawAttrs.match(/href=(?:"([^"]*)"|'([^']*)'|(\S+))/i);
+          const href = hrefMatch ? (hrefMatch[1] || hrefMatch[2] || hrefMatch[3]) : '';
+          if (href) {
+            const safeHref = href.replace(/"/g, '&quot;');
+            result += `<a href="${safeHref}">`;
+            tagStack.push('a');
+          }
+        }
+        continue;
+      }
+
+      if (allowedTags.has(rawTagName)) {
+        if (isClosing) {
+          const lastIndex = tagStack.lastIndexOf(rawTagName);
+          if (lastIndex !== -1) {
+            while (tagStack.length > lastIndex) {
+              const closed = tagStack.pop();
+              result += `</${closed}>`;
+            }
+          }
+        } else {
+          if (rawTagName === 'code' && rawAttrs) {
+            const classMatch = rawAttrs.match(/class=(?:"([^"]*)"|'([^']*)'|(\S+))/i);
+            const className = classMatch ? (classMatch[1] || classMatch[2] || classMatch[3]) : '';
+            if (className.startsWith('language-')) {
+              result += `<code class="${className}">`;
+            } else {
+              result += '<code>';
+            }
+          } else {
+            result += `<${rawTagName}>`;
+          }
+          tagStack.push(rawTagName);
+        }
+        continue;
+      }
+
+      continue;
+    }
+
+    let text = token;
+    text = text.replace(/&(?!([a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);)/g, '&amp;');
+    text = text.replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+    result += text;
+  }
+
+  while (tagStack.length > 0) {
+    const closed = tagStack.pop();
+    result += `</${closed}>`;
+  }
+
+  return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
 // Send Text Message to Telegram
 export async function sendTelegramMessage(chatId: string, text: string, replyMarkup?: any) {
+  const sanitizedText = sanitizeTelegramHtml(text);
   try {
     const res = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
       chat_id: chatId,
-      text,
+      text: sanitizedText,
       parse_mode: 'HTML',
       reply_markup: replyMarkup
     });
@@ -578,7 +703,6 @@ export async function sendTelegramMessage(chatId: string, text: string, replyMar
   } catch (error: any) {
     const errorDesc = error?.response?.data?.description || error?.message;
     console.warn(`[Telegram Service Error] Failed HTML send to ${chatId} (${errorDesc}), retrying plain text...`);
-    // Retry without parse_mode
     try {
       const res2 = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
         chat_id: chatId,
@@ -741,7 +865,10 @@ export async function sendTelegramPhotoNotification({
     }
 
     const imageInfo = await resolveImageBuffer(imageSource);
-    const trimmedCaption = caption.length > 1000 ? caption.slice(0, 995) + '...' : caption;
+    const sanitizedCaption = sanitizeTelegramHtml(caption);
+    const trimmedCaption = sanitizedCaption.length > 1024
+      ? sanitizeTelegramHtml(sanitizedCaption.slice(0, 1000)) + '...'
+      : sanitizedCaption;
 
     for (const chatId of targetChatIds) {
       let delivered = false;
@@ -843,8 +970,9 @@ export async function sendDocumentToAdmins(filePath: string, caption: string): P
       try {
         if (fs.existsSync(filePath)) {
           const form = new FormData();
+          const sanitizedDocCaption = sanitizeTelegramHtml(caption);
           form.append('chat_id', chatId);
-          form.append('caption', caption.slice(0, 1000));
+          form.append('caption', sanitizedDocCaption.slice(0, 1000));
           form.append('parse_mode', 'HTML');
           form.append('document', fs.createReadStream(filePath));
 

@@ -474,10 +474,10 @@ router.get('/services/:id', optionalAuth, async (req: any, res) => {
       min_quantity: qtyConfig.min_quantity,
       max_quantity: qtyConfig.max_quantity,
       dhruCategory: service.dhruCategory,
+      providerId: isAdminUser ? service.providerId : (service.providerId ? 'linked' : null),
       ...(isAdminUser && {
         credit,
-        margin,
-        providerId: service.providerId
+        margin
       })
     };
 
@@ -549,8 +549,8 @@ router.post('/services/notify', isAdmin, async (req, res) => {
 // POST /api/dhru/services/delete-all - Delete all services & categories
 router.post('/services/delete-all', isAdmin, async (req: any, res) => {
   try {
-    if (req.user?.role !== 'super_admin') {
-      return res.status(403).json({ error: 'حذف جميع الخدمات والأقسام مقتصر على المدير العام فقط' });
+    if (!req.user?.role || !['admin', 'super_admin'].includes(req.user.role)) {
+      return res.status(403).json({ error: 'حذف جميع الخدمات والأقسام مقتصر على مسؤولي النظام فقط' });
     }
 
     const deletedServices = await prisma.dhruService.deleteMany({});

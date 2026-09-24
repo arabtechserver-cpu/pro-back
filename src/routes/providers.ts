@@ -1668,10 +1668,18 @@ router.post("/:id/import-services", async (req, res) => {
 router.get("/:id/services", async (req, res) => {
   try {
     const { id } = req.params;
+    const includeInfo = req.query.include_info === "true" || req.query.includeInfo === "true";
+
+    const providerServiceCount = await prisma.dhruService.count({
+      where: { providerId: id }
+    });
+
+    const whereClause = providerServiceCount > 0
+      ? { providerId: id }
+      : { OR: [{ providerId: id }, { providerId: null }] };
+
     const services = await prisma.dhruService.findMany({
-      where: {
-        OR: [{ providerId: id }, { providerId: null }]
-      },
+      where: whereClause,
       select: {
         id: true,
         name: true,
@@ -1679,7 +1687,7 @@ router.get("/:id/services", async (req, res) => {
         groupName: true,
         credit: true,
         time: true,
-        info: true,
+        info: includeInfo,
         isActive: true,
         margin: true,
         requiresCustom: true,
@@ -1729,11 +1737,16 @@ router.post("/:id/toggle-packages", async (req, res) => {
 
     const nextActive = typeof isActive === "boolean" ? isActive : true;
 
+    const providerServiceCount = await prisma.dhruService.count({
+      where: { providerId: id }
+    });
+
+    const whereClause = providerServiceCount > 0
+      ? { groupName: { in: groupNames }, providerId: id }
+      : { groupName: { in: groupNames }, OR: [{ providerId: id }, { providerId: null }] };
+
     const result = await prisma.dhruService.updateMany({
-      where: {
-        groupName: { in: groupNames },
-        OR: [{ providerId: id }, { providerId: null }]
-      },
+      where: whereClause,
       data: {
         isActive: nextActive
       }
@@ -1760,10 +1773,16 @@ router.post("/:id/toggle-all", async (req, res) => {
     const { isActive } = req.body;
     const nextActive = typeof isActive === "boolean" ? isActive : true;
 
+    const providerServiceCount = await prisma.dhruService.count({
+      where: { providerId: id }
+    });
+
+    const whereClause = providerServiceCount > 0
+      ? { providerId: id }
+      : { OR: [{ providerId: id }, { providerId: null }] };
+
     const result = await prisma.dhruService.updateMany({
-      where: {
-        OR: [{ providerId: id }, { providerId: null }]
-      },
+      where: whereClause,
       data: {
         isActive: nextActive
       }

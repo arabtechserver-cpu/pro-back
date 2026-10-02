@@ -1,0 +1,816 @@
+import https from 'https';
+import { prisma } from '../utils/prisma';
+
+export interface FoxreloadSettings {
+  apiKey: string;
+  isEnabled: boolean;
+  defaultProfitMarginPercent: number;
+  autoFulfill: boolean;
+  hiddenItems: string[];
+  customPrices: Record<string, number>;
+  customMargins: Record<string, number>;
+}
+
+const SETTINGS_KEY = 'foxreload_settings';
+
+function getEnvApiKey(): string {
+  return (process.env.FOXRELOAD_API_KEY || '').trim();
+}
+
+const DEFAULT_SETTINGS: FoxreloadSettings = {
+  apiKey: '',
+  isEnabled: true,
+  defaultProfitMarginPercent: 10,
+  autoFulfill: false,
+  hiddenItems: [],
+  customPrices: {},
+  customMargins: {},
+};
+
+export async function getFoxreloadSettings(): Promise<FoxreloadSettings> {
+  const envKey = getEnvApiKey();
+  try {
+    const record = await prisma.setting.findUnique({ where: { key: SETTINGS_KEY } });
+    if (!record?.value) {
+      return { ...DEFAULT_SETTINGS, apiKey: envKey };
+    }
+    const parsed = JSON.parse(record.value);
+    const parsedMargin = Number(parsed.defaultProfitMarginPercent);
+    const defaultProfitMarginPercent =
+      !isNaN(parsedMargin) && parsed.defaultProfitMarginPercent !== null && parsed.defaultProfitMarginPercent !== undefined
+        ? Math.max(0, parsedMargin)
+        : 10;
+    return {
+      apiKey: parsed.apiKey || envKey,
+      isEnabled: parsed.isEnabled !== false,
+      defaultProfitMarginPercent,
+      autoFulfill: Boolean(parsed.autoFulfill),
+      hiddenItems: Array.isArray(parsed.hiddenItems) ? parsed.hiddenItems : [],
+      customPrices: parsed.customPrices && typeof parsed.customPrices === 'object' ? parsed.customPrices : {},
+      customMargins: parsed.customMargins && typeof parsed.customMargins === 'object' ? parsed.customMargins : {},
+    };
+  } catch {
+    return { ...DEFAULT_SETTINGS, apiKey: envKey };
+  }
+}
+
+export async function updateFoxreloadSettings(updates: Partial<FoxreloadSettings>): Promise<FoxreloadSettings> {
+  const current = await getFoxreloadSettings();
+  const updated: FoxreloadSettings = {
+    apiKey: updates.apiKey !== undefined ? updates.apiKey.trim() : current.apiKey,
+    isEnabled: updates.isEnabled !== undefined ? Boolean(updates.isEnabled) : current.isEnabled,
+    defaultProfitMarginPercent:
+      updates.defaultProfitMarginPercent !== undefined && updates.defaultProfitMarginPercent !== null
+        ? Math.max(0, Number(updates.defaultProfitMarginPercent))
+        : current.defaultProfitMarginPercent,
+    autoFulfill: updates.autoFulfill !== undefined ? Boolean(updates.autoFulfill) : current.autoFulfill,
+    hiddenItems: Array.isArray(updates.hiddenItems) ? updates.hiddenItems : current.hiddenItems,
+    customPrices: updates.customPrices !== undefined ? updates.customPrices : current.customPrices,
+    customMargins: updates.customMargins !== undefined ? updates.customMargins : current.customMargins,
+  };
+
+  await prisma.setting.upsert({
+    where: { key: SETTINGS_KEY },
+    create: {
+      key: SETTINGS_KEY,
+      value: JSON.stringify(updated),
+    },
+    update: {
+      value: JSON.stringify(updated),
+    },
+  });
+
+  clearCatalogCache();
+  return updated;
+}
+
+export async function callFoxreloadApi(
+  endpointPath: string,
+  method: 'GET' | 'POST' = 'GET',
+  bodyPayload?: any,
+  lang: string = 'en',
+  currency: string = 'usd'
+): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
+  const settings = await getFoxreloadSettings();
+  const apiKey = (settings.apiKey || getEnvApiKey()).trim();
+
+  if (!apiKey) {
+    return {
+      ok: false,
+      status: 401,
+      data: { error: 'FoxReload API key is not configured in environment variables' },
+      raw: 'Missing API Key in Environment',
+    };
+  }
+
+  const payloadString = bodyPayload ? JSON.stringify(bodyPayload) : '';
+
+  return new Promise((resolve) => {
+    const headers: Record<string, string | number> = {
+      'X-API-Key': apiKey,
+      'X-Language': lang,
+      'X-Currency': currency.toLowerCase(),
+      'Accept': 'application/json',
+    };
+
+    if (bodyPayload && method === 'POST') {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = Buffer.byteLength(payloadString);
+    }
+
+    const options = {
+      hostname: 'public-api.foxreload.com',
+      port: 443,
+      path: endpointPath,
+      method,
+      headers,
+      timeout: 15000,
+    };
+
+    const req = https.request(options, (res) => {
+      let data = '';
+      res.on('data', (chunk) => {
+        data += chunk;
+      });
+      res.on('end', () => {
+        try {
+          const parsed = JSON.parse(data);
+          resolve({
+            ok: res.statusCode ? res.statusCode >= 200 && res.statusCode < 300 : false,
+            status: res.statusCode || 500,
+            data: parsed,
+            raw: data,
+          });
+        } catch {
+          resolve({
+            ok: res.statusCode ? res.statusCode >= 200 && res.statusCode < 300 : false,
+            status: res.statusCode || 500,
+            data: null,
+            raw: data,
+          });
+        }
+      });
+    });
+
+    req.on('timeout', () => {
+      req.destroy();
+      resolve({
+        ok: false,
+        status: 504,
+        data: { error: 'FoxReload API request timed out' },
+        raw: 'Gateway Timeout',
+      });
+    });
+
+    req.on('error', (err) => {
+      resolve({
+        ok: false,
+        status: 500,
+        data: { error: err.message },
+        raw: err.message,
+      });
+    });
+
+    if (bodyPayload && method === 'POST') {
+      req.write(payloadString);
+    }
+    req.end();
+  });
+}
+
+export async function getFoxreloadLiveBalance(): Promise<{
+  success: boolean;
+  email?: string;
+  balances: Array<{ currency: string; amount: number }>;
+  isActive?: boolean;
+  error?: string;
+}> {
+  try {
+    const [accountRes, balancesRes] = await Promise.all([
+      callFoxreloadApi('/api/access/me', 'GET'),
+      callFoxreloadApi('/api/access/me/balances/', 'GET'),
+    ]);
+
+    if (!accountRes.ok && !balancesRes.ok) {
+      return {
+        success: false,
+        balances: [],
+        error: accountRes.data?.detail || balancesRes.data?.detail || 'فشل الاتصال بـ FoxReload API',
+      };
+    }
+
+    const balancesList: Array<{ currency: string; amount: number }> = [];
+    if (Array.isArray(balancesRes.data)) {
+      for (const item of balancesRes.data) {
+        balancesList.push({
+          currency: String(item.currency || 'USD').toUpperCase(),
+          amount: Number(item.amount ?? item.balance ?? 0),
+        });
+      }
+    }
+
+    if (balancesList.length === 0) {
+      balancesList.push({ currency: 'USD', amount: 0 });
+      balancesList.push({ currency: 'RUB', amount: 0 });
+    }
+
+    return {
+      success: true,
+      email: accountRes.data?.email || '',
+      isActive: accountRes.data?.isActive ?? true,
+      balances: balancesList,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      balances: [],
+      error: err.message || 'خطأ غير متوقع أثناء فحص الرصيد',
+    };
+  }
+}
+
+export function computeClientPrice(
+  originalPrice: number,
+  productId: string,
+  settings: FoxreloadSettings
+): { finalPrice: number; marginAmount: number; marginPercent: number } {
+  const cost = Number(originalPrice) || 0;
+  if (settings.customPrices && typeof settings.customPrices[productId] === 'number') {
+    const finalPrice = Math.max(0, settings.customPrices[productId]);
+    const marginAmount = Number((finalPrice - cost).toFixed(2));
+    const marginPercent = cost > 0 ? Number(((marginAmount / cost) * 100).toFixed(1)) : 0;
+    return { finalPrice, marginAmount, marginPercent };
+  }
+
+  let marginPercent =
+    typeof settings.defaultProfitMarginPercent === 'number'
+      ? settings.defaultProfitMarginPercent
+      : 10;
+  if (settings.customMargins && typeof settings.customMargins[productId] === 'number') {
+    marginPercent = settings.customMargins[productId];
+  }
+
+  const marginAmount = Number(((cost * marginPercent) / 100).toFixed(2));
+  const finalPrice = Number((cost + marginAmount).toFixed(2));
+  return { finalPrice, marginAmount, marginPercent };
+}
+
+export interface FoxreloadRegion {
+  id: string;
+  slug: string;
+  name: string;
+  inStockCount: number;
+  hasProducts: boolean;
+  bestOfferPrice?: string | null;
+}
+
+export interface FoxreloadBundle {
+  id: string;
+  slug: string;
+  name: string;
+  parentId: string | null;
+  inStockCount: number;
+  imagePath?: string | null;
+  thumbnailPath?: string | null;
+  bestOfferPrice?: string | null;
+  sectionId: string;
+  regions: FoxreloadRegion[];
+  isHidden: boolean;
+}
+
+export interface FoxreloadProduct {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  categoryId: string;
+  categorySlug: string;
+  costPrice: number;
+  price: number;
+  marginAmount: number;
+  marginPercent: number;
+  currency: string;
+  stock: number;
+  minQty: number;
+  maxQty?: number | null;
+  deliveryType: string;
+  isService: boolean;
+  requiredNoteFields: string[];
+  noteFieldOptions: Record<string, any>;
+  noteFieldTypes: Record<string, string>;
+  attributes: Record<string, any>;
+  userGuide?: string | null;
+  imagePath?: string | null;
+  thumbnailPath?: string | null;
+  isHidden: boolean;
+}
+
+let catalogCache: { timestamp: number; data: any } | null = null;
+const categoryProductsCache = new Map<string, { timestamp: number; data: FoxreloadProduct[] }>();
+const treeCache = new Map<string, { timestamp: number; data: FoxreloadBundle[] }>();
+
+const CACHE_TTL_MS = 15 * 60 * 1000;
+
+export function clearCatalogCache() {
+  catalogCache = null;
+  categoryProductsCache.clear();
+  treeCache.clear();
+}
+
+async function fetchParentTree(
+  parentSlug: string,
+  sectionId: string,
+  settings: FoxreloadSettings,
+  hiddenSet: Set<string>
+): Promise<FoxreloadBundle[]> {
+  const cached = treeCache.get(parentSlug);
+  const now = Date.now();
+  if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const res = await callFoxreloadApi(
+    `/api/categories/tree?parentId=${encodeURIComponent(parentSlug)}&depth=2&withStockOnly=true`,
+    'GET',
+    undefined,
+    'en',
+    'usd'
+  );
+
+  const rawList = res.data?.items || (Array.isArray(res.data) ? res.data : []);
+  const bundles: FoxreloadBundle[] = rawList
+    .map((c: any) => {
+      const rawChildren = Array.isArray(c.children) ? c.children : [];
+      const regions: FoxreloadRegion[] = rawChildren.map((ch: any) => ({
+        id: ch.id,
+        slug: ch.slug,
+        name: ch.name || 'Global',
+        inStockCount: typeof ch.inStockCount === 'number' ? ch.inStockCount : 0,
+        hasProducts: Boolean(ch.hasProducts),
+        bestOfferPrice: ch.bestOfferPrice || null,
+      }));
+
+      if (regions.length === 0 && (c.hasProducts || c.inStockCount > 0)) {
+        regions.push({
+          id: c.id,
+          slug: c.slug,
+          name: 'Global',
+          inStockCount: c.inStockCount || 1,
+          hasProducts: true,
+          bestOfferPrice: c.bestOfferPrice || null,
+        });
+      }
+
+      return {
+        id: c.id,
+        slug: c.slug,
+        name: c.name,
+        parentId: c.parentId || null,
+        inStockCount: typeof c.inStockCount === 'number' ? c.inStockCount : 0,
+        imagePath: c.imagePath || null,
+        thumbnailPath: c.thumbnailPath || null,
+        bestOfferPrice: c.bestOfferPrice || null,
+        sectionId,
+        regions,
+        isHidden: hiddenSet.has(c.id) || hiddenSet.has(c.slug),
+      };
+    })
+    .filter((b: FoxreloadBundle) => b.inStockCount > 0 || b.regions.length > 0);
+
+  treeCache.set(parentSlug, { timestamp: now, data: bundles });
+  return bundles;
+}
+
+export async function getFoxreloadCategoryProducts(
+  categoryId: string,
+  forceRefresh: boolean = false
+): Promise<FoxreloadProduct[]> {
+  const now = Date.now();
+  if (!forceRefresh) {
+    const cached = categoryProductsCache.get(categoryId);
+    if (cached && now - cached.timestamp < CACHE_TTL_MS) {
+      return cached.data;
+    }
+  }
+
+  const settings = await getFoxreloadSettings();
+  const hiddenSet = new Set(settings.hiddenItems);
+
+  const res = await callFoxreloadApi(
+    `/api/products/?categoryId=${encodeURIComponent(categoryId)}&withStockOnly=true&limit=100`,
+    'GET',
+    undefined,
+    'en',
+    'usd'
+  );
+
+  const items = Array.isArray(res.data?.items) ? res.data.items : [];
+  const mapped = items
+    .map((p: any) => mapProductItem(p, settings, hiddenSet, categoryId))
+    .filter(isValidProduct);
+
+  categoryProductsCache.set(categoryId, { timestamp: now, data: mapped });
+  return mapped;
+}
+
+export async function searchFoxreloadProducts(query: string): Promise<FoxreloadProduct[]> {
+  if (!query || !query.trim()) return [];
+  const settings = await getFoxreloadSettings();
+  const hiddenSet = new Set(settings.hiddenItems);
+
+  const res = await callFoxreloadApi(
+    `/api/products/search?query=${encodeURIComponent(query.trim())}&withStockOnly=true&limit=50`,
+    'GET',
+    undefined,
+    'en',
+    'usd'
+  );
+
+  const items = Array.isArray(res.data) ? res.data : [];
+  return items
+    .map((p: any) => mapProductItem(p, settings, hiddenSet, 'search'))
+    .filter(isValidProduct);
+}
+
+export async function getFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
+  const now = Date.now();
+  if (!forceRefresh && catalogCache && now - catalogCache.timestamp < CACHE_TTL_MS) {
+    return catalogCache.data;
+  }
+
+  const settings = await getFoxreloadSettings();
+  const hiddenSet = new Set(settings.hiddenItems);
+
+  const [
+    topupsBundles,
+    appStoresBundles,
+    gameCurrencyBundles,
+    subscriptionsBundles,
+    esimBundles,
+    rewarbleBundles,
+    popularLegacyItems,
+  ] = await Promise.all([
+    fetchParentTree('topups', 'topups', settings, hiddenSet),
+    fetchParentTree('app-stores', 'app-stores', settings, hiddenSet),
+    fetchParentTree('game-currency', 'game-currency', settings, hiddenSet),
+    fetchParentTree('subscriptions', 'subscriptions', settings, hiddenSet),
+    fetchParentTree('esim', 'esim', settings, hiddenSet),
+    fetchParentTree('rewarble', 'rewarble', settings, hiddenSet),
+    fetchPopularCatalogItems(settings, hiddenSet).catch(() => []),
+  ]);
+
+  const popularKeywords = [
+    'free fire',
+    'pubg',
+    'mobile legends',
+    'roblox',
+    'valorant',
+    'call of duty',
+    'brawl stars',
+    'apple',
+    'google play',
+    'steam',
+    'telegram',
+  ];
+
+  const allAvailableBundles = [
+    ...topupsBundles,
+    ...appStoresBundles,
+    ...gameCurrencyBundles,
+    ...subscriptionsBundles,
+  ];
+
+  const popularBundles = allAvailableBundles.filter((b) => {
+    const n = b.name.toLowerCase();
+    return popularKeywords.some((k) => n.includes(k));
+  });
+
+  const catalog = {
+    isEnabled: settings.isEnabled,
+    defaultMargin: settings.defaultProfitMarginPercent,
+    popularBundles,
+    sections: {
+      popular: {
+        id: 'popular',
+        nameAr: 'الأكثر شعبية',
+        nameEn: 'Most Popular',
+        bundles: popularBundles,
+        items: popularLegacyItems,
+      },
+      topups: {
+        id: 'topups',
+        nameAr: 'شحن الألعاب المباشر',
+        nameEn: 'In-Game Top-Ups',
+        icon: 'sports_esports',
+        bundles: topupsBundles,
+        items: popularLegacyItems.slice(0, 10),
+      },
+      appStores: {
+        id: 'app-stores',
+        nameAr: 'متاجر التطبيقات',
+        nameEn: 'App Stores',
+        icon: 'store',
+        bundles: appStoresBundles,
+        items: [],
+      },
+      gameCurrency: {
+        id: 'game-currency',
+        nameAr: 'أكواد وبطاقات الألعاب',
+        nameEn: 'Game Codes & Vouchers',
+        icon: 'vpn_key',
+        bundles: gameCurrencyBundles,
+        items: [],
+      },
+      subscriptions: {
+        id: 'subscriptions',
+        nameAr: 'الاشتراكات والترفيه',
+        nameEn: 'Subscriptions',
+        icon: 'subscriptions',
+        bundles: subscriptionsBundles,
+        items: [],
+      },
+      esim: {
+        id: 'esim',
+        nameAr: 'شرائح الإنترنت eSIM',
+        nameEn: 'eSIM',
+        icon: 'sim_card',
+        bundles: esimBundles,
+        items: [],
+      },
+      rewarble: {
+        id: 'rewarble',
+        nameAr: 'Rewarble',
+        nameEn: 'Rewarble',
+        icon: 'wallet',
+        bundles: rewarbleBundles,
+        items: [],
+      },
+    },
+    totalBundlesCount:
+      topupsBundles.length +
+      appStoresBundles.length +
+      gameCurrencyBundles.length +
+      subscriptionsBundles.length +
+      esimBundles.length +
+      rewarbleBundles.length,
+    updatedAt: new Date().toISOString(),
+  };
+
+  catalogCache = { timestamp: now, data: catalog };
+  return catalog;
+}
+
+function mapProductItem(p: any, settings: FoxreloadSettings, hiddenSet: Set<string>, categorySlug: string) {
+  const cost = parseFloat(p.price || '0') || 0;
+  const { finalPrice, marginAmount, marginPercent } = computeClientPrice(cost, p.id, settings);
+  const stock = typeof p.quantity === 'number' ? p.quantity : 999;
+
+  return {
+    id: p.id,
+    slug: p.slug,
+    name: p.name,
+    description: p.description,
+    categoryId: p.categoryId,
+    categorySlug,
+    costPrice: cost,
+    price: finalPrice,
+    marginAmount,
+    marginPercent,
+    currency: 'USD',
+    stock,
+    minQty: p.orderMinQuantity || 1,
+    maxQty: p.orderMaxQuantity || null,
+    deliveryType: p.deliveryType || (p.isService ? 'topup' : 'code'),
+    isService: Boolean(p.isService),
+    requiredNoteFields: Array.isArray(p.requiredNoteFields) ? p.requiredNoteFields : [],
+    noteFieldOptions: p.noteFieldOptions || {},
+    noteFieldTypes: p.noteFieldTypes || {},
+    attributes: p.attributes || {},
+    userGuide: p.userGuide || null,
+    imagePath: p.imagePath || p.image || p.imageUrl || null,
+    thumbnailPath: p.thumbnailPath || p.thumbnail || null,
+    isHidden: hiddenSet.has(p.id) || hiddenSet.has(p.slug),
+  };
+}
+
+function isValidProduct(item: any): boolean {
+  return (
+    Boolean(item) &&
+    typeof item.costPrice === 'number' &&
+    item.costPrice > 0 &&
+    typeof item.price === 'number' &&
+    item.price > 0 &&
+    typeof item.stock === 'number' &&
+    item.stock > 0 &&
+    !item.isHidden
+  );
+}
+
+async function fetchSearchBatch(query: string, limit: number = 25): Promise<any[]> {
+  const res = await callFoxreloadApi(`/api/products/search?query=${encodeURIComponent(query)}&limit=${limit}`);
+  return Array.isArray(res.data) ? res.data : [];
+}
+
+async function fetchCategoryBatch(categoryId: string, limit: number = 50): Promise<any[]> {
+  const res = await callFoxreloadApi(`/api/products/?categoryId=${categoryId}&limit=${limit}`);
+  return Array.isArray(res.data?.items) ? res.data.items : [];
+}
+
+async function fetchTelegramCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const raw = await fetchSearchBatch('telegram', 30);
+  return raw
+    .map((p) => mapProductItem(p, settings, hiddenSet, 'telegram'))
+    .filter(isValidProduct);
+}
+
+async function fetchSteamCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const raw = await fetchSearchBatch('steam', 30);
+  return raw
+    .map((p) => mapProductItem(p, settings, hiddenSet, 'steam'))
+    .filter(isValidProduct);
+}
+
+async function fetchRewarbleCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const searchItems = await fetchSearchBatch('rewarble', 30);
+  if (searchItems.length > 0) {
+    return searchItems
+      .map((p) => mapProductItem(p, settings, hiddenSet, 'rewarble'))
+      .filter(isValidProduct);
+  }
+  const categoryItems = await fetchCategoryBatch('019e111c-aefa-7680-9944-a8449cb42886', 30);
+  return categoryItems
+    .map((p) => mapProductItem(p, settings, hiddenSet, 'rewarble'))
+    .filter(isValidProduct);
+}
+
+async function fetchEsimCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const categoryItems = await fetchCategoryBatch('019d1fd6-08bb-76b2-bdc0-7eda9b480555', 30);
+  const searchItems = await fetchSearchBatch('esim', 20);
+  const combined = [...categoryItems, ...searchItems];
+  const seen = new Set<string>();
+  const unique = combined.filter((item) => {
+    if (!item?.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    const title = String(item.name || '').toLowerCase();
+    const isRealEsim = title.includes('esim') || item.categoryId === '019d1fd6-08bb-76b2-bdc0-7eda9b480555';
+    return isRealEsim;
+  });
+
+  return unique
+    .map((p) => mapProductItem(p, settings, hiddenSet, 'esim'))
+    .filter(isValidProduct);
+}
+
+async function fetchGamesCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const [pubg, freefire, roblox, valorant, ml, playstation, xbox] = await Promise.all([
+    fetchSearchBatch('pubg', 15),
+    fetchSearchBatch('free fire', 15),
+    fetchSearchBatch('roblox', 12),
+    fetchSearchBatch('valorant', 10),
+    fetchSearchBatch('mobile legends', 12),
+    fetchSearchBatch('playstation', 12),
+    fetchSearchBatch('xbox', 10),
+  ]);
+
+  const all = [...pubg, ...freefire, ...roblox, ...valorant, ...ml, ...playstation, ...xbox];
+  const seen = new Set<string>();
+  const unique = all.filter((item) => {
+    if (!item?.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+
+  return unique
+    .map((p) => mapProductItem(p, settings, hiddenSet, 'games'))
+    .filter(isValidProduct);
+}
+
+async function fetchServicesCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const [googleplay, itunes, apple, spotify, razer] = await Promise.all([
+    fetchSearchBatch('google play', 15),
+    fetchSearchBatch('itunes', 12),
+    fetchSearchBatch('apple', 12),
+    fetchSearchBatch('spotify', 10),
+    fetchSearchBatch('razer', 10),
+  ]);
+
+  const all = [...googleplay, ...itunes, ...apple, ...spotify, ...razer];
+  const seen = new Set<string>();
+  const unique = all.filter((item) => {
+    if (!item?.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+
+  return unique
+    .map((p) => mapProductItem(p, settings, hiddenSet, 'services'))
+    .filter(isValidProduct);
+}
+
+async function fetchPopularCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
+  const [telegram, games, services, steam] = await Promise.all([
+    fetchTelegramCatalogItems(settings, hiddenSet),
+    fetchGamesCatalogItems(settings, hiddenSet),
+    fetchServicesCatalogItems(settings, hiddenSet),
+    fetchSteamCatalogItems(settings, hiddenSet),
+  ]);
+
+  const popularCandidates = [
+    ...(telegram.slice(0, 4)),
+    ...(games.slice(0, 8)),
+    ...(services.slice(0, 4)),
+    ...(steam.slice(0, 4)),
+  ];
+
+  const seen = new Set<string>();
+  const unique = popularCandidates.filter((item) => {
+    if (!item?.id || seen.has(item.id)) return false;
+    seen.add(item.id);
+    return true;
+  });
+
+  return unique;
+}
+
+export async function createAndDispatchFoxreloadOrder(params: {
+  productId: string;
+  quantity: number;
+  notes?: Record<string, any>;
+}): Promise<{
+  success: boolean;
+  orderId?: string;
+  status?: string;
+  codes?: string[];
+  externalData?: any;
+  error?: string;
+}> {
+  const createPayload = {
+    items: [
+      {
+        itemId: params.productId,
+        quantity: Math.max(1, params.quantity || 1),
+        ...(params.notes && Object.keys(params.notes).length > 0 ? { notes: params.notes } : {}),
+      },
+    ],
+  };
+
+  const createRes = await callFoxreloadApi('/api/orders/', 'POST', createPayload);
+  if (!createRes.ok || !createRes.data?.id) {
+    const errorMsg = createRes.data?.detail || createRes.data?.message || createRes.raw || 'فشل إنشاء الطلب لدى FoxReload';
+    return {
+      success: false,
+      error: typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg),
+    };
+  }
+
+  const orderId = createRes.data.id;
+
+  const payRes = await callFoxreloadApi(`/api/orders/${orderId}/pay`, 'POST', { paymentProvider: null });
+  if (!payRes.ok) {
+    const payError = payRes.data?.detail || payRes.data?.message || payRes.raw || 'تم إنشاء الطلب ولكن فشل خصم الرصيد في FoxReload';
+    return {
+      success: false,
+      orderId,
+      status: 'created_unpaid',
+      error: typeof payError === 'string' ? payError : JSON.stringify(payError),
+    };
+  }
+
+  let finalStatus = payRes.data?.status || 'processing';
+  let codes: string[] = [];
+  let externalData: any = null;
+
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await new Promise((r) => setTimeout(r, 2000));
+    const checkRes = await callFoxreloadApi(`/api/orders/${orderId}`, 'GET');
+    if (checkRes.ok && checkRes.data) {
+      finalStatus = checkRes.data.status || finalStatus;
+      const items = checkRes.data.items || [];
+      for (const item of items) {
+        if (item.externalData) {
+          externalData = item.externalData;
+          if (typeof item.externalData === 'string') {
+            codes.push(item.externalData);
+          } else if (item.externalData.code) {
+            codes.push(item.externalData.code);
+          } else if (item.externalData.pin) {
+            codes.push(item.externalData.pin);
+          } else if (Array.isArray(item.externalData.codes)) {
+            codes.push(...item.externalData.codes);
+          }
+        }
+      }
+      if (finalStatus === 'completed' || finalStatus === 'finished') {
+        break;
+      }
+    }
+  }
+
+  return {
+    success: true,
+    orderId,
+    status: finalStatus,
+    codes,
+    externalData,
+  };
+}

@@ -9,10 +9,16 @@ import { startTelegramBotPolling } from './utils/telegramService';
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
-const allowedOrigins = (process.env.FRONTEND_URL || '')
-  .split(',')
-  .map((origin) => origin.trim())
-  .filter(Boolean);
+const allowedOrigins = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'https://arabtechproserver.tech',
+  'https://www.arabtechproserver.tech',
+  ...(process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+];
 
 app.set('trust proxy', getTrustedProxies());
 
@@ -31,10 +37,16 @@ app.use(helmet({
 }));
 app.use(cors({
   origin(origin, callback) {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (
+      !origin ||
+      allowedOrigins.includes(origin) ||
+      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
+      /^https?:\/\/(www\.)?arabtechproserver\.tech$/.test(origin)
+    ) {
       return callback(null, true);
     }
-    return callback(new Error('Origin is not allowed by CORS'));
+    console.warn(`[CORS Blocked] Origin: ${origin}`);
+    return callback(new Error(`Origin ${origin} is not allowed by CORS`));
   },
   credentials: true,
 }));
@@ -126,6 +138,7 @@ import externalApiRoutes from './routes/externalApi';
 import couponsRoutes from './routes/coupons';
 import settingsRoutes from './routes/settings';
 import ipAccessRoutes from './routes/ipAccess';
+import foxreloadRoutes from './routes/foxreload';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/coupons', couponsRoutes);
@@ -136,6 +149,7 @@ app.use('/api/wallet/paypal', paypalRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/dhru', dhruRoutes);
+app.use('/api/foxreload', foxreloadRoutes);
 app.use('/api/providers', providersRoutes);
 app.use('/api/api-providers', providersRoutes);
 app.use('/api/videos', videoRoutes);

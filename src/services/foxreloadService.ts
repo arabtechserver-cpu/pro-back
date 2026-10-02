@@ -89,16 +89,17 @@ export async function callFoxreloadApi(
   method: 'GET' | 'POST' = 'GET',
   bodyPayload?: any,
   lang: string = 'en',
-  currency: string = 'usd'
+  currency: string = 'usd',
+  customApiKey?: string
 ): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
   const settings = await getFoxreloadSettings();
-  const apiKey = (settings.apiKey || getEnvApiKey()).trim();
+  const apiKey = (customApiKey || settings.apiKey || getEnvApiKey()).trim();
 
   if (!apiKey) {
     return {
       ok: false,
       status: 401,
-      data: { error: 'FoxReload API key is not configured in environment variables' },
+      data: { error: 'لم يتم تعيين مفتاح الربط الخاص بـ FoxReload (FOXRELOAD_API_KEY) في الخادم أو الإعدادات' },
       raw: 'Missing API Key in Environment',
     };
   }
@@ -133,27 +134,30 @@ export async function callFoxreloadApi(
         data += chunk;
       });
       res.on('end', () => {
+        let parsed: any = null;
         try {
-          const parsed = JSON.parse(data);
-          resolve({
-            ok: res.statusCode ? res.statusCode >= 200 && res.statusCode < 300 : false,
-            status: res.statusCode || 500,
-            data: parsed,
-            raw: data,
-          });
+          parsed = JSON.parse(data);
         } catch {
-          resolve({
-            ok: res.statusCode ? res.statusCode >= 200 && res.statusCode < 300 : false,
-            status: res.statusCode || 500,
-            data: null,
-            raw: data,
-          });
+          parsed = null;
         }
+
+        const isOk = Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 300);
+        if (!isOk) {
+          console.warn(`[FoxReload API Error] ${method} ${endpointPath} - Status: ${res.statusCode} - Response:`, data);
+        }
+
+        resolve({
+          ok: isOk,
+          status: res.statusCode || 500,
+          data: parsed,
+          raw: data,
+        });
       });
     });
 
     req.on('timeout', () => {
       req.destroy();
+      console.warn(`[FoxReload API Timeout] ${method} ${endpointPath}`);
       resolve({
         ok: false,
         status: 504,
@@ -163,6 +167,7 @@ export async function callFoxreloadApi(
     });
 
     req.on('error', (err) => {
+      console.error(`[FoxReload API Exception] ${method} ${endpointPath}:`, err.message);
       resolve({
         ok: false,
         status: 500,
@@ -178,24 +183,50 @@ export async function callFoxreloadApi(
   });
 }
 
-export async function getFoxreloadLiveBalance(): Promise<{
+export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
   success: boolean;
   email?: string;
   balances: Array<{ currency: string; amount: number }>;
   isActive?: boolean;
   error?: string;
+  details?: any;
 }> {
   try {
-    const [accountRes, balancesRes] = await Promise.all([
-      callFoxreloadApi('/api/access/me', 'GET'),
-      callFoxreloadApi('/api/access/me/balances/', 'GET'),
-    ]);
-
-    if (!accountRes.ok && !balancesRes.ok) {
+    const settings = await getFoxreloadSettings();
+    const effectiveKey = (customApiKey || settings.apiKey || getEnvApiKey()).trim();
+    if (!effectiveKey) {
       return {
         success: false,
         balances: [],
-        error: accountRes.data?.detail || balancesRes.data?.detail || 'فشل الاتصال بـ FoxReload API',
+        error: 'لم يتم العثور على مفتاح FoxReload API. يرجى إدخال المفتاح وحفظه أولاً في الإعدادات أو ملف البيئة (FOXRELOAD_API_KEY).',
+      };
+    }
+
+    const [accountRes, balancesRes] = await Promise.all([
+      callFoxreloadApi('/api/access/me', 'GET', undefined, 'en', 'usd', effectiveKey),
+      callFoxreloadApi('/api/access/me/balances/', 'GET', undefined, 'en', 'usd', effectiveKey),
+    ]);
+
+    if (!accountRes.ok && !balancesRes.ok) {
+      const errorMsg =
+        accountRes.data?.error ||
+        accountRes.data?.detail ||
+        accountRes.data?.message ||
+        balancesRes.data?.error ||
+        balancesRes.data?.detail ||
+        balancesRes.data?.message ||
+        (accountRes.status === 401 ? 'مفتاح الربط (API Key) غير صالح أو منتهي الصلاحية لدى FoxReload (401)' : `فشل الاتصال بـ FoxReload (كود الخطأ: ${accountRes.status || balancesRes.status})`);
+
+      return {
+        success: false,
+        balances: [],
+        error: errorMsg,
+        details: {
+          accountStatus: accountRes.status,
+          balancesStatus: balancesRes.status,
+          accountData: accountRes.data,
+          balancesData: balancesRes.data,
+        },
       };
     }
 
@@ -814,3 +845,75 @@ export async function createAndDispatchFoxreloadOrder(params: {
     externalData,
   };
 }
+
+export async function getFoxreloadOrderDetails(orderId: string | number): Promise<{
+  success: boolean;
+  status: 'completed' | 'rejected' | 'processing' | 'unknown';
+  codes: string[];
+  reply?: string;
+  error?: string;
+  raw?: any;
+}> {
+  try {
+    const checkRes = await callFoxreloadApi(`/api/orders/${orderId}`, 'GET');
+    if (!checkRes.ok || !checkRes.data) {
+      const errorMsg =
+        checkRes.data?.detail ||
+        checkRes.data?.error ||
+        checkRes.data?.message ||
+        checkRes.raw ||
+        'Failed to fetch order from FoxReload';
+      return {
+        success: false,
+        status: 'unknown',
+        codes: [],
+        error: typeof errorMsg === 'string' ? errorMsg : JSON.stringify(errorMsg),
+      };
+    }
+
+    const rawStatus = String(checkRes.data.status || 'processing').toLowerCase();
+    const codes: string[] = [];
+    const items = Array.isArray(checkRes.data.items) ? checkRes.data.items : [];
+
+    for (const item of items) {
+      if (item.externalData) {
+        if (typeof item.externalData === 'string') {
+          codes.push(item.externalData);
+        } else if (item.externalData.code) {
+          codes.push(item.externalData.code);
+        } else if (item.externalData.pin) {
+          codes.push(item.externalData.pin);
+        } else if (Array.isArray(item.externalData.codes)) {
+          codes.push(...item.externalData.codes);
+        }
+      }
+    }
+
+    let status: 'completed' | 'rejected' | 'processing' | 'unknown' = 'processing';
+    if (['completed', 'finished', 'success', 'delivered'].includes(rawStatus)) {
+      status = 'completed';
+    } else if (['canceled', 'cancelled', 'failed', 'rejected', 'refunded'].includes(rawStatus)) {
+      status = 'rejected';
+    } else if (['pending', 'processing', 'in_process', 'submitted'].includes(rawStatus)) {
+      status = 'processing';
+    }
+
+    const reply = codes.length > 0 ? codes.join('\n') : (status === 'completed' ? 'تم التفعيل والشحن بنجاح' : undefined);
+
+    return {
+      success: true,
+      status,
+      codes,
+      reply,
+      raw: checkRes.data,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      status: 'unknown',
+      codes: [],
+      error: err.message || 'Exception while checking FoxReload order',
+    };
+  }
+}
+

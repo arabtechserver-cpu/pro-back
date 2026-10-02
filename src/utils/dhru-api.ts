@@ -129,6 +129,10 @@ export function dhruApiRequest(
       return resolve({ error: err.message, SUCCESS: false });
     }
 
+    if (!targetUrl) {
+      return resolve({ error: "Missing or unconfigured provider API URL", SUCCESS: false });
+    }
+
     const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
     const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
 

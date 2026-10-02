@@ -1,6 +1,7 @@
 import cron from 'node-cron';
 import { prisma } from "../utils/prisma";
-import { getImeiOrder, getServerOrder } from '../utils/dhru-api';
+import { getImeiOrder, getServerOrder, DHRU_API_URL } from '../utils/dhru-api';
+import { getFoxreloadOrderDetails } from '../services/foxreloadService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';
 import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
@@ -30,7 +31,91 @@ export function initOrderSyncCron() {
         if (!order.apiOrderId) continue;
 
         try {
-          // Check if it's an IMEI service or Server service
+          // 1. Check if it's a FoxReload digital/gaming order
+          const isFoxreload = order.source === 'foxreload' || String(order.serviceId || '').startsWith('foxreload:');
+          if (isFoxreload) {
+            const foxResult = await getFoxreloadOrderDetails(order.apiOrderId);
+            if (!foxResult.success) {
+              console.warn(`[CRON] FoxReload Order #${order.id.slice(-6)} (Provider Ref: #${order.apiOrderId}) status check returned: "${foxResult.error}". Keeping in processing status.`);
+              continue;
+            }
+
+            if (foxResult.status === 'completed') {
+              const finalReply = foxResult.reply || "تم اكتمال الشحن والتسليم بنجاح";
+              await prisma.order.update({
+                where: { id: order.id },
+                data: {
+                  status: 'completed',
+                  reply: finalReply,
+                },
+              });
+              const msg = `تم اكتمال طلبك بنجاح\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
+              sendTelegramPhotoNotification({ caption: msg }).catch(() => {});
+              console.log(`[CRON] FoxReload Order #${order.id.slice(-6)} marked as COMPLETED.`);
+              continue;
+            }
+
+            if (foxResult.status === 'rejected') {
+              const rejectReason = foxResult.error || 'مرفوض من مزود FoxReload';
+              const refundRef = `REF-${order.id.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+              const targetUserId = order.userId;
+
+              if (targetUserId && order.price > 0) {
+                try {
+                  await prisma.$transaction(async (tx) => {
+                    const updateRes = await tx.order.updateMany({
+                      where: { id: order.id, refundedAt: null },
+                      data: {
+                        status: 'rejected',
+                        reply: `مرفوض: ${rejectReason}`,
+                        refundedAt: new Date(),
+                        refundRefNo: refundRef,
+                      },
+                    });
+
+                    if (updateRes.count === 0) return;
+
+                    await tx.user.update({
+                      where: { id: targetUserId },
+                      data: { balance: { increment: order.price } },
+                    });
+
+                    await tx.transaction.create({
+                      data: {
+                        userId: targetUserId,
+                        type: `استرجاع رصيد (طلب رقمي مرفوض): ${order.serviceName.slice(0, 30)}`,
+                        amount: order.price,
+                        method: 'استرجاع تلقائي',
+                        refNo: refundRef,
+                        status: 'completed',
+                      },
+                    });
+                  });
+
+                  const msg = `تم إلغاء طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
+                  sendTelegramPhotoNotification({ caption: msg }).catch(() => {});
+                  console.log(`[CRON] FoxReload Order #${order.id.slice(-6)} marked as REJECTED and auto-refunded.`);
+                } catch (txErr) {
+                  console.error(`[CRON] Transaction failed for rejected FoxReload order ${order.id}:`, txErr);
+                }
+              } else {
+                await prisma.order.update({
+                  where: { id: order.id },
+                  data: {
+                    status: 'rejected',
+                    reply: `مرفوض: ${rejectReason}`,
+                  },
+                });
+              }
+              continue;
+            }
+
+            // Still processing
+            console.log(`[CRON] FoxReload Order #${order.id.slice(-6)} (Ref: #${order.apiOrderId}) is still in progress.`);
+            continue;
+          }
+
+          // 2. Dhru Fusion order checking
           const dhruService = await prisma.dhruService.findFirst({
             where: {
               OR: [
@@ -48,6 +133,11 @@ export function initOrderSyncCron() {
                 apiKey: dhruService.apiProvider.apiKey
               }
             : undefined;
+
+          if (!providerConfig && !DHRU_API_URL) {
+            console.warn(`[CRON] Order #${order.id.slice(-6)} (Provider Ref: #${order.apiOrderId}) has no provider configured and no default DHRU_API_URL. Keeping in processing.`);
+            continue;
+          }
 
           const isImei = dhruService && resolveOrderServiceType(
             dhruService.apiServiceType,

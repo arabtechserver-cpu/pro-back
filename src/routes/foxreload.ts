@@ -525,13 +525,15 @@ router.post('/admin/orders/:id/reject', async (req, res) => {
 });
 
 // POST /api/foxreload/admin/test-connection - Diagnostic Connection Test
-router.post('/admin/test-connection', async (_req, res) => {
+router.post('/admin/test-connection', async (req, res) => {
   try {
-    const live = await getFoxreloadLiveBalance();
+    const { apiKey } = req.body || {};
+    const live = await getFoxreloadLiveBalance(apiKey);
     if (!live.success) {
       return res.status(400).json({
         success: false,
         error: live.error || 'فشل الاتصال بـ FoxReload API',
+        details: live.details,
       });
     }
 

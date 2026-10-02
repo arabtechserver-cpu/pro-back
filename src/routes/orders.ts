@@ -797,7 +797,11 @@ router.post('/refund', isAdmin, async (req, res) => {
 
     let providerCheckResult: any = null;
     if (verifyProviderFirst && order.apiOrderId) {
-      const isFoxreload = order.source === 'foxreload' || String(order.serviceId || '').startsWith('foxreload:');
+      const isFoxreload =
+        order.source === 'foxreload' ||
+        String(order.serviceId || '').startsWith('foxreload:') ||
+        String(order.notes || '').toLowerCase().includes('foxreload') ||
+        String(order.serviceName || '').toLowerCase().includes('foxreload');
       if (isFoxreload) {
         providerCheckResult = await getFoxreloadOrderDetails(order.apiOrderId);
       } else {
@@ -1035,7 +1039,11 @@ router.post('/check-status', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'هذا الطلب لم يتم إرساله إلى أي مزود بعد' });
     }
 
-    const isFoxreload = order.source === 'foxreload' || String(order.serviceId || '').startsWith('foxreload:');
+    const isFoxreload =
+      order.source === 'foxreload' ||
+      String(order.serviceId || '').startsWith('foxreload:') ||
+      String(order.notes || '').toLowerCase().includes('foxreload') ||
+      String(order.serviceName || '').toLowerCase().includes('foxreload');
     if (isFoxreload) {
       const foxResult = await getFoxreloadOrderDetails(order.apiOrderId);
       if (!foxResult.success) {

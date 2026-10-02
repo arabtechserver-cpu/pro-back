@@ -82,17 +82,23 @@ app.use((req, res, next) => {
   const originalSend = res.send.bind(res);
 
   res.json = function (body: any) {
-    if (res.statusCode >= 400) {
+    if (res.statusCode >= 500) {
       const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
-      console.error(`[HTTP ${res.statusCode} ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
+      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
+    } else if (res.statusCode >= 400 && res.statusCode !== 404) {
+      const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
+      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Notice: ${errMsg}`);
     }
     return originalJson(body);
   };
 
   res.send = function (body: any) {
-    if (res.statusCode >= 400) {
+    if (res.statusCode >= 500) {
       const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
-      console.error(`[HTTP ${res.statusCode} ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+    } else if (res.statusCode >= 400 && res.statusCode !== 404) {
+      const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
+      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
     }
     return originalSend(body);
   };

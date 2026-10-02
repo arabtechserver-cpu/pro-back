@@ -32,7 +32,11 @@ export function initOrderSyncCron() {
 
         try {
           // 1. Check if it's a FoxReload digital/gaming order
-          const isFoxreload = order.source === 'foxreload' || String(order.serviceId || '').startsWith('foxreload:');
+          const isFoxreload =
+            order.source === 'foxreload' ||
+            String(order.serviceId || '').startsWith('foxreload:') ||
+            String(order.notes || '').toLowerCase().includes('foxreload') ||
+            String(order.serviceName || '').toLowerCase().includes('foxreload');
           if (isFoxreload) {
             const foxResult = await getFoxreloadOrderDetails(order.apiOrderId);
             if (!foxResult.success) {

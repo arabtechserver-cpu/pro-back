@@ -45,6 +45,13 @@ export interface CurrencyConfig {
     instructionsEn: string;
     isActive: boolean;
   };
+  rewarble?: {
+    address: string;
+    transferName: string;
+    instructionsAr: string;
+    instructionsEn: string;
+    isActive: boolean;
+  };
   paypal: {
     email: string;
     isActive: boolean;
@@ -86,8 +93,15 @@ const DEFAULT_CONFIG: CurrencyConfig = {
   cryptoBnb: {
     address: "0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f",
     network: "BNB Smart Chain (BEP20)",
-    instructionsAr: "تأكد من اختيار شبكة (BNB Smart Chain - BEP20) ثم ارفع صورة إثبات المعاملة من باينانس أو Trust Wallet.",
-    instructionsEn: "Ensure network selected is BNB Smart Chain (BEP20) then upload transaction receipt screenshot.",
+    instructionsAr: "طريقة تحويل عبر BNB معتمدة لكافة الأقسام والخدمات (شحن الألعاب المباشر، متاجر التطبيقات، أكواد الألعاب، الاشتراكات والترفيه، شرائح eSIM، وقسائم Rewarble): اسم التحويل BNB، قم بالتحويل إلى رابط المحفظة (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
+    instructionsEn: "Approved BNB transfer method for all sections (In-Game Top-Ups, App Stores, Game Codes, Subscriptions, eSIMs, and Rewarble Vouchers): Transfer Name BNB, transfer to wallet address (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) then upload transfer receipt.",
+    isActive: true
+  },
+  rewarble: {
+    address: "0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f",
+    transferName: "BNB",
+    instructionsAr: "طريقة تحويل خاصة بقسم Rewarble: اسم التحويل BNB، قم بالتحويل إلى رابط المحفظة (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
+    instructionsEn: "Dedicated transfer method for Rewarble: Transfer Name BNB, transfer to wallet address (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) then upload transfer receipt.",
     isActive: true
   },
   paypal: {

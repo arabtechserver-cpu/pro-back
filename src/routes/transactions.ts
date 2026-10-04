@@ -243,6 +243,10 @@ router.post('/', authenticateToken, async (req: any, res) => {
       return res.status(400).json({ error: 'جميع الحقول مطلوبة (المبلغ، طريقة الدفع، رقم المرجع)' });
     }
 
+    if (!receiptImage || typeof receiptImage !== 'string' || !receiptImage.trim()) {
+      return res.status(400).json({ error: 'صورة إشعار أو إيصال التحويل مطلوبة وإجبارية لإتمام طلب الشحن' });
+    }
+
     const targetUserId = req.user?.id;
     if (!targetUserId) {
       return res.status(401).json({ error: 'يُرجى تسجيل الدخول بحسابك أولاً لإتمام طلب الشحن' });

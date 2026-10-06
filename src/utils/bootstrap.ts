@@ -13,6 +13,8 @@ export async function bootstrapDatabase() {
     try {
       await prisma.$executeRawUnsafe(`ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "refundedAt" TIMESTAMP(3);`);
       await prisma.$executeRawUnsafe(`ALTER TABLE "Order" ADD COLUMN IF NOT EXISTS "refundRefNo" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiAllowedIps" TEXT;`);
+      await prisma.$executeRawUnsafe(`ALTER TABLE "User" ADD COLUMN IF NOT EXISTS "apiDailyLimit" DOUBLE PRECISION;`);
     } catch (ddlError) {
       console.warn('[Bootstrap] Note on safe DDL column verification:', ddlError);
     }

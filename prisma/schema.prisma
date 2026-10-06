@@ -221,6 +221,8 @@ model User {
   apiSiteName      String?
   apiSiteUrl       String?
   apiMargin        Float           @default(0.0)
+  apiAllowedIps    String?
+  apiDailyLimit    Float?
   couponUsages     CouponUsage[]
 }
 

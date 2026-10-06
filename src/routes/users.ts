@@ -25,6 +25,8 @@ export const safeUserSelect = {
   apiSiteName: true,
   apiSiteUrl: true,
   apiMargin: true,
+  apiAllowedIps: true,
+  apiDailyLimit: true,
   createdAt: true,
   updatedAt: true
 };
@@ -446,7 +448,7 @@ router.post("/update-balance", isAdmin, async (req: any, res) => {
 // POST /api/users/update-api-settings - Admin update user API settings
 router.post("/update-api-settings", isAdmin, async (req: any, res) => {
   try {
-    const { userId, apiEnabled, apiSiteName, apiSiteUrl, apiMargin } = req.body;
+    const { userId, apiEnabled, apiSiteName, apiSiteUrl, apiMargin, apiAllowedIps, apiDailyLimit } = req.body;
     if (!userId) return res.status(400).json({ error: "معرف المستخدم مطلوب" });
 
     let apiKey = req.body.apiKey;
@@ -458,6 +460,10 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
       ? parseFloat(apiMargin)
       : 8.0;
 
+    const cleanDailyLimit = apiDailyLimit !== undefined && apiDailyLimit !== null && !isNaN(parseFloat(apiDailyLimit))
+      ? Math.max(0, parseFloat(apiDailyLimit))
+      : undefined;
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
@@ -465,6 +471,8 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
         apiSiteName: apiSiteName !== undefined ? (apiSiteName ? String(apiSiteName).trim() : null) : undefined,
         apiSiteUrl: apiSiteUrl !== undefined ? (apiSiteUrl ? String(apiSiteUrl).trim() : null) : undefined,
         apiMargin: marginValue,
+        apiAllowedIps: apiAllowedIps !== undefined ? (apiAllowedIps ? String(apiAllowedIps).trim() : null) : undefined,
+        ...(cleanDailyLimit !== undefined && { apiDailyLimit: cleanDailyLimit }),
         ...(apiKey && { apiKey })
       },
       select: safeUserSelect
@@ -551,6 +559,38 @@ router.post("/regenerate-api-key", authenticateToken, async (req: any, res) => {
   } catch (error: any) {
     console.error("Error regenerating API key:", error);
     return res.status(500).json({ error: "حدث خطأ أثناء توليد المفتاح" });
+  }
+});
+
+// POST /api/users/save-api-security - Client update own API security settings
+router.post("/save-api-security", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
+
+    const { apiAllowedIps, apiDailyLimit } = req.body;
+    const cleanIps = typeof apiAllowedIps === 'string' ? apiAllowedIps.trim() : null;
+    const cleanDailyLimit = apiDailyLimit !== undefined && apiDailyLimit !== null && !isNaN(parseFloat(apiDailyLimit))
+      ? Math.max(0, parseFloat(apiDailyLimit))
+      : null;
+
+    const updatedUser = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        apiAllowedIps: cleanIps || null,
+        apiDailyLimit: cleanDailyLimit
+      },
+      select: safeUserSelect
+    });
+
+    return res.json({
+      success: true,
+      message: "تم حفظ إعدادات أمان الـ API وقائمة الـ IP بنجاح",
+      user: updatedUser
+    });
+  } catch (error: any) {
+    console.error("Error saving API security settings:", error);
+    return res.status(500).json({ error: "حدث خطأ أثناء حفظ إعدادات أمان API" });
   }
 });
 

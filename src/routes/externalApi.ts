@@ -2,16 +2,29 @@ import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
-import { resolveOrderServiceType } from '../utils/order-response';
+import { extractClientIp, areIpsEqual } from '../utils/ipUtils';
+import {
+  getUnifiedSections,
+  getUnifiedServices,
+  getUnifiedPackages,
+  getUnifiedCatalogTree,
+  getDhruCompatibleMergedCatalog
+} from '../services/unifiedCatalogService';
+import {
+  callFoxreloadApi,
+  createAndDispatchFoxreloadOrder,
+  getFoxreloadOrderDetails
+} from '../services/foxreloadService';
 
 const router = Router();
 
+// IP-based global rate limit
 const externalApiLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 120,
+  max: 200,
   message: {
     SUCCESS: [{
-      ERROR: "Too many requests. Rate limit exceeded, please try again in a minute."
+      ERROR: "Too many requests. Global rate limit exceeded, please try again in a minute."
     }]
   },
   validate: { xForwardedForHeader: false }
@@ -19,49 +32,82 @@ const externalApiLimiter = rateLimit({
 
 router.use(externalApiLimiter);
 
+// Per-account sliding window rate limiter (anti-scraping / bot prevention)
+const accountRateLimits = new Map<string, { count: number; resetAt: number }>();
+const ACCOUNT_RATE_LIMIT_PER_MINUTE = 180;
+
+const checkAccountRateLimit = (userId: string): boolean => {
+  const now = Date.now();
+  const entry = accountRateLimits.get(userId);
+  if (!entry || now > entry.resetAt) {
+    accountRateLimits.set(userId, { count: 1, resetAt: now + 60000 });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= ACCOUNT_RATE_LIMIT_PER_MINUTE;
+};
+
 // Middleware to authenticate API requests with username and API key
-const authenticateApi = async (req: any, res: any, next: any) => {
+export const authenticateApi = async (req: any, res: any, next: any) => {
   try {
-    const username = (
-      req.body.username ||
-      req.query.username ||
-      req.headers['x-username'] ||
-      ''
-    ).toString().trim();
+    const authHeader = req.headers.authorization || '';
+    let bearerKey = '';
+    if (authHeader.toLowerCase().startsWith('bearer ')) {
+      bearerKey = authHeader.slice(7).trim();
+    }
 
     const apiKey = (
-      req.body.apiaccesskey ||
-      req.body.key ||
-      req.body.apiKey ||
-      req.query.apiaccesskey ||
-      req.query.key ||
+      bearerKey ||
       req.headers['x-api-key'] ||
+      req.body?.apiaccesskey ||
+      req.body?.key ||
+      req.body?.apiKey ||
+      req.query?.apiaccesskey ||
+      req.query?.key ||
+      req.query?.apiKey ||
       ''
     ).toString().trim();
 
-    if (!username || !apiKey) {
+    const username = (
+      req.headers['x-username'] ||
+      req.body?.username ||
+      req.query?.username ||
+      ''
+    ).toString().trim();
+
+    if (!apiKey) {
       return res.status(401).json({
         SUCCESS: [{
-          ERROR: "Invalid username or API key. Please provide username and apiaccesskey/key."
+          ERROR: "Missing API Key. Please provide your key via Authorization header (Bearer <KEY>), x-api-key header, or body payload."
         }]
       });
     }
 
+    // Security warning header when API key is passed in URL query
+    if (req.query?.apiaccesskey || req.query?.key || req.query?.apiKey) {
+      res.setHeader('X-Security-Warning', 'Passing API key in query parameters is insecure. Please use Authorization header or request body.');
+    }
+
+    const userWhere: any = {
+      apiKey,
+      apiEnabled: true
+    };
+
+    if (username) {
+      userWhere.OR = [
+        { username: { equals: username, mode: 'insensitive' } },
+        { email: { equals: username, mode: 'insensitive' } }
+      ];
+    }
+
     const user = await prisma.user.findFirst({
-      where: {
-        OR: [
-          { username: { equals: username, mode: 'insensitive' } },
-          { email: { equals: username, mode: 'insensitive' } }
-        ],
-        apiKey: apiKey,
-        apiEnabled: true
-      }
+      where: userWhere
     });
 
     if (!user) {
       return res.status(401).json({
         SUCCESS: [{
-          ERROR: "Authentication failed or API access is disabled for this account."
+          ERROR: "Authentication failed. Invalid API credentials or API access is disabled."
         }]
       });
     }
@@ -74,23 +120,533 @@ const authenticateApi = async (req: any, res: any, next: any) => {
       });
     }
 
+    // IP Whitelist Check
+    if (user.apiAllowedIps && user.apiAllowedIps.trim() !== '') {
+      const clientIp = extractClientIp(req);
+      const allowedList = user.apiAllowedIps
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+
+      if (allowedList.length > 0) {
+        const isAllowed = allowedList.some((allowedIp) => areIpsEqual(allowedIp, clientIp));
+        if (!isAllowed) {
+          return res.status(403).json({
+            SUCCESS: [{
+              ERROR: `Access denied. Client IP (${clientIp}) is not authorized for this API key. Update allowed IPs in your dashboard.`
+            }]
+          });
+        }
+      }
+    }
+
+    // Per-Account Rate Limit Check
+    if (!checkAccountRateLimit(user.id)) {
+      return res.status(429).json({
+        SUCCESS: [{
+          ERROR: `Account rate limit exceeded (${ACCOUNT_RATE_LIMIT_PER_MINUTE} reqs/min). Please throttle your requests.`
+        }]
+      });
+    }
+
     req.apiUser = user;
     next();
-  } catch (error) {
+  } catch (error: any) {
+    console.error('[authenticateApi error]:', error?.message || error);
     return res.status(500).json({
       SUCCESS: [{
-        ERROR: "Internal Server Error during API authentication"
+        ERROR: `Internal Server Error during API authentication: ${error?.message || String(error)}`
       }]
     });
   }
 };
 
-router.all('/', authenticateApi, async (req: any, res: any) => {
+router.use(authenticateApi);
+
+// Helper to calculate margin
+const getUserMargin = (user: any): number => {
+  return typeof user.apiMargin === 'number' && user.apiMargin >= 0
+    ? user.apiMargin
+    : 8.0;
+};
+
+// ----------------------------------------------------------------------
+// REST Endpoints: Hierarchical Branching (الأقسام -> الخدمات -> الباقات)
+// ----------------------------------------------------------------------
+
+// 1. GET /sections - All Top-Level Categories/Sections
+router.get('/sections', async (_req: any, res) => {
+  try {
+    const sections = await getUnifiedSections();
+    return res.json({
+      success: true,
+      count: sections.length,
+      sections
+    });
+  } catch (error: any) {
+    console.error('[API sections error]:', error?.message || error);
+    return res.status(500).json({ success: false, error: "Failed to load sections", details: error?.message });
+  }
+});
+
+// 2. GET /services - Services / Games under a specific section
+router.get('/services', async (req: any, res) => {
+  try {
+    const section = (req.query.section || req.query.sectionId || '').toString();
+    const services = await getUnifiedServices(section);
+    return res.json({
+      success: true,
+      section: section || 'all',
+      count: services.length,
+      services
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: "Failed to load services" });
+  }
+});
+
+// 3. GET /service/:serviceId/packages - Packages for a specific service / game
+router.get('/service/:serviceId/packages', async (req: any, res) => {
+  try {
+    const { serviceId } = req.params;
+    const margin = getUserMargin(req.apiUser);
+    const result = await getUnifiedPackages(serviceId, margin);
+    return res.json({
+      success: true,
+      serviceId,
+      serviceName: result.serviceName,
+      sectionId: result.sectionId,
+      marginPercent: margin,
+      count: result.packages.length,
+      packages: result.packages
+    });
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: "Failed to load packages" });
+  }
+});
+
+// 4. GET /tree - Complete Hierarchical Catalog Tree
+router.get('/tree', async (req: any, res) => {
+  try {
+    const margin = getUserMargin(req.apiUser);
+    const tree = await getUnifiedCatalogTree(margin);
+    return res.json(tree);
+  } catch (error: any) {
+    return res.status(500).json({ success: false, error: "Failed to load catalog tree" });
+  }
+});
+
+// ----------------------------------------------------------------------
+// Unified Order Placement Logic (DHRU + FoxReload Games/Cards)
+// ----------------------------------------------------------------------
+async function executeOrderPlacement(req: any, res: any, parsedParams: Record<string, any>) {
+  const user = req.apiUser;
+  const targetServiceId = String(
+    parsedParams.ID ||
+    parsedParams.SERVICEID ||
+    parsedParams.serviceid ||
+    parsedParams.id ||
+    parsedParams.productId ||
+    ''
+  ).trim();
+
+  if (!targetServiceId) {
+    return res.json({ SUCCESS: [{ ERROR: "Service ID (ID) is required" }] });
+  }
+
+  const rawQty = parseInt(parsedParams.QNT || parsedParams.quantity || parsedParams.custom_QNT || '1', 10) || 1;
+  const finalQty = Math.max(1, rawQty);
+
+  // Parse custom parameters
+  let customFieldsObj: Record<string, string> = {};
+  const rawCustomField = parsedParams.customfield || parsedParams.CUSTOMFIELD;
+  if (rawCustomField) {
+    if (typeof rawCustomField === 'string') {
+      try {
+        const decoded = Buffer.from(rawCustomField, 'base64').toString('utf8');
+        const parsed = JSON.parse(decoded);
+        if (parsed && typeof parsed === 'object') customFieldsObj = parsed;
+      } catch {
+        try {
+          const parsed = JSON.parse(rawCustomField);
+          if (parsed && typeof parsed === 'object') customFieldsObj = parsed;
+        } catch {
+          customFieldsObj = { custom: rawCustomField };
+        }
+      }
+    } else if (typeof rawCustomField === 'object' && rawCustomField !== null) {
+      customFieldsObj = { ...rawCustomField };
+    }
+  }
+
+  for (const [pKey, pVal] of Object.entries(parsedParams)) {
+    if (pKey.startsWith('custom_') && pVal !== undefined && pVal !== null) {
+      customFieldsObj[pKey] = String(pVal);
+      customFieldsObj[pKey.replace(/^custom_/, '')] = String(pVal);
+    }
+  }
+
+  const rawImei = (
+    parsedParams.IMEI ||
+    parsedParams.imei ||
+    parsedParams.sn ||
+    parsedParams.serial ||
+    ''
+  ).toString().trim();
+
+  let finalTargetInput = rawImei;
+  if (!finalTargetInput && Object.keys(customFieldsObj).length > 0) {
+    const firstVal = Object.values(customFieldsObj)[0];
+    finalTargetInput = String(firstVal);
+  }
+  if (!finalTargetInput) {
+    finalTargetInput = `API-${user.username}`;
+  }
+
+  // Idempotency check
+  const clientOrderId = parsedParams.clientorderid || parsedParams.apiClientOrderId || req.headers['x-idempotency-key'];
+  if (clientOrderId) {
+    const cleanClientOrderId = String(clientOrderId).trim();
+    const existingClientOrder = await prisma.order.findFirst({
+      where: {
+        userId: user.id,
+        apiClientOrderId: cleanClientOrderId
+      }
+    });
+    if (existingClientOrder) {
+      return res.json({
+        SUCCESS: [{
+          REFERENCEID: existingClientOrder.id,
+          STATUS: existingClientOrder.status === 'completed' ? '4' : (existingClientOrder.status === 'processing' ? '2' : '1'),
+          CODE: existingClientOrder.reply || undefined,
+          MESSAGE: "Order already submitted with this client order ID"
+        }]
+      });
+    }
+  }
+
+  const marginPercent = getUserMargin(user);
+
+  // Check if target is a Dhru service
+  const dhruService = await prisma.dhruService.findFirst({
+    where: {
+      OR: [
+        { id: targetServiceId },
+        { dhruId: targetServiceId }
+      ],
+      isActive: true
+    },
+    include: {
+      apiProvider: true,
+      dhruCategory: true
+    }
+  });
+
+  // Check if target is a FoxReload product
+  let foxProduct: any = null;
+  if (!dhruService) {
+    const foxRes = await callFoxreloadApi(`/api/products/${encodeURIComponent(targetServiceId)}`, 'GET');
+    if (foxRes.ok && foxRes.data) {
+      foxProduct = foxRes.data;
+    }
+  }
+
+  if (!dhruService && !foxProduct) {
+    return res.json({ SUCCESS: [{ ERROR: "Service not found or inactive" }] });
+  }
+
+  // Calculate pricing
+  const baseCost = dhruService
+    ? Math.max(0, dhruService.credit || 0)
+    : Math.max(0, parseFloat(foxProduct.price || '0') || 0);
+
+  const unitPrice = Number((baseCost * (1 + marginPercent / 100)).toFixed(4));
+  const finalTotalPrice = Number((unitPrice * finalQty).toFixed(2));
+
+  // Balance Check
+  if (user.balance < finalTotalPrice) {
+    return res.json({
+      SUCCESS: [{
+        ERROR: `Insufficient balance! Total required: $${finalTotalPrice.toFixed(2)} USD. Your balance: $${user.balance.toFixed(2)} USD. Please deposit funds first.`
+      }]
+    });
+  }
+
+  // Daily Spending Limit Check
+  if (user.apiDailyLimit && user.apiDailyLimit > 0) {
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+
+    const todayOrdersTotal = await prisma.order.aggregate({
+      where: {
+        userId: user.id,
+        source: 'api',
+        createdAt: { gte: startOfDay },
+        status: { notIn: ['cancelled', 'rejected'] }
+      },
+      _sum: { price: true }
+    });
+
+    const currentSpent = todayOrdersTotal._sum.price || 0;
+    if (currentSpent + finalTotalPrice > user.apiDailyLimit) {
+      return res.json({
+        SUCCESS: [{
+          ERROR: `Daily API spending limit exceeded! Limit: $${user.apiDailyLimit.toFixed(2)}, Spent today: $${currentSpent.toFixed(2)}.`
+        }]
+      });
+    }
+  }
+
+  // ----------------------------------------------------
+  // Scenario A: FoxReload Gaming / Digital Product
+  // ----------------------------------------------------
+  if (foxProduct) {
+    const notesPayload: Record<string, any> = {};
+    const reqNoteFields = Array.isArray(foxProduct.requiredNoteFields) ? foxProduct.requiredNoteFields : [];
+
+    for (const field of reqNoteFields) {
+      const fieldVal = customFieldsObj[field] ||
+        parsedParams[field] ||
+        (field === 'account_id' || field === 'player_id' || field === 'id' ? finalTargetInput : undefined);
+
+      if (fieldVal) {
+        notesPayload[field] = fieldVal;
+      }
+    }
+
+    if (Object.keys(notesPayload).length === 0 && finalTargetInput) {
+      notesPayload['account_id'] = finalTargetInput;
+    }
+
+    const structuredNotes = JSON.stringify({
+      userNote: `طلب API ألعاب: ${foxProduct.name} من (@${user.username})`,
+      targetInput: finalTargetInput,
+      foxreloadNotes: notesPayload,
+      customFields: customFieldsObj,
+      productDetails: {
+        id: foxProduct.id,
+        name: foxProduct.name,
+        cost: baseCost,
+        finalPrice: finalTotalPrice,
+        margin: marginPercent
+      }
+    });
+
+    let createdOrder: any = null;
+    try {
+      createdOrder = await prisma.$transaction(async (tx) => {
+        const updated = await tx.user.updateMany({
+          where: { id: user.id, balance: { gte: finalTotalPrice } },
+          data: { balance: { decrement: finalTotalPrice } }
+        });
+
+        if (updated.count === 0) {
+          throw new Error('INSUFFICIENT_BALANCE_RACE');
+        }
+
+        await tx.transaction.create({
+          data: {
+            userId: user.id,
+            type: `طلب API: ${foxProduct.name.slice(0, 35)}`,
+            amount: finalTotalPrice,
+            method: 'رصيد API',
+            status: 'completed',
+            refNo: `API-${Date.now()}`
+          }
+        });
+
+        return await tx.order.create({
+          data: {
+            userId: user.id,
+            serviceId: foxProduct.id,
+            serviceName: foxProduct.name,
+            targetInput: finalTargetInput,
+            quantity: finalQty,
+            price: finalTotalPrice,
+            status: 'processing',
+            source: 'api',
+            notes: structuredNotes,
+            apiClientOrderId: clientOrderId ? String(clientOrderId).trim() : null
+          }
+        });
+      });
+    } catch (err: any) {
+      if (err.message === 'INSUFFICIENT_BALANCE_RACE') {
+        return res.json({ SUCCESS: [{ ERROR: "Insufficient balance during transaction" }] });
+      }
+      throw err;
+    }
+
+    // Dispatch directly to FoxReload provider
+    const dispatchRes = await createAndDispatchFoxreloadOrder({
+      productId: foxProduct.id,
+      quantity: finalQty,
+      notes: notesPayload
+    });
+
+    if (!dispatchRes.success) {
+      // Revert transaction and refund client
+      await prisma.$transaction(async (tx) => {
+        await tx.user.update({
+          where: { id: user.id },
+          data: { balance: { increment: finalTotalPrice } }
+        });
+        await tx.order.update({
+          where: { id: createdOrder.id },
+          data: {
+            status: 'cancelled',
+            reply: `فشل التنفيذ لدى المزود: ${dispatchRes.error}`
+          }
+        });
+        await tx.transaction.create({
+          data: {
+            userId: user.id,
+            type: `استرجاع طلب API: ${foxProduct.name.slice(0, 35)}`,
+            amount: finalTotalPrice,
+            method: 'استرجاع تلقائي',
+            status: 'completed',
+            refNo: `REFUND-${Date.now()}`
+          }
+        });
+      });
+
+      return res.json({
+        SUCCESS: [{
+          ERROR: `Failed to fulfill with provider: ${dispatchRes.error || 'Provider rejected order'}`
+        }]
+      });
+    }
+
+    const codesList = Array.isArray(dispatchRes.codes) ? dispatchRes.codes : [];
+    const hasCodes = codesList.length > 0;
+    const isCompleted = dispatchRes.status === 'completed' || dispatchRes.status === 'finished' || hasCodes;
+    const replyText = hasCodes ? codesList.join('\n') : (isCompleted ? 'تم الشحن والتفعيل بنجاح' : undefined);
+
+    await prisma.order.update({
+      where: { id: createdOrder.id },
+      data: {
+        status: isCompleted ? 'completed' : 'processing',
+        apiOrderId: dispatchRes.orderId ? String(dispatchRes.orderId) : null,
+        reply: replyText
+      }
+    });
+
+    return res.json({
+      SUCCESS: [{
+        MESSAGE: isCompleted ? "Order completed and delivered successfully" : "Order placed and is currently processing",
+        REFERENCEID: createdOrder.id,
+        STATUS: isCompleted ? "4" : "2",
+        CODE: replyText || undefined
+      }]
+    });
+  }
+
+  // ----------------------------------------------------
+  // Scenario B: DHRU IMEI / Server Service
+  // ----------------------------------------------------
+  if (!dhruService) {
+    return res.json({ SUCCESS: [{ ERROR: "Service not found or inactive" }] });
+  }
+
+  if (dhruService.supportsQty) {
+    if (dhruService.minQty && finalQty < dhruService.minQty) {
+      return res.json({ SUCCESS: [{ ERROR: `Quantity is less than minimum limit (${dhruService.minQty})` }] });
+    }
+    if (dhruService.maxQty && dhruService.maxQty > 0 && finalQty > dhruService.maxQty) {
+      return res.json({ SUCCESS: [{ ERROR: `Quantity exceeds maximum limit (${dhruService.maxQty})` }] });
+    }
+  }
+
+  const structuredNotes = JSON.stringify({
+    userNote: `طلب API: ${user.apiSiteName || 'موقع عميل'} (@${user.username})`,
+    rawImei: rawImei || finalTargetInput,
+    customFields: customFieldsObj,
+    apiDetails: {
+      username: user.username,
+      email: user.email,
+      margin: marginPercent
+    },
+    originalPrice: baseCost * finalQty,
+    finalPrice: finalTotalPrice
+  });
+
+  let order: any;
+  try {
+    order = await prisma.$transaction(async (tx) => {
+      const updatedUser = await tx.user.updateMany({
+        where: { id: user.id, balance: { gte: finalTotalPrice } },
+        data: { balance: { decrement: finalTotalPrice } }
+      });
+
+      if (updatedUser.count === 0) {
+        throw new Error('INSUFFICIENT_BALANCE_RACE');
+      }
+
+      await tx.transaction.create({
+        data: {
+          userId: user.id,
+          type: `طلب API: ${dhruService.name.slice(0, 35)}`,
+          amount: finalTotalPrice,
+          method: 'رصيد API',
+          status: 'completed',
+          refNo: `API-${Date.now()}`
+        }
+      });
+
+      return await tx.order.create({
+        data: {
+          userId: user.id,
+          serviceId: dhruService.id,
+          serviceName: dhruService.name,
+          targetInput: finalTargetInput,
+          quantity: finalQty,
+          price: finalTotalPrice,
+          status: 'pending',
+          source: 'api',
+          notes: structuredNotes,
+          apiClientOrderId: clientOrderId ? String(clientOrderId).trim() : null
+        }
+      });
+    });
+  } catch (err: any) {
+    if (err.message === 'INSUFFICIENT_BALANCE_RACE') {
+      return res.json({ SUCCESS: [{ ERROR: "Insufficient balance during transaction" }] });
+    }
+    throw err;
+  }
+
+  const providerName = dhruService.apiProvider?.name || 'سيرفر محلي / يدوي';
+  const caption = `
+[NEW API ORDER] <b>طلب API جديد في انتظار اعتماد الإدارة</b>
+
+<b>رقم الطلب:</b> #${order.id.slice(-6)}
+<b>العميل:</b> ${user.fullName} (@${user.username})
+<b>الخدمة:</b> ${order.serviceName}
+<b>المزود:</b> ${providerName}
+<b>البيانات:</b> <code>${order.targetInput}</code>
+<b>المبلغ:</b> $${order.price.toFixed(2)} USD
+  `.trim();
+
+  sendTelegramPhotoNotification({ caption }).catch(() => {});
+
+  return res.json({
+    SUCCESS: [{
+      MESSAGE: "Order placed successfully and is pending admin approval",
+      REFERENCEID: order.id,
+      STATUS: "1"
+    }]
+  });
+}
+
+// ----------------------------------------------------------------------
+// Root Handler (Dhru Action-Based Protocol Compatibility)
+// ----------------------------------------------------------------------
+router.all('/', async (req: any, res: any) => {
   const action = req.body?.action || req.query?.action || req.headers?.['x-action'];
   const parameters = req.body?.parameters || req.query?.parameters;
   const user = req.apiUser;
 
-  const writeActions = ['placeimeiorder', 'placeserverorder'];
+  const writeActions = ['placeimeiorder', 'placeserverorder', 'placeorder'];
   if (writeActions.includes(String(action).toLowerCase()) && req.method === 'GET') {
     return res.status(405).json({
       SUCCESS: [{
@@ -100,15 +656,12 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
   }
 
   try {
-    // 1. Parse incoming parameters from various formats (JSON string, Object, or flat form fields)
     let parsedParams: Record<string, any> = {};
-
     if (parameters) {
       if (typeof parameters === 'string') {
         try {
           parsedParams = JSON.parse(parameters);
         } catch {
-          // If not JSON, might be raw value
           parsedParams = { raw: parameters };
         }
       } else if (typeof parameters === 'object' && parameters !== null) {
@@ -116,7 +669,6 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
       }
     }
 
-    // Also pick up flat fields from req.body and req.query (e.g. ID, IMEI, customfield, format, etc.)
     const combinedInput = { ...(req.query || {}), ...(req.body || {}) };
     for (const [key, value] of Object.entries(combinedInput)) {
       if (['username', 'apiaccesskey', 'key', 'apiKey', 'action', 'parameters'].includes(key)) continue;
@@ -129,11 +681,9 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
     }
 
     const normalizedAction = (action || '').toString().toLowerCase().trim();
+    const margin = getUserMargin(user);
 
     switch (normalizedAction) {
-      // ----------------------------------------------------
-      // 1. Account Info
-      // ----------------------------------------------------
       case 'accountinfo': {
         return res.json({
           SUCCESS: [{
@@ -144,15 +694,70 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
               mail: user.email,
               username: user.username,
               siteName: user.apiSiteName || "",
-              siteUrl: user.apiSiteUrl || ""
+              siteUrl: user.apiSiteUrl || "",
+              dailyLimit: user.apiDailyLimit || null
             }
           }]
         });
       }
 
-      // ----------------------------------------------------
-      // 2. Service Lists (IMEI, Server, Remote, All)
-      // ----------------------------------------------------
+      // Modern hierarchical branching actions
+      case 'sections':
+      case 'getsections': {
+        const sections = await getUnifiedSections();
+        return res.json({
+          SUCCESS: [{
+            LIST: sections,
+            SECTIONS: sections,
+            total_sections: sections.length
+          }]
+        });
+      }
+
+      case 'servicesbysection':
+      case 'getservicesbysection': {
+        const targetSection = parsedParams.section || parsedParams.sectionId || parsedParams.id;
+        const services = await getUnifiedServices(targetSection);
+        return res.json({
+          SUCCESS: [{
+            LIST: services,
+            SERVICES: services,
+            section: targetSection || 'all',
+            total_services: services.length
+          }]
+        });
+      }
+
+      case 'packagesbyservice':
+      case 'getpackages': {
+        const serviceId = parsedParams.serviceId || parsedParams.id || parsedParams.bundleId;
+        if (!serviceId) {
+          return res.json({ SUCCESS: [{ ERROR: "Service ID is required" }] });
+        }
+        const result = await getUnifiedPackages(serviceId, margin);
+        return res.json({
+          SUCCESS: [{
+            LIST: result.packages,
+            PACKAGES: result.packages,
+            serviceName: result.serviceName,
+            sectionId: result.sectionId,
+            total_packages: result.packages.length
+          }]
+        });
+      }
+
+      case 'catalogtree':
+      case 'getcatalogtree': {
+        const tree = await getUnifiedCatalogTree(margin);
+        return res.json({
+          SUCCESS: [{
+            TREE: tree,
+            total_sections: tree.totalSections
+          }]
+        });
+      }
+
+      // Dhru Standard Service Lists (Now fully merged with FoxReload games & cards)
       case 'imeiservicelist':
       case 'serverservicelist':
       case 'remoteservicelist':
@@ -161,143 +766,11 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
       case 'getservicelist':
       case 'getservices':
       case 'services': {
-        const isImei = normalizedAction === 'imeiservicelist';
-        const isRemote = normalizedAction === 'remoteservicelist';
-        const isServer = normalizedAction === 'serverservicelist';
+        const filterType: 'imei' | 'server' | 'all' =
+          normalizedAction === 'imeiservicelist' ? 'imei' :
+          normalizedAction === 'serverservicelist' ? 'server' : 'all';
 
-        // Fetch active services that belong to an active provider or have no provider requirement
-        const services = await prisma.dhruService.findMany({
-          where: {
-            isActive: true,
-            OR: [
-              { apiProvider: { isActive: true } },
-              { providerId: null }
-            ]
-          },
-          include: {
-            dhruCategory: { select: { id: true, name: true } },
-            apiProvider: { select: { id: true, name: true, isActive: true } }
-          },
-          orderBy: [
-            { groupName: 'asc' },
-            { name: 'asc' }
-          ]
-        });
-
-        // Filter services matching the requested type
-        const filteredServices = services.filter((srv) => {
-          const srvType = resolveOrderServiceType(
-            srv.apiServiceType,
-            srv.dhruCategory?.name,
-            srv.groupName
-          );
-
-          if (isImei) return srvType === 'imei';
-          if (isRemote) return srvType === 'remote';
-          if (isServer) return srvType === 'server';
-          return true;
-        });
-
-        // Margin calculation: Default is strictly 8% profit margin added to provider base cost
-        const marginPercent = typeof user.apiMargin === 'number' && user.apiMargin >= 0
-          ? user.apiMargin
-          : 8.0;
-
-        // Group services strictly by their actual package name (groupName)
-        const groupsMap = new Map<string, any>();
-        const groupsObject: Record<string, any> = {};
-
-        for (const srv of filteredServices) {
-          const rawGroupName = (srv.groupName && srv.groupName.trim() !== ''
-            ? srv.groupName
-            : (srv.dhruCategory?.name || (isImei ? 'IMEI Services' : 'Server Services'))).trim();
-          const groupName = rawGroupName;
-
-          if (!groupsMap.has(groupName)) {
-            const groupData = {
-              GROUPNAME: groupName,
-              group_name: groupName,
-              GroupName: groupName,
-              name: groupName,
-              package_name: groupName,
-              package: groupName,
-              category: srv.dhruCategory?.name || (isImei ? 'IMEI Services' : 'Server Services'),
-              SERVICES: [] as any[],
-              services: [] as any[]
-            };
-            groupsMap.set(groupName, groupData);
-            groupsObject[groupName] = groupData;
-          }
-
-          // Provider base price (cost)
-          const baseCost = Math.max(0, srv.credit || 0);
-          // Calculate price with 8% profit margin only: baseCost * (1 + 8/100)
-          const finalPrice = Number((baseCost * (1 + (marginPercent / 100))).toFixed(4));
-
-          // Parse and build custom fields specifications
-          let customReq: any[] = [];
-          if (srv.requiresCustom) {
-            try {
-              const parsed = typeof srv.requiresCustom === 'string' ? JSON.parse(srv.requiresCustom) : srv.requiresCustom;
-              if (Array.isArray(parsed)) customReq = parsed;
-              else if (typeof parsed === 'object' && parsed !== null) customReq = Object.values(parsed);
-            } catch {}
-          }
-
-          const requiresFields: string[] = [];
-          if (isImei) {
-            requiresFields.push("IMEI");
-          }
-
-          for (const f of customReq) {
-            const fname = f.name || f.fieldname || f.label || f.field_id;
-            if (fname && !requiresFields.some(existing => existing.toLowerCase() === String(fname).toLowerCase())) {
-              requiresFields.push(String(fname));
-            }
-          }
-
-          if (requiresFields.length === 0 && isImei) {
-            requiresFields.push("IMEI");
-          }
-
-          const srvItem = {
-            SERVICEID: srv.dhruId || srv.id,
-            service_id: srv.dhruId || srv.id,
-            ID: srv.id,
-            id: srv.id,
-            SERVICENAME: srv.name,
-            service_name: srv.name,
-            name: srv.name,
-            CREDIT: finalPrice.toFixed(2),
-            credit: finalPrice.toFixed(2),
-            PRICE: finalPrice.toFixed(2),
-            price: finalPrice.toFixed(2),
-            TIME: srv.time || "1-24 Hours",
-            time: srv.time || "1-24 Hours",
-            INFO: srv.info || "",
-            info: srv.info || "",
-            GROUPNAME: groupName,
-            group_name: groupName,
-            GroupName: groupName,
-            group: groupName,
-            package: groupName,
-            PACKAGE: groupName,
-            category: srv.dhruCategory?.name || (isImei ? "IMEI Service" : "Server Service"),
-            Requires: requiresFields.join(","),
-            RequiresCustom: customReq.length > 0 ? customReq : undefined,
-            CUSTOM: customReq.length > 0 ? customReq : undefined,
-            SupportsQty: srv.supportsQty,
-            supports_quantity: srv.supportsQty,
-            MIN_QNT: srv.minQty || 1,
-            MAX_QNT: srv.maxQty || 0
-          };
-
-          const targetGroup = groupsMap.get(groupName);
-          targetGroup.SERVICES.push(srvItem);
-          targetGroup.services.push(srvItem);
-        }
-
-        const groupsList = Array.from(groupsMap.values());
+        const { groupsList, groupsObject, totalServices } = await getDhruCompatibleMergedCatalog(margin, filterType);
         const isObjectFormat = req.query.format === 'object' || parsedParams.format === 'object';
         const listPayload = isObjectFormat ? groupsObject : groupsList;
 
@@ -308,277 +781,19 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
             PACKAGES: groupsList,
             serviceList: groupsList,
             total_groups: groupsList.length,
-            total_services: filteredServices.length
+            total_services: totalServices
           }]
         });
       }
 
-      // ----------------------------------------------------
-      // 3. Place Order (IMEI / Server)
-      // ----------------------------------------------------
+      // Place Order
       case 'placeimeiorder':
-      case 'placeserverorder': {
-        const targetServiceId = String(
-          parsedParams.ID ||
-          parsedParams.SERVICEID ||
-          parsedParams.serviceid ||
-          parsedParams.id ||
-          ''
-        ).trim();
-
-        if (!targetServiceId) {
-          return res.json({ SUCCESS: [{ ERROR: "Service ID (ID) is required" }] });
-        }
-
-        // Support lookup by UUID or Provider DhruId
-        const service = await prisma.dhruService.findFirst({
-          where: {
-            OR: [
-              { id: targetServiceId },
-              { dhruId: targetServiceId }
-            ],
-            isActive: true
-          },
-          include: {
-            apiProvider: true,
-            dhruCategory: true
-          }
-        });
-
-        if (!service) {
-          return res.json({ SUCCESS: [{ ERROR: "Service not found or inactive" }] });
-        }
-
-        const rawQty = parseInt(parsedParams.QNT || parsedParams.quantity || parsedParams.custom_QNT || '1', 10) || 1;
-        if (service.supportsQty) {
-          if (service.minQty && rawQty < service.minQty) {
-            return res.json({ SUCCESS: [{ ERROR: `Quantity is less than minimum allowed limit (${service.minQty})` }] });
-          }
-          if (service.maxQty && service.maxQty > 0 && rawQty > service.maxQty) {
-            return res.json({ SUCCESS: [{ ERROR: `Quantity exceeds maximum allowed limit (${service.maxQty})` }] });
-          }
-        }
-        const finalQty = service.supportsQty ? rawQty : 1;
-
-        const clientOrderId = parsedParams.clientorderid || parsedParams.apiClientOrderId;
-        if (clientOrderId) {
-          const cleanClientOrderId = String(clientOrderId).trim();
-          const existingClientOrder = await prisma.order.findFirst({
-            where: {
-              userId: user.id,
-              apiClientOrderId: cleanClientOrderId
-            }
-          });
-          if (existingClientOrder) {
-            return res.json({
-              SUCCESS: [{
-                REFERENCEID: existingClientOrder.id,
-                MESSAGE: "Order already submitted with this client order ID"
-              }]
-            });
-          }
-        }
-
-        // Base provider cost + 8% margin
-        const baseCost = Math.max(0, service.credit || 0);
-        const marginPercent = typeof user.apiMargin === 'number' && user.apiMargin >= 0
-          ? user.apiMargin
-          : 8.0;
-
-        const unitPrice = Number((baseCost * (1 + (marginPercent / 100))).toFixed(4));
-        const finalTotalPrice = Number((unitPrice * finalQty).toFixed(2));
-
-        // Balance validation
-        if (user.balance < finalTotalPrice) {
-          return res.json({
-            SUCCESS: [{
-              ERROR: `Insufficient balance! Total required: $${finalTotalPrice.toFixed(2)} USD. Your balance: $${user.balance.toFixed(2)} USD. Please deposit funds first.`
-            }]
-          });
-        }
-
-        // Parse custom field parameters (handle Base64 JSON, JSON string, or Object)
-        let customFieldsObj: Record<string, string> = {};
-        const rawCustomField = parsedParams.customfield || parsedParams.CUSTOMFIELD;
-
-        if (rawCustomField) {
-          if (typeof rawCustomField === 'string') {
-            try {
-              // Try base64 decode first
-              const decoded = Buffer.from(rawCustomField, 'base64').toString('utf8');
-              const parsed = JSON.parse(decoded);
-              if (parsed && typeof parsed === 'object') customFieldsObj = parsed;
-            } catch {
-              try {
-                const parsed = JSON.parse(rawCustomField);
-                if (parsed && typeof parsed === 'object') customFieldsObj = parsed;
-              } catch {
-                customFieldsObj = { custom: rawCustomField };
-              }
-            }
-          } else if (typeof rawCustomField === 'object' && rawCustomField !== null) {
-            customFieldsObj = { ...rawCustomField };
-          }
-        }
-
-        // Support flat parameters starting with custom_
-        for (const [pKey, pVal] of Object.entries(parsedParams)) {
-          if (pKey.startsWith('custom_') && pVal !== undefined && pVal !== null) {
-            customFieldsObj[pKey] = String(pVal);
-            customFieldsObj[pKey.replace(/^custom_/, '')] = String(pVal);
-          }
-        }
-
-        const rawImei = (
-          parsedParams.IMEI ||
-          parsedParams.imei ||
-          parsedParams.sn ||
-          parsedParams.serial ||
-          ''
-        ).toString().trim();
-
-        // Determine final target input
-        let finalTargetInput = rawImei;
-        if (!finalTargetInput && Object.keys(customFieldsObj).length > 0) {
-          const firstVal = Object.values(customFieldsObj)[0];
-          finalTargetInput = String(firstVal);
-        }
-        if (!finalTargetInput) {
-          finalTargetInput = `API-${user.username}`;
-        }
-
-        // Structure timeline events and notes for dashboard inspection
-        const now = new Date();
-        const timelineEvents = [
-          {
-            time: now.toISOString(),
-            action: 'API_ORDER_CREATED',
-            title: 'استلام طلب عبر الـ API وخصم الرصيد',
-            desc: `تم استلام الطلب بنجاح عبر API من موقع (${user.apiSiteName || 'بدون اسم موقع'}) بواسطة العميل (@${user.username}) وخصم $${finalTotalPrice.toFixed(2)} USD من رصيد محفظته. الطلب في انتظار مراجعة وموافقة الإدارة.`
-          }
-        ];
-
-        if (service.apiProvider) {
-          timelineEvents.push({
-            time: now.toISOString(),
-            action: 'PROVIDER_LINKED',
-            title: 'ربط المزود',
-            desc: `الخدمة مربوطة بالمزود (${service.apiProvider.name}) برقم خدمة #${service.dhruId}. الطلب في انتظار موافقة الإدارة للإرسال للمزود أو التنفيذ اليدوي.`
-          });
-        }
-
-        const mergedCustomFields: Record<string, string> = { ...customFieldsObj };
-        if (service.supportsQty) {
-          mergedCustomFields['QNT'] = String(finalQty);
-          mergedCustomFields['custom_QNT'] = String(finalQty);
-        }
-
-        const structuredNotes = JSON.stringify({
-          userNote: `طلب API وارد من موقع: ${user.apiSiteName || 'N/A'} (العميل: @${user.username})`,
-          rawImei: rawImei || finalTargetInput,
-          customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : null,
-          apiDetails: {
-            username: user.username,
-            email: user.email,
-            fullName: user.fullName,
-            siteName: user.apiSiteName || null,
-            siteUrl: user.apiSiteUrl || null,
-            apiKey: user.apiKey ? user.apiKey.slice(0, 8) + '...' : null,
-            margin: marginPercent
-          },
-          originalPrice: baseCost * finalQty,
-          finalPrice: finalTotalPrice,
-          events: timelineEvents
-        });
-
-        // Deduct balance, record transaction, and create order with status: 'pending'
-        let order;
-        try {
-          order = await prisma.$transaction(async (tx: any) => {
-            const updatedUserResult = await tx.user.updateMany({
-              where: { id: user.id, balance: { gte: finalTotalPrice } },
-              data: { balance: { decrement: finalTotalPrice } }
-            });
-
-            if (updatedUserResult.count === 0) {
-              throw new Error('INSUFFICIENT_BALANCE_RACE');
-            }
-
-            await tx.transaction.create({
-              data: {
-                userId: user.id,
-                type: `طلب API: ${service.name.slice(0, 35)}`,
-                amount: finalTotalPrice,
-                method: 'رصيد API',
-                status: 'completed',
-                refNo: `API-${Date.now()}`
-              }
-            });
-
-            const newOrder = await tx.order.create({
-              data: {
-                userId: user.id,
-                serviceId: service.id,
-                serviceName: service.name,
-                targetInput: finalTargetInput,
-                quantity: finalQty,
-                price: finalTotalPrice,
-                status: 'pending',
-                source: 'api',
-                notes: structuredNotes,
-                apiClientOrderId: parsedParams.clientorderid || parsedParams.apiClientOrderId || null
-              }
-            });
-
-            return newOrder;
-          });
-        } catch (err: any) {
-          if (err.message === 'INSUFFICIENT_BALANCE_RACE') {
-            return res.json({
-              SUCCESS: [{
-                ERROR: `Insufficient balance during transaction. Your balance may have changed. Please try again.`
-              }]
-            });
-          }
-          throw err;
-        }
-
-        // Send Telegram alert to admin for manual approval
-        const providerName = service.apiProvider?.name || 'سيرفر محلي / يدوي';
-        const caption = `
-[NEW API ORDER] <b>طلب API جديد في انتظار موافقة الإدارة! (New API Order Pending)</b>
-
-<b>رقم الطلب:</b> #${order.id.slice(-6)}
-<b>مصدر الطلب:</b> API (${user.apiSiteName || 'موقع عميل'})
-<b>رابط الموقع:</b> ${user.apiSiteUrl || 'N/A'}
-<b>العميل:</b> ${user.fullName} (@${user.username})
-<b>الإيميل:</b> <code>${user.email}</code>
-<b>اسم الخدمة:</b> ${order.serviceName}
-<b>المزود المربوط:</b> ${providerName} (ID: ${service.dhruId || 'N/A'})
-<b>البيانات / IMEI:</b> <code>${order.targetInput}</code>
-<b>الكمية:</b> ${order.quantity}
-<b>المبلغ المخصوم (تكلفة + 8% ربح):</b> <code>$${order.price.toFixed(2)} USD</code>
-<b>رصيد العميل المتبقي:</b> <code>$${(user.balance - finalTotalPrice).toFixed(2)} USD</code>
-<b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
-
-<b>الحالة:</b> في انتظار مراجعة وموافقة الإدارة بالداشبورد
-        `.trim();
-
-        sendTelegramPhotoNotification({ caption }).catch((err) => {
-          console.error('[API Order Telegram Alert Error]:', err?.message || err);
-        });
-
-        return res.json({
-          SUCCESS: [{
-            MESSAGE: "Order placed successfully and is pending admin approval",
-            REFERENCEID: order.id
-          }]
-        });
+      case 'placeserverorder':
+      case 'placeorder': {
+        return await executeOrderPlacement(req, res, parsedParams);
       }
 
-      // ----------------------------------------------------
-      // 4. Check Order Status & Retrieve Code (IMEI & Server)
-      // ----------------------------------------------------
+      // Check Order Status
       case 'getimeiorder':
       case 'getserverorder':
       case 'getorder': {
@@ -602,13 +817,30 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
           return res.json({ SUCCESS: [{ ERROR: "Order not found" }] });
         }
 
-        // Dhru Standard Status Codes:
-        // 1 = Pending (في انتظار الموافقة)
-        // 2 = In Process (قيد التنفيذ بالمزود)
-        // 3 = Rejected / Cancelled (ملغي ومسترجع)
-        // 4 = Success / Completed (مكتمل ومسلم)
+        // If order was a FoxReload order currently processing, sync live status
+        if (order.status === 'processing' && order.apiOrderId) {
+          const liveDetails = await getFoxreloadOrderDetails(order.apiOrderId);
+          if (liveDetails.success) {
+            if (liveDetails.status === 'completed') {
+              const replyCode = liveDetails.reply || liveDetails.codes.join('\n') || 'Completed';
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { status: 'completed', reply: replyCode }
+              });
+              order.status = 'completed';
+              order.reply = replyCode;
+            } else if (liveDetails.status === 'rejected') {
+              await prisma.order.update({
+                where: { id: order.id },
+                data: { status: 'rejected', reply: liveDetails.error || 'Cancelled by provider' }
+              });
+              order.status = 'rejected';
+            }
+          }
+        }
+
         let statusCode = "1";
-        let statusMessage = "Pending admin verification and approval";
+        let statusMessage = "Pending admin verification";
         let replyCode = "";
 
         if (order.status === 'completed') {
@@ -617,16 +849,12 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
           replyCode = order.reply || "Completed";
         } else if (order.status === 'rejected' || order.status === 'cancelled') {
           statusCode = "3";
-          statusMessage = "Order rejected or cancelled by admin";
-          replyCode = order.reply || "Rejected by admin";
+          statusMessage = "Order rejected or cancelled";
+          replyCode = order.reply || "Rejected";
         } else if (order.status === 'processing') {
           statusCode = "2";
           statusMessage = "Order in process with provider";
           replyCode = "In process";
-        } else {
-          statusCode = "1";
-          statusMessage = "Order pending admin approval";
-          replyCode = "Pending";
         }
 
         return res.json({
@@ -648,7 +876,7 @@ router.all('/', authenticateApi, async (req: any, res: any) => {
       }
     }
   } catch (error: any) {
-    console.error("API error:", error);
+    console.error("API Error:", error);
     return res.status(500).json({
       SUCCESS: [{
         ERROR: "Internal Server Error"

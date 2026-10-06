@@ -550,10 +550,12 @@ let dhruMergedCache: { timestamp: number; key: string; data: any } | null = null
 
 export async function getDhruCompatibleMergedCatalog(
   userMarginPercent: number = 8.0,
-  filterType: 'imei' | 'server' | 'all' = 'all'
+  filterType: 'imei' | 'server' | 'all' = 'all',
+  sectionFilter?: string
 ): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number }> {
   const margin = Math.max(0, userMarginPercent);
-  const cacheKey = `${margin}_${filterType}`;
+  const normalizedSec = (sectionFilter || '').trim().toLowerCase();
+  const cacheKey = `${margin}_${filterType}_${normalizedSec}`;
   if (dhruMergedCache && dhruMergedCache.key === cacheKey && (Date.now() - dhruMergedCache.timestamp < CACHE_TTL_MS)) {
     return dhruMergedCache.data;
   }
@@ -576,7 +578,8 @@ export async function getDhruCompatibleMergedCatalog(
         package: groupName,
         category: categoryName,
         SERVICES: [] as any[],
-        services: [] as any[]
+        services: [] as any[],
+        services_map: {} as Record<string, any>
       };
       groupsMap.set(groupName, g);
       groupsObject[groupName] = g;
@@ -587,47 +590,48 @@ export async function getDhruCompatibleMergedCatalog(
   if (!isImeiOnly) {
     const foxCatalog = await getFoxreloadFullCatalog(false).catch(() => null);
     if (foxCatalog?.sections) {
-      const targetSections = [
-        foxCatalog.sections.popular,
-        foxCatalog.sections.topups,
-        foxCatalog.sections.appStores,
-        foxCatalog.sections.gameCurrency,
-        foxCatalog.sections.subscriptions,
-        foxCatalog.sections.esim,
-        foxCatalog.sections.rewarble
-      ].filter(Boolean);
+      const sectionConfigs = [
+        { sec: foxCatalog.sections.popular, name: SECTION_METADATA.popular.nameAr, key: 'popular', limit: 18 },
+        { sec: foxCatalog.sections.topups, name: SECTION_METADATA.topups.nameAr, key: 'topups', limit: 35 },
+        { sec: foxCatalog.sections.appStores, name: SECTION_METADATA.appStores.nameAr, key: 'app-stores', limit: 10 },
+        { sec: foxCatalog.sections.gameCurrency, name: SECTION_METADATA.gameCurrency.nameAr, key: 'game-currency', limit: 25 },
+        { sec: foxCatalog.sections.subscriptions, name: SECTION_METADATA.subscriptions.nameAr, key: 'subscriptions', limit: 25 },
+        { sec: foxCatalog.sections.esim, name: SECTION_METADATA.esim.nameAr, key: 'esim', limit: 20 },
+        { sec: foxCatalog.sections.rewarble, name: SECTION_METADATA.rewarble.nameAr, key: 'rewarble', limit: 5 }
+      ];
 
       const targetBundlesToSample: any[] = [];
       const seenBundleIds = new Set<string>();
 
-      for (const sec of targetSections) {
-        for (const b of sec.bundles || []) {
+      for (const config of sectionConfigs) {
+        if (!config.sec?.bundles) continue;
+        if (normalizedSec && normalizedSec !== 'all' && normalizedSec !== config.key && !config.key.includes(normalizedSec)) {
+          continue;
+        }
+
+        const maxLimit = normalizedSec ? 80 : config.limit;
+        const bundles = config.sec.bundles.slice(0, maxLimit);
+        for (const b of bundles) {
           if (!seenBundleIds.has(b.id)) {
             seenBundleIds.add(b.id);
-            targetBundlesToSample.push({ bundle: b, secName: sec.nameAr || 'خدمات رقمية' });
+            targetBundlesToSample.push({ bundle: b, secName: config.name });
           }
         }
       }
 
-  const cacheKey = `${margin}_${filterType}`;
-  if (dhruMergedCache && dhruMergedCache.key === cacheKey && (Date.now() - dhruMergedCache.timestamp < CACHE_TTL_MS)) {
-    return dhruMergedCache.data;
-  }
+      const batchResults: { bundle: any; secName: string; prods: any[] }[] = [];
 
-  const sampleBatch = targetBundlesToSample.slice(0, 30);
-  const batchResults: { bundle: any; secName: string; prods: any[] }[] = [];
-
-  for (let i = 0; i < sampleBatch.length; i += 5) {
-    const chunk = sampleBatch.slice(i, i + 5);
-    const chunkRes = await Promise.all(
-      chunk.map(async ({ bundle, secName }) => {
-        const regionId = bundle.regions?.[0]?.id || bundle.id;
-        const prods = await getFoxreloadCategoryProducts(regionId, false).catch(() => []);
-        return { bundle, secName, prods };
-      })
-    );
-    batchResults.push(...chunkRes);
-  }
+      for (let i = 0; i < targetBundlesToSample.length; i += 8) {
+        const chunk = targetBundlesToSample.slice(i, i + 8);
+        const chunkRes = await Promise.all(
+          chunk.map(async ({ bundle, secName }) => {
+            const regionId = bundle.regions?.[0]?.id || bundle.id;
+            const prods = await getFoxreloadCategoryProducts(regionId, false).catch(() => []);
+            return { bundle, secName, prods };
+          })
+        );
+        batchResults.push(...chunkRes);
+      }
 
       for (const { bundle, secName, prods } of batchResults) {
         if (!prods || prods.length === 0) continue;
@@ -687,6 +691,7 @@ export async function getDhruCompatibleMergedCatalog(
 
           targetGroup.SERVICES.push(srvItem);
           targetGroup.services.push(srvItem);
+          targetGroup.services_map[srvItem.SERVICEID] = srvItem;
           totalServicesCount++;
         }
       }
@@ -787,13 +792,22 @@ export async function getDhruCompatibleMergedCatalog(
 
     targetGroup.SERVICES.push(srvItem);
     targetGroup.services.push(srvItem);
+    targetGroup.services_map[srvItem.SERVICEID] = srvItem;
     totalServicesCount++;
   }
 
   const groupsList = Array.from(groupsMap.values());
+  const formattedGroupsObject: Record<string, any> = {};
+  for (const [key, grp] of Object.entries(groupsObject)) {
+    formattedGroupsObject[key] = {
+      ...grp,
+      SERVICES: grp.services_map
+    };
+  }
+
   const finalPayload = {
     groupsList,
-    groupsObject,
+    groupsObject: formattedGroupsObject,
     totalServices: totalServicesCount
   };
 

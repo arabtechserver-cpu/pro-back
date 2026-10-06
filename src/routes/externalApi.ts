@@ -641,7 +641,7 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
 // ----------------------------------------------------------------------
 // Root Handler (Dhru Action-Based Protocol Compatibility)
 // ----------------------------------------------------------------------
-router.all('/', async (req: any, res: any) => {
+router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) => {
   const action = req.body?.action || req.query?.action || req.headers?.['x-action'];
   const parameters = req.body?.parameters || req.query?.parameters;
   const user = req.apiUser;
@@ -770,7 +770,8 @@ router.all('/', async (req: any, res: any) => {
           normalizedAction === 'imeiservicelist' ? 'imei' :
           normalizedAction === 'serverservicelist' ? 'server' : 'all';
 
-        const { groupsList, groupsObject, totalServices } = await getDhruCompatibleMergedCatalog(margin, filterType);
+        const targetSection = (parsedParams.section || parsedParams.sectionId || parsedParams.category || req.query?.section || req.query?.category || '').toString();
+        const { groupsList, groupsObject, totalServices } = await getDhruCompatibleMergedCatalog(margin, filterType, targetSection);
         const isObjectFormat = req.query.format === 'object' || parsedParams.format === 'object';
         const listPayload = isObjectFormat ? groupsObject : groupsList;
 

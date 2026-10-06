@@ -635,7 +635,7 @@ export async function getDhruCompatibleMergedCatalog(
 
       for (const { bundle, secName, prods } of batchResults) {
         if (!prods || prods.length === 0) continue;
-        const groupName = `${bundle.name} (${secName})`;
+        const groupName = `[${secName}] ${bundle.name}`;
         const targetGroup = ensureGroup(groupName, secName);
 
         for (const p of prods) {

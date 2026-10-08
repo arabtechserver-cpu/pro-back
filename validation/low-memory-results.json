@@ -1,0 +1,29 @@
+{
+  "platform": "win32",
+  "node": "v24.19.0",
+  "instrumentedRss": true,
+  "backgroundJobsAndStartupMaintenance": false,
+  "databaseOperations": "read-only",
+  "concurrency": 32,
+  "memoryLimitApplied": false,
+  "requests": 640,
+  "statuses": {
+    "200": 640
+  },
+  "maxResponseMs": 9805.59,
+  "baselineMiB": {
+    "frontend": 80.79,
+    "backend": 72.6
+  },
+  "backendBeforeExit": null,
+  "peakMiB": {
+    "frontend": 337.07,
+    "backend": 111.95,
+    "combined": 423.39
+  },
+  "finalMiB": {
+    "frontend": 223.83,
+    "backend": 91.68
+  },
+  "note": "Windows production RSS sample; does not validate Linux cgroup usage, Docker caps, image transforms, real provider latency or background jobs."
+}

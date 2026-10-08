@@ -1,4 +1,7 @@
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
+import { BoundedCache } from '../utils/bounded-cache';
+import { withinDeadline, RequestDeadlineError } from '../utils/request-deadline';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
@@ -20,6 +23,7 @@ const router = Router();
 
 // IP-based global rate limit
 const externalApiLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
   windowMs: 60 * 1000,
   max: 200,
   message: {
@@ -33,13 +37,14 @@ const externalApiLimiter = rateLimit({
 router.use(externalApiLimiter);
 
 // Per-account sliding window rate limiter (anti-scraping / bot prevention)
-const accountRateLimits = new Map<string, { count: number; resetAt: number }>();
+const accountRateLimits = new BoundedCache<string, { count: number; resetAt: number }>(2000, 1024 * 1024, 60000);
 const ACCOUNT_RATE_LIMIT_PER_MINUTE = 180;
 
 const checkAccountRateLimit = (userId: string): boolean => {
   const now = Date.now();
   const entry = accountRateLimits.get(userId);
   if (!entry || now > entry.resetAt) {
+    if (!entry && accountRateLimits.size >= 2000) return false;
     accountRateLimits.set(userId, { count: 1, resetAt: now + 60000 });
     return true;
   }
@@ -59,6 +64,8 @@ export const authenticateApi = async (req: any, res: any, next: any) => {
     const apiKey = (
       bearerKey ||
       req.headers['x-api-key'] ||
+      req.headers['apiaccesskey'] ||
+      req.headers['key'] ||
       req.body?.apiaccesskey ||
       req.body?.key ||
       req.body?.apiKey ||
@@ -100,9 +107,9 @@ export const authenticateApi = async (req: any, res: any, next: any) => {
       ];
     }
 
-    const user = await prisma.user.findFirst({
+    const user = await withinDeadline(prisma.user.findFirst({
       where: userWhere
-    });
+    }), 3000);
 
     if (!user) {
       return res.status(401).json({
@@ -153,9 +160,9 @@ export const authenticateApi = async (req: any, res: any, next: any) => {
     next();
   } catch (error: any) {
     console.error('[authenticateApi error]:', error?.message || error);
-    return res.status(500).json({
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({
       SUCCESS: [{
-        ERROR: `Internal Server Error during API authentication: ${error?.message || String(error)}`
+        ERROR: error instanceof RequestDeadlineError ? error.message : "API authentication temporarily unavailable"
       }]
     });
   }
@@ -177,7 +184,7 @@ const getUserMargin = (user: any): number => {
 // 1. GET /sections - All Top-Level Categories/Sections
 router.get('/sections', async (_req: any, res) => {
   try {
-    const sections = await getUnifiedSections();
+    const sections = await withinDeadline(getUnifiedSections());
     return res.json({
       success: true,
       count: sections.length,
@@ -185,7 +192,7 @@ router.get('/sections', async (_req: any, res) => {
     });
   } catch (error: any) {
     console.error('[API sections error]:', error?.message || error);
-    return res.status(500).json({ success: false, error: "Failed to load sections", details: error?.message });
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({ success: false, error: "Failed to load sections", details: error?.message });
   }
 });
 
@@ -193,7 +200,7 @@ router.get('/sections', async (_req: any, res) => {
 router.get('/services', async (req: any, res) => {
   try {
     const section = (req.query.section || req.query.sectionId || '').toString();
-    const services = await getUnifiedServices(section);
+    const services = await withinDeadline(getUnifiedServices(section));
     return res.json({
       success: true,
       section: section || 'all',
@@ -201,7 +208,7 @@ router.get('/services', async (req: any, res) => {
       services
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: "Failed to load services" });
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({ success: false, error: "Failed to load services" });
   }
 });
 
@@ -210,7 +217,7 @@ router.get('/service/:serviceId/packages', async (req: any, res) => {
   try {
     const { serviceId } = req.params;
     const margin = getUserMargin(req.apiUser);
-    const result = await getUnifiedPackages(serviceId, margin);
+    const result = await withinDeadline(getUnifiedPackages(serviceId, margin));
     return res.json({
       success: true,
       serviceId,
@@ -221,7 +228,7 @@ router.get('/service/:serviceId/packages', async (req: any, res) => {
       packages: result.packages
     });
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: "Failed to load packages" });
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({ success: false, error: "Failed to load packages" });
   }
 });
 
@@ -229,10 +236,10 @@ router.get('/service/:serviceId/packages', async (req: any, res) => {
 router.get('/tree', async (req: any, res) => {
   try {
     const margin = getUserMargin(req.apiUser);
-    const tree = await getUnifiedCatalogTree(margin);
+    const tree = await withinDeadline(getUnifiedCatalogTree(margin));
     return res.json(tree);
   } catch (error: any) {
-    return res.status(500).json({ success: false, error: "Failed to load catalog tree" });
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({ success: false, error: "Failed to load catalog tree" });
   }
 });
 
@@ -704,7 +711,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
       // Modern hierarchical branching actions
       case 'sections':
       case 'getsections': {
-        const sections = await getUnifiedSections();
+        const sections = await withinDeadline(getUnifiedSections());
         return res.json({
           SUCCESS: [{
             LIST: sections,
@@ -717,7 +724,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
       case 'servicesbysection':
       case 'getservicesbysection': {
         const targetSection = parsedParams.section || parsedParams.sectionId || parsedParams.id;
-        const services = await getUnifiedServices(targetSection);
+        const services = await withinDeadline(getUnifiedServices(targetSection));
         return res.json({
           SUCCESS: [{
             LIST: services,
@@ -734,7 +741,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
         if (!serviceId) {
           return res.json({ SUCCESS: [{ ERROR: "Service ID is required" }] });
         }
-        const result = await getUnifiedPackages(serviceId, margin);
+        const result = await withinDeadline(getUnifiedPackages(serviceId, margin));
         return res.json({
           SUCCESS: [{
             LIST: result.packages,
@@ -748,7 +755,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
 
       case 'catalogtree':
       case 'getcatalogtree': {
-        const tree = await getUnifiedCatalogTree(margin);
+        const tree = await withinDeadline(getUnifiedCatalogTree(margin));
         return res.json({
           SUCCESS: [{
             TREE: tree,
@@ -771,7 +778,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
           normalizedAction === 'serverservicelist' ? 'server' : 'all';
 
         const targetSection = (parsedParams.section || parsedParams.sectionId || parsedParams.category || req.query?.section || req.query?.category || '').toString();
-        const { groupsList, groupsObject, totalServices } = await getDhruCompatibleMergedCatalog(margin, filterType, targetSection);
+        const { groupsList, groupsObject, totalServices } = await withinDeadline(getDhruCompatibleMergedCatalog(margin, filterType, targetSection));
         const isObjectFormat = req.query.format === 'object' || parsedParams.format === 'object';
         const listPayload = isObjectFormat ? groupsObject : groupsList;
 
@@ -819,7 +826,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
         }
 
         // If order was a FoxReload order currently processing, sync live status
-        if (order.status === 'processing' && order.apiOrderId) {
+        if (order.status === 'processing' && order.apiOrderId && (order.source === 'foxreload' || order.serviceId.startsWith('foxreload:') || Boolean(JSON.parse(order.notes || '{}').foxreloadNotes))) {
           const liveDetails = await getFoxreloadOrderDetails(order.apiOrderId);
           if (liveDetails.success) {
             if (liveDetails.status === 'completed') {
@@ -878,9 +885,9 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
     }
   } catch (error: any) {
     console.error("API Error:", error);
-    return res.status(500).json({
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({
       SUCCESS: [{
-        ERROR: "Internal Server Error"
+        ERROR: error instanceof RequestDeadlineError ? error.message : "Internal Server Error"
       }]
     });
   }

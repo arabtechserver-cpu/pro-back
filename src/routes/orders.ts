@@ -501,11 +501,9 @@ router.post('/', authenticateToken, async (req, res) => {
 <b>الحالة:</b> في انتظار الإرسال للمزود أو التنفيذ اليدوي
     `.trim();
 
-    try {
-      await sendTelegramPhotoNotification({ caption });
-    } catch (telegramError: any) {
+    sendTelegramPhotoNotification({ caption }).catch((telegramError: any) => {
       console.error('[Order Telegram Notification Error]:', telegramError?.message || telegramError);
-    }
+    });
 
     // 5. Send Order Confirmation Email to Customer
     if (dbUser.email) {
@@ -619,6 +617,9 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
       dhruService.dhruCategory?.name,
       dhruService.groupName
     );
+    parsedNotes.dispatchProviderId = dhruService.providerId || null;
+    parsedNotes.dispatchServiceId = dhruService.id;
+    parsedNotes.dispatchServiceType = serviceType;
     if (serviceType === 'imei') {
       const imeiToSend = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
       dhruResponse = await placeImeiOrder(getProviderRemoteServiceId(dhruService.dhruId), imeiToSend, providerCustomFields, providerConfig);
@@ -669,7 +670,7 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
       if (isCreditError) {
         try {
           const providerName = dhruService.apiProvider?.name || 'سيرفر المزود';
-          await sendTelegramPhotoNotification({
+          void sendTelegramPhotoNotification({
             caption:
               `<b>تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي</b>\n\n` +
               `- <b>رقم الطلب:</b> #${order.id.slice(-6)}\n` +
@@ -1300,4 +1301,3 @@ router.post('/update-fields', isAdmin, async (req, res) => {
 });
 
 export default router;
-

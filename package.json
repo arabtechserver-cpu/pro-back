@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js",
+    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js",
     "dev": "nodemon --watch src --exec tsx src/server.ts",
     "build": "npx prisma generate && tsc",
     "start": "node dist/server.js",

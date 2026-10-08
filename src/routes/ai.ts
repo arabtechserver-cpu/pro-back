@@ -1,3 +1,4 @@
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
@@ -9,6 +10,7 @@ const JWT_SECRET = process.env.JWT_SECRET;
 const router = Router();
 
 const aiChatLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
   windowMs: 60 * 1000,
   max: 15,
   message: { error: 'Too many requests. Please slow down.' },

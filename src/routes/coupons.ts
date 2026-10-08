@@ -1,3 +1,4 @@
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { prisma } from "../utils/prisma";
@@ -6,6 +7,7 @@ import { isAdmin } from "../middleware/auth";
 const router = Router();
 
 const couponValidateLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
   windowMs: 5 * 60 * 1000,
   max: 15,
   message: {

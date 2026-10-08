@@ -1,3 +1,4 @@
+import { writeBackupSnapshot } from '../utils/streaming-backup';
 import cron from 'node-cron';
 import fs from 'fs';
 import path from 'path';
@@ -30,53 +31,22 @@ export async function performJSONBackupAndSend() {
 
     console.log(`[Backup] Fetching data from database for JSON report...`);
     
-    const users = await prisma.user.findMany({
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        username: true,
-        phone: true,
-        country: true,
-        role: true,
-        status: true,
-        balance: true,
-        membershipTierId: true,
-        customDiscount: true,
-        createdAt: true,
-        updatedAt: true,
-        apiEnabled: true,
-        apiMargin: true,
-        apiSiteName: true,
-        apiSiteUrl: true
-      }
+    const userSelect = Object.fromEntries([
+      'id', 'fullName', 'email', 'username', 'phone', 'country', 'role', 'status',
+      'balance', 'membershipTierId', 'customDiscount', 'createdAt', 'updatedAt',
+      'apiEnabled', 'apiMargin', 'apiSiteName', 'apiSiteUrl'
+    ].map(key => [key, true]));
+    const counts = await writeBackupSnapshot(jsonFilePath, {
+      users: { model: prisma.user, select: userSelect }, orders: { model: prisma.order },
+      transactions: { model: prisma.transaction }, walletTransactions: { model: prisma.walletTransaction }
+    }, { timestamp: new Date().toISOString() }, {
+      totalUsers: 'users', totalOrders: 'orders', totalTransactions: 'transactions', totalWalletTransactions: 'walletTransactions'
     });
-    
-    const orders = await prisma.order.findMany();
-    const transactions = await prisma.transaction.findMany();
-    const walletTransactions = await prisma.walletTransaction.findMany();
 
-    const backupData = {
-      timestamp: new Date().toISOString(),
-      summary: {
-        totalUsers: users.length,
-        totalOrders: orders.length,
-        totalTransactions: transactions.length,
-        totalWalletTransactions: walletTransactions.length
-      },
-      users,
-      orders,
-      transactions,
-      walletTransactions
-    };
-
-    console.log(`[Backup] Writing data to JSON file at ${jsonFilePath}`);
-    fs.writeFileSync(jsonFilePath, JSON.stringify(backupData, null, 2), 'utf8');
-    
     const stats = fs.statSync(jsonFilePath);
     const fileSizeMB = (stats.size / 1024 / 1024).toFixed(2);
     
-    const caption = `[REPORT] <b>تقرير النسخة الاحتياطية اليومي (JSON)</b>\n\n<b>التاريخ:</b> ${dateStr}\n<b>المستخدمين:</b> ${users.length}\n<b>الطلبات:</b> ${orders.length}\n<b>المعاملات:</b> ${transactions.length}\n<b>الحجم:</b> ${fileSizeMB} MB`;
+    const caption = `[REPORT] <b>تقرير النسخة الاحتياطية اليومي (JSON)</b>\n\n<b>التاريخ:</b> ${dateStr}\n<b>المستخدمين:</b> ${counts.users}\n<b>الطلبات:</b> ${counts.orders}\n<b>المعاملات:</b> ${counts.transactions}\n<b>الحجم:</b> ${fileSizeMB} MB`;
     
     const delivered = await sendDocumentToAdmins(jsonFilePath, caption);
     if (delivered) {

@@ -4,7 +4,8 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import { prisma } from "../utils/prisma";
-import { placeImeiOrder, placeServerOrder } from './dhru-api';
+import { placeImeiOrder, placeServerOrder, normalizeProviderCustomFields } from './dhru-api';
+import { getProviderRemoteServiceId } from './provider-service-id';
 import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailService';
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
 import { normalizeTelegramAdminChatIds } from './telegram-config';
@@ -79,9 +80,24 @@ let isPolling = false;
 
 export async function startTelegramBotPolling() {
   if (!process.env.TELEGRAM_BOT_TOKEN) return;
+  const mode = (process.env.TELEGRAM_UPDATES_MODE || 'polling').trim().toLowerCase();
+  if (mode === 'webhook' || mode === 'disabled') return;
   if (isPolling) return;
   isPolling = true;
-  await refreshAdminIds();
+  try {
+    // Transfer to polling once on startup without dropping pending updates.
+    const webhook = await axios.get(`${TELEGRAM_API_URL}/getWebhookInfo`, { timeout: 5000 });
+    if (!webhook.data?.ok) throw new Error('Unable to inspect Telegram webhook');
+    if (webhook.data.result?.url) {
+      const deleted = await axios.post(`${TELEGRAM_API_URL}/deleteWebhook`, { drop_pending_updates: false }, { timeout: 5000 });
+      if (!deleted.data?.ok) throw new Error('Unable to remove Telegram webhook');
+    }
+    await refreshAdminIds();
+  } catch {
+    isPolling = false;
+    console.warn('[Telegram Bot] Polling startup failed. Check bot credentials and connectivity.');
+    return;
+  }
   console.log('[Telegram Bot Listener] Started background Telegram updates polling...');
   console.log('[Telegram Bot] Active Admin Chat ID(s):', adminChatIds);
   pollUpdates();
@@ -100,25 +116,29 @@ async function pollUpdates() {
 
       if (res.data?.ok && Array.isArray(res.data.result)) {
         for (const update of res.data.result) {
-          lastUpdateId = update.update_id;
           await handleIncomingTelegramUpdate(update);
+          lastUpdateId = update.update_id;
         }
       }
     } catch (err: any) {
       if (err?.response?.status === 409) {
-        console.warn('[Telegram Bot Polling] Conflict 409: Webhook is active. Automatically deleting webhook to resume polling...');
-        try {
-          await axios.get(`${TELEGRAM_API_URL}/deleteWebhook`);
-          console.log('[Telegram Bot Polling] Webhook successfully deleted, polling resumed.');
-        } catch (delErr: any) {
-          console.error('[Telegram Bot Polling] Failed to auto-delete webhook:', delErr?.message);
-        }
-        await new Promise((r) => setTimeout(r, 2000));
+        isPolling = false;
+        const description = String(err?.response?.data?.description || '').toLowerCase();
+        console.warn(description.includes('webhook')
+          ? '[Telegram Bot] Polling stopped: another process activated a webhook. Use TELEGRAM_UPDATES_MODE=webhook or remove the competing webhook setup.'
+          : '[Telegram Bot] Polling stopped: another bot listener is running. Keep only one polling instance for this token.');
+      } else if ([401, 403].includes(err?.response?.status)) {
+        isPolling = false;
+        console.warn('[Telegram Bot] Polling stopped: bot credentials were rejected.');
       } else {
         await new Promise((r) => setTimeout(r, 5000));
       }
     }
   }
+}
+
+export function stopTelegramBotPolling() {
+  isPolling = false;
 }
 
 // Answer Telegram Callback Query (for button feedback)
@@ -237,8 +257,8 @@ async function handleIncomingTelegramUpdate(update: any) {
         }
 
         const dhruService = await prisma.dhruService.findFirst({
-          where: { id: order.serviceId },
-          include: { dhruCategory: true }
+          where: { OR: [{ id: order.serviceId }, { dhruId: order.serviceId }] },
+          include: { dhruCategory: true, apiProvider: true }
         });
 
         if (!dhruService || !dhruService.dhruId) {
@@ -250,15 +270,29 @@ async function handleIncomingTelegramUpdate(update: any) {
           return;
         }
 
-        let dhruResponse: any = null;
-        if (resolveOrderServiceType(
+        let dispatchNotes: any = {};
+        try { dispatchNotes = JSON.parse(order.notes || '{}'); } catch {}
+        const customFields = normalizeProviderCustomFields(dispatchNotes.customFields || {}, dhruService.requiresCustom);
+        customFields.QNT = String(order.quantity);
+        const providerConfig = dhruService.apiProvider ? {
+          apiUrl: dhruService.apiProvider.apiUrl,
+          username: dhruService.apiProvider.username,
+          apiKey: dhruService.apiProvider.apiKey
+        } : undefined;
+        const serviceType = resolveOrderServiceType(
           dhruService.apiServiceType,
           dhruService.dhruCategory?.name,
           dhruService.groupName
-        ) === 'imei') {
-          dhruResponse = await placeImeiOrder(dhruService.dhruId, order.targetInput, {});
+        );
+        dispatchNotes.dispatchProviderId = dhruService.providerId || null;
+        dispatchNotes.dispatchServiceId = dhruService.id;
+        dispatchNotes.dispatchServiceType = serviceType;
+        let dhruResponse: any = null;
+        const remoteId = getProviderRemoteServiceId(dhruService.dhruId);
+        if (serviceType === 'imei') {
+          dhruResponse = await placeImeiOrder(remoteId, dispatchNotes.rawImei || order.targetInput, customFields, providerConfig);
         } else {
-          dhruResponse = await placeServerOrder(dhruService.dhruId, order.quantity, {}, order.targetInput);
+          dhruResponse = await placeServerOrder(remoteId, order.quantity, customFields, order.targetInput, providerConfig);
         }
 
         if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
@@ -281,7 +315,8 @@ async function handleIncomingTelegramUpdate(update: any) {
           where: { id: orderId },
           data: {
             apiOrderId: refId,
-            status: 'processing'
+            status: 'processing',
+            notes: JSON.stringify(dispatchNotes)
           }
         });
 

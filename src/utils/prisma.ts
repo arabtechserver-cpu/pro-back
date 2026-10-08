@@ -1,4 +1,5 @@
 import { PrismaClient } from '@prisma/client';
+import { databaseClientUrl } from './database-client-url';
 
 let databaseUrl = process.env.DATABASE_URL;
 // Only fallback on local Windows dev machine where internal Docker hostname cannot resolve
@@ -7,5 +8,5 @@ if (process.platform === 'win32' && databaseUrl && databaseUrl.includes('pro-1-a
 }
 
 export const prisma = new PrismaClient(
-  databaseUrl ? { datasources: { db: { url: databaseUrl } } } : undefined
+  databaseUrl ? { datasources: { db: { url: databaseClientUrl(databaseUrl) } } } : undefined
 );

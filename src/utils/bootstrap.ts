@@ -3,6 +3,7 @@ import bcrypt from 'bcryptjs';
 import crypto from 'crypto';
 import { syncDhruServices } from '../scripts/syncDhruServices';
 import { extractQuantityLimits, enrichCustomFieldsWithQuantity } from './provider-quantity';
+import { pagedRows } from './paged-rows';
 import { refreshAdminIds } from './telegramService';
 
 export async function bootstrapDatabase() {
@@ -80,7 +81,7 @@ export async function bootstrapDatabase() {
 
     // 2.5 Auto-backfill quantity support & limits for DhruService records
     try {
-      const allServices = await prisma.dhruService.findMany({
+      const allServices = pagedRows(prisma.dhruService, {
         select: {
           id: true,
           name: true,
@@ -95,7 +96,7 @@ export async function bootstrapDatabase() {
       });
 
       let updatedCount = 0;
-      for (const s of allServices) {
+      for await (const s of allServices) {
         const limits = extractQuantityLimits(s);
         if (s.supportsQty !== limits.supportsQty || s.minQty !== limits.minQty || s.maxQty !== limits.maxQty) {
           let enrichedCustom = s.requiresCustom;
@@ -144,7 +145,7 @@ export async function bootstrapDatabase() {
       const { tenArticles } = require('../scripts/seed10Articles');
       if (Array.isArray(tenArticles)) {
         // Fetch all existing posts
-        const existingPosts = await prisma.blogPost.findMany();
+        const existingPosts = await prisma.blogPost.findMany({ select: { id: true, titleAr: true } });
         
         // 1. Remove duplicates sharing the same title
         const seenTitles = new Set();

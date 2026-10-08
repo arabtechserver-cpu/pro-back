@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { getAccountInfo, getImeiServiceList } from '../utils/dhru-api';
 import { isAdmin, optionalAuth } from '../middleware/auth';
+import { estimateBytes } from '../utils/bounded-cache';
+import { createHash } from 'crypto';
 
 const router = Router();
 
@@ -20,11 +22,16 @@ import { serializeAdminServiceCategories, serializePricingServiceCategories } fr
 import { getServiceQuantityConfig, enrichCustomFieldsWithQuantity } from '../utils/provider-quantity';
 
 // In-memory cache for ultra-fast pricing responses without database re-querying
-let pricingCache: { data: any; timestamp: number; etag: string } | null = null;
+type PricingSnapshot = { body: string; timestamp: number; etag: string };
+let pricingCache: PricingSnapshot | null = null;
+let pricingPending: Promise<PricingSnapshot> | null = null;
+let pricingRevision = 0;
 const PRICING_CACHE_TTL = 60 * 1000; // 60 seconds TTL
 
 export function invalidateDhruServicesCache() {
   pricingCache = null;
+  pricingPending = null;
+  pricingRevision++;
 }
 
 router.get('/services', (req, res, next) => {
@@ -43,9 +50,11 @@ router.get('/services', (req, res, next) => {
       if (clientEtag && clientEtag === pricingCache.etag) {
         return res.status(304).end();
       }
-      return res.json(pricingCache.data);
+      return res.type('application/json').send(pricingCache.body);
     }
 
+    const revision = pricingRevision;
+    const buildResponse = async (): Promise<PricingSnapshot> => {
     const categories = await prisma.dhruCategory.findMany({
       select: {
         id: true,
@@ -77,19 +86,27 @@ router.get('/services', (req, res, next) => {
     const cleanedCategories = isPricingView
       ? serializePricingServiceCategories(categories, cleanServiceName, false)
       : serializeAdminServiceCategories(categories, cleanServiceName);
+    const body = JSON.stringify(cleanedCategories);
+    const snapshot = { body, timestamp: Date.now(), etag: `"${createHash('sha256').update(body).digest('hex')}"` };
+    if (all !== 'true' && revision === pricingRevision && estimateBytes(snapshot.body) <= 4 * 1024 * 1024) pricingCache = snapshot;
+    return snapshot;
+    };
+
+    let snapshot: PricingSnapshot;
+    if (all !== 'true') {
+      if (!pricingPending) {
+        const pending = buildResponse().finally(() => { if (pricingPending === pending) pricingPending = null; });
+        pricingPending = pending;
+      }
+      snapshot = await pricingPending;
+    } else snapshot = await buildResponse();
 
     if (isPricingView && all !== 'true') {
-      const etag = `"${Buffer.from(`${Date.now()}_${cleanedCategories.length}`).toString('base64')}"`;
-      pricingCache = {
-        data: cleanedCategories,
-        timestamp: Date.now(),
-        etag
-      };
       res.setHeader('Cache-Control', 'public, max-age=60, stale-while-revalidate=120');
-      res.setHeader('ETag', etag);
+      res.setHeader('ETag', snapshot.etag);
     }
 
-    res.json(cleanedCategories);
+    res.type('application/json').send(snapshot.body);
   } catch (error) {
     res.status(500).json({ error: 'Failed to fetch Dhru services from DB' });
   }

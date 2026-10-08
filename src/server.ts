@@ -6,6 +6,7 @@ import { prisma } from './utils/prisma';
 import { publicFileGuard } from './middleware/publicFileGuard';
 import { getTrustedProxies } from './utils/trustedProxy';
 import { startTelegramBotPolling } from './utils/telegramService';
+import { createResourceGuard } from './middleware/resourceGuard';
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
@@ -52,6 +53,7 @@ app.use(cors({
 }));
 const generalJsonParser = express.json({ limit: '5mb' });
 const imageJsonParser = express.json({ limit: '15mb' });
+app.use(createResourceGuard());
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/upload') || req.path.startsWith('/api/transactions')) {
@@ -61,18 +63,17 @@ app.use((req, res, next) => {
 });
 process.on('unhandledRejection', (reason: any) => {
   console.error('[UNHANDLED REJECTION]', {
-    message: reason?.message || String(reason),
-    stack: reason?.stack || 'No stack trace',
-    reason
+    name: reason?.name || 'Error',
+    code: reason?.code || 'UNHANDLED_REJECTION'
   });
 });
 
 process.on('uncaughtException', (error: Error) => {
   console.error('[UNCAUGHT EXCEPTION]', {
     name: error.name,
-    message: error.message,
-    stack: error.stack
+    code: 'UNCAUGHT_EXCEPTION'
   });
+  process.exit(1);
 });
 
 app.use(express.urlencoded({ limit: '5mb', extended: true }));
@@ -84,10 +85,10 @@ app.use((req, res, next) => {
   res.json = function (body: any) {
     if (res.statusCode >= 500) {
       const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
-      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
+      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
     } else if (res.statusCode >= 400 && res.statusCode !== 404) {
       const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
-      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Notice: ${errMsg}`);
+      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Notice: ${errMsg}`);
     }
     return originalJson(body);
   };
@@ -95,10 +96,10 @@ app.use((req, res, next) => {
   res.send = function (body: any) {
     if (res.statusCode >= 500) {
       const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
-      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
     } else if (res.statusCode >= 400 && res.statusCode !== 404) {
       const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
-      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.originalUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
     }
     return originalSend(body);
   };
@@ -185,18 +186,17 @@ app.get('/api/health', (req, res) => {
 
 // 404 Handler for unknown /api routes
 app.use('/api', (req, res) => {
-  console.warn(`[API 404 NOT FOUND] ${req.method} ${req.originalUrl} - IP: ${req.ip}`);
-  res.status(404).json({ error: `المسار المطلوب غير موجود: ${req.method} ${req.originalUrl}` });
+  console.warn(`[API 404 NOT FOUND] ${req.method} ${req.path} - IP: ${req.ip}`);
+  res.status(404).json({ error: `المسار المطلوب غير موجود: ${req.method} ${req.path}` });
 });
 
 // Global Express Error Handling Middleware
 app.use((err: any, req: express.Request, res: express.Response, next: express.NextFunction) => {
-  console.error(`[EXPRESS UNHANDLED ERROR] ${req.method} ${req.originalUrl}:`, {
-    message: err?.message || String(err),
-    stack: err?.stack || 'No stack trace',
+  console.error(`[EXPRESS UNHANDLED ERROR] ${req.method} ${req.path}:`, {
+    name: err?.name || 'Error',
+    code: err?.code || err?.type || 'INTERNAL_ERROR',
     ip: req.ip,
     user: (req as any).user?.username || 'Guest',
-    body: req.body
   });
 
   if (res.headersSent) {
@@ -205,17 +205,21 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
 
   const statusCode = Number(err?.status || err?.statusCode) || 500;
   res.status(statusCode).json({
-    error: err?.message || 'حدث خطأ داخلي في الخادم'
+    error: statusCode >= 500 ? 'حدث خطأ داخلي في الخادم' : (err?.type === 'entity.too.large' ? 'Request body exceeds the allowed size' : 'Invalid request')
   });
 });
 
 async function startServer() {
   try {
-    await bootstrapDatabase();
-    await startTelegramBotPolling();
-    await restoreImagesToDisk(prisma).catch(() => {});
-    initOrderSyncCron();
-    initBackupCron();
+    if (process.env.STARTUP_MAINTENANCE !== 'false') {
+      await bootstrapDatabase();
+      await restoreImagesToDisk(prisma).catch(() => {});
+    }
+    if (process.env.BACKGROUND_JOBS_ENABLED !== 'false') {
+      await startTelegramBotPolling();
+      initOrderSyncCron();
+      initBackupCron();
+    }
 
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Backend server is running on http://0.0.0.0:${PORT}`);

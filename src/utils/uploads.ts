@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { pagedRows } from './paged-rows';
 
 function isDirectoryWritable(dirPath: string): boolean {
   try {
@@ -112,18 +113,16 @@ export function getUploadFilePath(filename: string): string | null {
 export async function restoreImagesToDisk(prismaClient: any): Promise<number> {
   try {
     const uploadDir = ensureUploadDir();
-    const images = await prismaClient.storedImage.findMany({
-      select: { filename: true, data: true }
-    });
-
     let restoredCount = 0;
     let failedCount = 0;
-    for (const img of images) {
-      if (!img.filename || !img.data) continue;
-      const targetPath = path.join(uploadDir, img.filename);
+    for await (const img of pagedRows(prismaClient.storedImage, { select: { id: true, filename: true } }, 100)) {
+      if (!img.filename || path.basename(img.filename) !== img.filename) continue;
+      const targetPath = path.join(uploadDir, path.basename(img.filename));
       if (!fs.existsSync(targetPath)) {
         try {
-          const buffer = Buffer.from(img.data, 'base64');
+          const stored = await prismaClient.storedImage.findUnique({ where: { id: img.id }, select: { data: true } });
+          if (!stored?.data) continue;
+          const buffer = Buffer.from(stored.data, 'base64');
           fs.writeFileSync(targetPath, buffer);
           restoredCount++;
         } catch (e: any) {
@@ -148,4 +147,3 @@ export async function restoreImagesToDisk(prismaClient: any): Promise<number> {
     return 0;
   }
 }
-

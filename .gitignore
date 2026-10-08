@@ -1,9 +1,10 @@
 node_modules/
-.env
+.env*
+!.env.example
 dist/
 backups/
 telegram_admins.json
 *.db
 *.sqlite
-  
- 
+
+

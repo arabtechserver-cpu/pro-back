@@ -1,5 +1,10 @@
 import https from 'https';
 import { prisma } from '../utils/prisma';
+import { withinDeadline } from '../utils/request-deadline';
+import { BoundedCache, estimateBytes } from '../utils/bounded-cache';
+import { AsyncGate } from '../utils/async-gate';
+const providerReads = new AsyncGate(12, 64, 22000);
+const providerWrites = new AsyncGate(2, 12, 3000);
 
 export interface FoxreloadSettings {
   apiKey: string;
@@ -92,6 +97,17 @@ export async function callFoxreloadApi(
   currency: string = 'usd',
   customApiKey?: string
 ): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
+  return (method === 'GET' ? providerReads : providerWrites).run(() => requestFoxreloadApi(endpointPath, method, bodyPayload, lang, currency, customApiKey));
+}
+
+async function requestFoxreloadApi(
+  endpointPath: string,
+  method: 'GET' | 'POST' = 'GET',
+  bodyPayload?: any,
+  lang: string = 'en',
+  currency: string = 'usd',
+  customApiKey?: string
+): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
   const settings = await getFoxreloadSettings();
   const apiKey = (customApiKey || settings.apiKey || getEnvApiKey()).trim();
 
@@ -125,12 +141,15 @@ export async function callFoxreloadApi(
       path: endpointPath,
       method,
       headers,
-      timeout: 15000,
+      timeout: method === 'GET' ? 5000 : 15000,
     };
 
-    const req = https.request(options, (res) => {
+    const req = https.request({ ...options, signal: AbortSignal.timeout(options.timeout) }, (res) => {
       let data = '';
+      let bytes = 0;
       res.on('data', (chunk) => {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > 8 * 1024 * 1024) { req.destroy(new Error('Provider response is too large')); return; }
         data += chunk;
       });
       res.on('end', () => {
@@ -337,8 +356,10 @@ export interface FoxreloadProduct {
 }
 
 let catalogCache: { timestamp: number; data: any } | null = null;
-const categoryProductsCache = new Map<string, { timestamp: number; data: FoxreloadProduct[] }>();
-const treeCache = new Map<string, { timestamp: number; data: FoxreloadBundle[] }>();
+let catalogInFlight: Promise<any> | null = null;
+const productsInFlight = new Map<string, Promise<FoxreloadProduct[]>>();
+const categoryProductsCache = new BoundedCache<string, { timestamp: number; data: FoxreloadProduct[] }>(1000, 16 * 1024 * 1024, 30 * 60 * 1000);
+const treeCache = new BoundedCache<string, { timestamp: number; data: FoxreloadBundle[] }>(10, 2 * 1024 * 1024, 30 * 60 * 1000);
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
@@ -369,6 +390,10 @@ async function fetchParentTree(
   );
 
   const rawList = res.data?.items || (Array.isArray(res.data) ? res.data : []);
+  if (!res.ok) {
+    if (cached) return cached.data;
+    throw new Error('FoxReload category tree is temporarily unavailable');
+  }
   const bundles: FoxreloadBundle[] = rawList
     .map((c: any) => {
       const rawChildren = Array.isArray(c.children) ? c.children : [];
@@ -416,6 +441,20 @@ export async function getFoxreloadCategoryProducts(
   categoryId: string,
   forceRefresh: boolean = false
 ): Promise<FoxreloadProduct[]> {
+  const cached = categoryProductsCache.get(categoryId);
+  if (!forceRefresh && cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.data;
+  const pending = productsInFlight.get(categoryId);
+  if (pending) return pending;
+  const work = loadFoxreloadCategoryProducts(categoryId, forceRefresh);
+  productsInFlight.set(categoryId, work);
+  try { return await work; }
+  finally { if (productsInFlight.get(categoryId) === work) productsInFlight.delete(categoryId); }
+}
+
+async function loadFoxreloadCategoryProducts(
+  categoryId: string,
+  forceRefresh: boolean = false
+): Promise<FoxreloadProduct[]> {
   const now = Date.now();
   if (!forceRefresh) {
     const cached = categoryProductsCache.get(categoryId);
@@ -436,6 +475,11 @@ export async function getFoxreloadCategoryProducts(
   );
 
   const items = Array.isArray(res.data?.items) ? res.data.items : [];
+  if (!res.ok) {
+    const cached = categoryProductsCache.get(categoryId);
+    if (cached) return cached.data;
+    throw new Error('FoxReload products are temporarily unavailable');
+  }
   const mapped = items
     .map((p: any) => mapProductItem(p, settings, hiddenSet, categoryId))
     .filter(isValidProduct);
@@ -464,12 +508,27 @@ export async function searchFoxreloadProducts(query: string): Promise<FoxreloadP
 }
 
 export async function getFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
+  if (!forceRefresh && catalogCache && Date.now() - catalogCache.timestamp < CACHE_TTL_MS) return catalogCache.data;
+  if (!catalogInFlight) {
+    catalogInFlight = withinDeadline(loadFoxreloadFullCatalog(forceRefresh), 12000)
+      .finally(() => { catalogInFlight = null; });
+  }
+  // Serve the last successful snapshot while one shared refresh runs.
+  if (!forceRefresh && catalogCache) {
+    catalogInFlight.catch(() => {});
+    return catalogCache.data;
+  }
+  return catalogInFlight;
+}
+
+async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
   const now = Date.now();
   if (!forceRefresh && catalogCache && now - catalogCache.timestamp < CACHE_TTL_MS) {
     return catalogCache.data;
   }
 
   const settings = await getFoxreloadSettings();
+  if (!settings.isEnabled || !settings.apiKey) return { sections: {}, isEnabled: false, totalBundlesCount: 0 };
   const hiddenSet = new Set(settings.hiddenItems);
 
   const [
@@ -587,7 +646,7 @@ export async function getFoxreloadFullCatalog(forceRefresh: boolean = false): Pr
     updatedAt: new Date().toISOString(),
   };
 
-  catalogCache = { timestamp: now, data: catalog };
+  if (estimateBytes(catalog) <= 3 * 1024 * 1024) catalogCache = { timestamp: now, data: catalog };
   return catalog;
 }
 
@@ -675,8 +734,10 @@ async function fetchRewarbleCatalogItems(settings: FoxreloadSettings, hiddenSet:
 }
 
 async function fetchEsimCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const categoryItems = await fetchCategoryBatch('019d1fd6-08bb-76b2-bdc0-7eda9b480555', 30);
-  const searchItems = await fetchSearchBatch('esim', 20);
+  const [categoryItems, searchItems] = await Promise.all([
+    fetchCategoryBatch('019d1fd6-08bb-76b2-bdc0-7eda9b480555', 30),
+    fetchSearchBatch('esim', 20)
+  ]);
   const combined = [...categoryItems, ...searchItems];
   const seen = new Set<string>();
   const unique = combined.filter((item) => {
@@ -916,4 +977,3 @@ export async function getFoxreloadOrderDetails(orderId: string | number): Promis
     };
   }
 }
-

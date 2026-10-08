@@ -1,3 +1,4 @@
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
 import { prisma } from "../utils/prisma";
@@ -12,6 +13,7 @@ import { sendTelegramMessage, getAdminChatIds } from "../utils/telegramService";
 const router = Router();
 
 const subscribeLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
   windowMs: 15 * 60 * 1000,
   max: 5,
   message: {

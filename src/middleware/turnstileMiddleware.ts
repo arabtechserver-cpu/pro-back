@@ -72,7 +72,8 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     const response = await fetch("https://challenges.cloudflare.com/turnstile/v0/siteverify", {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params
+      body: params,
+      signal: AbortSignal.timeout(5000)
     });
 
     if (!response.ok) {

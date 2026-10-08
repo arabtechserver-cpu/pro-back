@@ -8,6 +8,15 @@ import {
   FoxreloadProduct
 } from './foxreloadService';
 import { resolveOrderServiceType } from '../utils/order-response';
+import { createHash } from 'crypto';
+import { mapWithinDeadline } from '../utils/request-deadline';
+import { BoundedCache } from '../utils/bounded-cache';
+import { AsyncGate } from '../utils/async-gate';
+const mergedBuilds = new AsyncGate(1, 64, 22000);
+
+function dhruGroupId(name: string): string {
+  return `dhru-group-${createHash('sha256').update(name).digest('hex')}`;
+}
 
 export interface UnifiedSection {
   id: string;
@@ -87,7 +96,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
   }
 
   const [foxCatalog, dhruCounts] = await Promise.all([
-    getFoxreloadFullCatalog(false).catch(() => null),
+    getFoxreloadFullCatalog(false),
     prisma.dhruCategory.findMany({
       select: {
         id: true,
@@ -100,7 +109,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
           }
         }
       }
-    }).catch(() => [])
+    })
   ]);
 
   const sections: UnifiedSection[] = [];
@@ -202,13 +211,21 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
     });
   }
 
-  sectionsCache = { timestamp: now, data: sections };
-  return sections;
+  const uniqueSections = new Map<string, UnifiedSection>();
+  for (const section of sections) {
+    const existing = uniqueSections.get(section.id);
+    if (existing) existing.totalServices += section.totalServices;
+    else uniqueSections.set(section.id, { ...section });
+  }
+  const data = Array.from(uniqueSections.values());
+  sectionsCache = { timestamp: now, data };
+  return data;
 }
 
 export async function getUnifiedServices(sectionId?: string): Promise<UnifiedServiceSummary[]> {
-  const foxCatalog = await getFoxreloadFullCatalog(false).catch(() => null);
   const normalizedSec = (sectionId || '').trim().toLowerCase();
+  const foxCatalog = normalizedSec.startsWith('dhru-') || ['server', 'imei', 'remote'].includes(normalizedSec)
+    ? null : await getFoxreloadFullCatalog(false);
   const results: UnifiedServiceSummary[] = [];
 
   const mapFoxBundles = (bundles: any[], secKey: string, nameAr: string) => {
@@ -260,7 +277,7 @@ export async function getUnifiedServices(sectionId?: string): Promise<UnifiedSer
     }
   }
 
-  if (!normalizedSec || normalizedSec.startsWith('dhru-') || normalizedSec === 'server' || normalizedSec === 'imei') {
+  if (!normalizedSec || normalizedSec.startsWith('dhru-') || ['server', 'imei', 'remote'].includes(normalizedSec)) {
     const dhruWhere: any = { isActive: true };
     if (normalizedSec === 'dhru-imei' || normalizedSec === 'imei') {
       dhruWhere.dhruCategory = { name: { contains: 'imei', mode: 'insensitive' } };
@@ -280,7 +297,6 @@ export async function getUnifiedServices(sectionId?: string): Promise<UnifiedSer
         dhruCategory: { select: { id: true, name: true } }
       },
       orderBy: [{ groupName: 'asc' }, { name: 'asc' }],
-      take: 200
     });
 
     const groupsMap = new Map<string, { id: string; name: string; count: number; catName: string }>();
@@ -291,7 +307,7 @@ export async function getUnifiedServices(sectionId?: string): Promise<UnifiedSer
         existing.count++;
       } else {
         groupsMap.set(gName, {
-          id: `dhru-group-${Buffer.from(gName).toString('hex').slice(0, 16)}`,
+          id: dhruGroupId(gName),
           name: gName,
           count: 1,
           catName: ds.dhruCategory?.name || 'Server Service'
@@ -301,7 +317,7 @@ export async function getUnifiedServices(sectionId?: string): Promise<UnifiedSer
 
     for (const [, grp] of groupsMap.entries()) {
       const isImei = grp.catName.toLowerCase().includes('imei');
-      const secKey = isImei ? 'dhru-imei' : 'dhru-server';
+      const secKey = isImei ? 'dhru-imei' : (grp.catName.toLowerCase().includes('remote') ? 'dhru-remote' : 'dhru-server');
       results.push({
         id: grp.id,
         slug: grp.id,
@@ -333,7 +349,22 @@ export async function getUnifiedPackages(
   const margin = Math.max(0, userMarginPercent);
   const targetId = serviceId.trim();
 
-  const foxCatalog = await getFoxreloadFullCatalog(false).catch(() => null);
+  const isDhruGroup = targetId.startsWith('dhru-group-');
+  const dhruServices = await prisma.dhruService.findMany({
+    where: {
+      isActive: true,
+      ...(isDhruGroup ? {} : { OR: [
+        { id: targetId },
+        { dhruId: targetId },
+        { groupName: targetId }
+      ] })
+    },
+    include: { dhruCategory: true }
+  }).then((services) => isDhruGroup ? services.filter((srv) => {
+    const name = srv.groupName || srv.dhruCategory?.name || 'سيرفر عام';
+    return dhruGroupId(name) === targetId || `dhru-group-${Buffer.from(name).toString('hex').slice(0, 16)}` === targetId;
+  }) : services);
+  const foxCatalog = (isDhruGroup || dhruServices.length > 0) ? null : await getFoxreloadFullCatalog(false);
   let foundBundle: any = null;
   let sectionKey = 'topups';
 
@@ -358,13 +389,11 @@ export async function getUnifiedPackages(
     } else {
       categoryIdsToFetch.push(foundBundle.id);
     }
-  } else {
+  } else if (!isDhruGroup && dhruServices.length === 0) {
     categoryIdsToFetch.push(targetId);
   }
 
-  const productBatches = await Promise.all(
-    categoryIdsToFetch.map((catId) => getFoxreloadCategoryProducts(catId, false).catch(() => []))
-  );
+  const productBatches = await mapWithinDeadline(categoryIdsToFetch, catId => getFoxreloadCategoryProducts(catId, false), 12, 12000);
 
   const rawProducts = productBatches.flat();
   const seenIds = new Set<string>();
@@ -415,23 +444,13 @@ export async function getUnifiedPackages(
     };
   }
 
-  const dhruServices = await prisma.dhruService.findMany({
-    where: {
-      isActive: true,
-      OR: [
-        { id: targetId },
-        { dhruId: targetId },
-        { groupName: targetId }
-      ]
-    },
-    include: { dhruCategory: true }
-  });
+
 
   if (dhruServices.length > 0) {
     const first = dhruServices[0];
     const sName = first.groupName || first.name;
     const isImei = (first.dhruCategory?.name || '').toLowerCase().includes('imei');
-    const secKey = isImei ? 'dhru-imei' : 'dhru-server';
+    const secKey = isImei ? 'dhru-imei' : ((first.dhruCategory?.name || '').toLowerCase().includes('remote') ? 'dhru-remote' : 'dhru-server');
 
     const packages: UnifiedPackage[] = dhruServices.map((srv) => {
       const baseCost = Math.max(0, srv.credit || 0);
@@ -501,10 +520,10 @@ export async function getUnifiedCatalogTree(userMarginPercent: number = 8.0): Pr
 
   const [sections, foxCatalog] = await Promise.all([
     getUnifiedSections(),
-    getFoxreloadFullCatalog(false).catch(() => null)
+    getFoxreloadFullCatalog(false)
   ]);
 
-  const treeSections = sections.map((sec) => {
+  const treeSections = await Promise.all(sections.map(async (sec) => {
     let bundles: any[] = [];
     if (foxCatalog?.sections) {
       if (sec.id === 'popular') bundles = foxCatalog.sections.popular?.bundles || [];
@@ -515,6 +534,8 @@ export async function getUnifiedCatalogTree(userMarginPercent: number = 8.0): Pr
       else if (sec.id === 'esim') bundles = foxCatalog.sections.esim?.bundles || [];
       else if (sec.id === 'rewarble') bundles = foxCatalog.sections.rewarble?.bundles || [];
     }
+
+    if (sec.type === 'dhru') bundles = await getUnifiedServices(sec.id);
 
     return {
       id: sec.id,
@@ -532,7 +553,7 @@ export async function getUnifiedCatalogTree(userMarginPercent: number = 8.0): Pr
         fetchPackagesUrl: `/api/v1/provider/service/${b.id}/packages`
       }))
     };
-  });
+  }));
 
   const response = {
     success: true,
@@ -546,9 +567,28 @@ export async function getUnifiedCatalogTree(userMarginPercent: number = 8.0): Pr
   return response;
 }
 
-let dhruMergedCache: { timestamp: number; key: string; data: any } | null = null;
+const dhruMergedCaches = new BoundedCache<string, { timestamp: number; data: any }>(4, 8 * 1024 * 1024, 15 * 60 * 1000);
+const mergedInFlight = new Map<string, Promise<any>>();
 
 export async function getDhruCompatibleMergedCatalog(
+  userMarginPercent: number = 8.0,
+  filterType: 'imei' | 'server' | 'all' = 'all',
+  sectionFilter?: string
+): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number }> {
+  const key = `${Math.max(0, userMarginPercent)}_${filterType}_${(sectionFilter || '').trim().toLowerCase()}`;
+  const cached = dhruMergedCaches.get(key);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.data;
+  let work = mergedInFlight.get(key);
+  if (!work) {
+    work = mergedBuilds.run(() => buildDhruCompatibleMergedCatalog(userMarginPercent, filterType, sectionFilter))
+      .finally(() => { mergedInFlight.delete(key); });
+    mergedInFlight.set(key, work);
+  }
+  if (cached) { work.catch(() => {}); return cached.data; }
+  return work;
+}
+
+async function buildDhruCompatibleMergedCatalog(
   userMarginPercent: number = 8.0,
   filterType: 'imei' | 'server' | 'all' = 'all',
   sectionFilter?: string
@@ -556,9 +596,6 @@ export async function getDhruCompatibleMergedCatalog(
   const margin = Math.max(0, userMarginPercent);
   const normalizedSec = (sectionFilter || '').trim().toLowerCase();
   const cacheKey = `${margin}_${filterType}_${normalizedSec}`;
-  if (dhruMergedCache && dhruMergedCache.key === cacheKey && (Date.now() - dhruMergedCache.timestamp < CACHE_TTL_MS)) {
-    return dhruMergedCache.data;
-  }
 
   const isImeiOnly = filterType === 'imei';
   const isServerOnly = filterType === 'server';
@@ -588,7 +625,7 @@ export async function getDhruCompatibleMergedCatalog(
   };
 
   if (!isImeiOnly) {
-    const foxCatalog = await getFoxreloadFullCatalog(false).catch(() => null);
+    const foxCatalog = await getFoxreloadFullCatalog(false);
     if (foxCatalog?.sections) {
       const sectionConfigs = [
         { sec: foxCatalog.sections.popular, name: SECTION_METADATA.popular.nameAr, key: 'popular', limit: 18 },
@@ -609,8 +646,7 @@ export async function getDhruCompatibleMergedCatalog(
           continue;
         }
 
-        const maxLimit = normalizedSec ? 80 : config.limit;
-        const bundles = config.sec.bundles.slice(0, maxLimit);
+        const bundles = config.sec.bundles;
         for (const b of bundles) {
           if (!seenBundleIds.has(b.id)) {
             seenBundleIds.add(b.id);
@@ -619,19 +655,16 @@ export async function getDhruCompatibleMergedCatalog(
         }
       }
 
-      const batchResults: { bundle: any; secName: string; prods: any[] }[] = [];
-
-      for (let i = 0; i < targetBundlesToSample.length; i += 8) {
-        const chunk = targetBundlesToSample.slice(i, i + 8);
-        const chunkRes = await Promise.all(
-          chunk.map(async ({ bundle, secName }) => {
-            const regionId = bundle.regions?.[0]?.id || bundle.id;
-            const prods = await getFoxreloadCategoryProducts(regionId, false).catch(() => []);
-            return { bundle, secName, prods };
-          })
-        );
-        batchResults.push(...chunkRes);
+      const jobs: { bundle: any; secName: string; regionId: string }[] = [];
+      for (const { bundle, secName } of targetBundlesToSample) {
+        const regions = bundle.regions?.length ? bundle.regions : [bundle];
+        for (const regionId of new Set<string>(regions.map((region: any) => region.id))) {
+          jobs.push({ bundle, secName, regionId });
+        }
       }
+      const batchResults = await mapWithinDeadline(jobs, async ({ bundle, secName, regionId }) => ({
+        bundle, secName, prods: await getFoxreloadCategoryProducts(regionId, false)
+      }));
 
       for (const { bundle, secName, prods } of batchResults) {
         if (!prods || prods.length === 0) continue;
@@ -639,6 +672,7 @@ export async function getDhruCompatibleMergedCatalog(
         const targetGroup = ensureGroup(groupName, secName);
 
         for (const p of prods) {
+          if (targetGroup.services_map[p.id]) continue;
           const baseCost = Math.max(0, p.costPrice || 0);
           const finalPrice = Number((baseCost * (1 + margin / 100)).toFixed(4));
           const reqFields = Array.isArray(p.requiredNoteFields) && p.requiredNoteFields.length > 0
@@ -811,6 +845,6 @@ export async function getDhruCompatibleMergedCatalog(
     totalServices: totalServicesCount
   };
 
-  dhruMergedCache = { timestamp: Date.now(), key: cacheKey, data: finalPayload };
+  dhruMergedCaches.set(cacheKey, { timestamp: Date.now(), data: finalPayload });
   return finalPayload;
 }

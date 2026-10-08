@@ -1,4 +1,5 @@
 import https from "https";
+import { withinDeadline } from "./request-deadline";
 import http from "http";
 import dns from "dns";
 import { promisify } from "util";
@@ -163,7 +164,7 @@ export function dhruApiRequest(
 
       let safeAddress: string;
       try {
-        const { address } = await lookup(urlObj.hostname);
+        const { address } = await withinDeadline(lookup(urlObj.hostname), 3000);
         if (isPrivateIP(address)) {
           console.error(`[SSRF BLOCK] Hostname ${urlObj.hostname} resolved to private IP: ${address}`);
           return resolve({ error: "SSRF Attempt Detected: Resolved to local/private network address", SUCCESS: false });
@@ -188,10 +189,10 @@ export function dhruApiRequest(
           "User-Agent": "ArabTechPro/1.0",
           Accept: "application/json, text/plain, */*"
         },
-        timeout: 60000
+        timeout: 25000
       };
 
-      const req = https.request(options, (res) => {
+      const req = https.request({ ...options, signal: AbortSignal.timeout(25000) }, (res) => {
         let rawText = "";
         res.on("data", (chunk) => { rawText += chunk; });
         res.on("end", () => {

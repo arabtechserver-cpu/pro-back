@@ -1,5 +1,7 @@
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
 import crypto from 'crypto';
+import { digestOtp, matchesOtp } from '../utils/otp-security';
 import { prisma } from "../utils/prisma";
 import { generateToken, authenticateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
@@ -15,6 +17,7 @@ import { checkIpAccess, logDashboardAccess } from '../services/ipAccessService';
 const router = Router();
 
 const authLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: { success: false, error: 'تجاوزت الحد المسموح به، يرجى المحاولة بعد قليل.' },
@@ -25,9 +28,12 @@ router.use(authLimiter);
 
 // In-memory OTP Store for forgot password flow with brute force attempt tracking
 interface UserOtpRecord {
-  code: string;
+  codeDigest: string;
   expiresAt: number;
   attempts: number;
+  lastSentAt: number;
+  purpose: string;
+  resends: number;
 }
 const otpStore = new Map<string, UserOtpRecord>();
 setInterval(() => {
@@ -35,7 +41,7 @@ setInterval(() => {
   for (const [key, val] of otpStore.entries()) {
     if (now > val.expiresAt) otpStore.delete(key);
   }
-}, 15 * 60 * 1000).unref();
+}, 60 * 1000).unref();
 
 // POST /api/auth/register - Direct & Fast Registration with Cloudflare Turnstile Protection
 router.post('/register', turnstileMiddleware, async (req, res) => {
@@ -129,23 +135,43 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
 router.post('/send-otp', async (req, res) => {
   try {
     const { email, username, type } = req.body;
-    if (!email || !email.includes('@')) {
+    if (typeof email !== 'string' || email.length > 254 || !email.includes('@')) {
       return res.status(200).json({ success: false, error: 'الرجاء إدخال بريد إلكتروني صحيح' });
     }
 
     const cleanEmail = email.trim().toLowerCase();
-
     if (type === 'forgot_password') {
       const userObj = await prisma.user.findUnique({ where: { email: cleanEmail } });
       if (!userObj) {
         return res.status(200).json({ success: false, error: 'لم يتم العثور على حساب مرتبط بهذا البريد الإلكتروني!' });
       }
     }
+    // Admission and reservation are synchronous after the database lookup.
+    const now = Date.now();
+    const previous = otpStore.get(cleanEmail);
+    if (previous && now < previous.expiresAt && now - previous.lastSentAt < 60000) {
+      return res.status(429).json({ success: false, error: 'يرجى الانتظار دقيقة قبل طلب كود جديد' });
+    }
+    if (previous && now < previous.expiresAt && (previous.resends >= 3 || previous.attempts >= 5)) {
+      return res.status(429).json({ success: false, error: 'تجاوزت حد محاولات التحقق، يرجى المحاولة لاحقاً' });
+    }
+    for (const [key, record] of otpStore) if (record.expiresAt <= now) otpStore.delete(key);
+    if (!otpStore.has(cleanEmail) && otpStore.size >= 1000) {
+      return res.status(503).json({ success: false, error: 'خدمة التحقق مشغولة حالياً، يرجى المحاولة لاحقاً' });
+    }
 
     const otpCode = crypto.randomInt(100000, 1000000).toString();
     const expiresAt = Date.now() + 10 * 60 * 1000;
 
-    otpStore.set(cleanEmail, { code: otpCode, expiresAt, attempts: 0 });
+    const purpose = type === 'forgot_password' ? 'forgot_password' : 'registration';
+    otpStore.set(cleanEmail, {
+      codeDigest: digestOtp(`${cleanEmail}:${purpose}`, otpCode),
+      expiresAt: previous && now < previous.expiresAt ? previous.expiresAt : expiresAt,
+      attempts: previous && now < previous.expiresAt ? previous.attempts : 0,
+      lastSentAt: now,
+      purpose,
+      resends: previous && now < previous.expiresAt ? previous.resends + 1 : 0
+    });
 
     console.log(`[AUTH OTP DISPATCH] Verification code queued for delivery`);
 
@@ -169,7 +195,7 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
   try {
     const { email, otp, newPassword } = req.body;
 
-    if (!email || !otp || !newPassword) {
+    if (typeof email !== 'string' || typeof otp !== 'string' || typeof newPassword !== 'string' || !email || !otp || !newPassword) {
       return res.status(200).json({ success: false, error: 'البريد الإلكتروني، كود OTP، وكلمة المرور الجديدة مطلوبة' });
     }
 
@@ -180,21 +206,22 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
     const record = otpStore.get(cleanEmail);
 
-    if (!record || Date.now() > record.expiresAt) {
+    if (!record || record.purpose !== 'forgot_password' || Date.now() > record.expiresAt) {
       if (record) otpStore.delete(cleanEmail);
       return res.status(200).json({ success: false, error: 'كود التحقق (OTP) غير صحيح أو منتهي الصلاحية' });
     }
 
     if (record.attempts >= 5) {
-      otpStore.delete(cleanEmail);
       return res.status(200).json({ success: false, error: 'تم تجاوز الحد الأقصى للمحاولات الخاطئة. الرجاء طلب كود جديد' });
     }
 
-    if (record.code !== otp.trim()) {
+    if (!matchesOtp(`${cleanEmail}:forgot_password`, otp, record.codeDigest)) {
       record.attempts += 1;
       return res.status(200).json({ success: false, error: 'كود التحقق (OTP) غير صحيح' });
     }
 
+    // Consume synchronously before any await to prevent concurrent reuse.
+    otpStore.delete(cleanEmail);
     const userObj = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (!userObj) {
       return res.status(200).json({ success: false, error: 'لم يتم العثور على حساب بهذا البريد الإلكتروني' });
@@ -208,8 +235,6 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
         tokenVersion: { increment: 1 }
       }
     });
-
-    otpStore.delete(cleanEmail);
 
     return res.json({
       success: true,
@@ -307,10 +332,10 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
         email: dbUser.email
       });
 
-      console.log(`[ADMIN OTP DISPATCH] Admin: ${dbUser.username} | OTP Code: [ ${code} ] | IP: ${clientIp || 'unknown'}`);
+      console.log('[ADMIN OTP DISPATCH] Verification code queued for delivery');
 
       sendTelegramAdminOtp(code, { username: dbUser.username, fullName: dbUser.fullName }, clientIp).catch((err) => {
-        console.error('Failed to send admin OTP to telegram:', err?.message || err);
+        console.error('Admin OTP delivery failed');
       });
 
       return res.json({
@@ -455,7 +480,7 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
       }
     });
   } catch (error: any) {
-    console.error('Verify admin OTP error:', error);
+    console.error('Admin OTP verification failed');
     return res.status(200).json({ success: false, error: 'حدث خطأ أثناء التحقق من رمز التحقق' });
   }
 };
@@ -476,11 +501,11 @@ const handleAdminOtpResend = async (req: any, res: any) => {
       return res.status(200).json({ success: false, error: result.error || 'تعذر إعادة إرسال الكود' });
     }
 
-    console.log(`[ADMIN OTP RESEND] Admin: ${result.user.username} | OTP Code: [ ${result.code} ]`);
+    console.log('[ADMIN OTP RESEND] Verification code queued for delivery');
 
     const clientIp = extractClientIp(req);
     sendTelegramAdminOtp(result.code, { username: result.user.username }, clientIp).catch((err) => {
-      console.error('Failed to resend admin OTP to telegram:', err?.message || err);
+      console.error('Admin OTP redelivery failed');
     });
 
     return res.json({
@@ -488,7 +513,7 @@ const handleAdminOtpResend = async (req: any, res: any) => {
       message: 'تم إرسال كود تحقق جديد إلى تيليجرام بنجاح'
     });
   } catch (error: any) {
-    console.error('Resend admin OTP error:', error);
+    console.error('Admin OTP resend failed');
     return res.status(200).json({ success: false, error: 'حدث خطأ أثناء إعادة إرسال رمز التحقق' });
   }
 };
@@ -506,7 +531,7 @@ router.post('/google', async (req, res) => {
     }
 
     // Verify token with Google's public tokeninfo endpoint
-    const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${credential}`);
+    const verifyRes = await fetch(`https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(credential)}`, { signal: AbortSignal.timeout(5000) });
     if (!verifyRes.ok) {
       return res.status(401).json({ success: false, error: 'فشل التحقق من حساب Google' });
     }
@@ -574,8 +599,8 @@ router.post('/google', async (req, res) => {
       }
     } else {
       // Create new user automatically
-      const generatedUsername = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + Math.random().toString(36).substring(2, 5);
-      const randomPassword = await bcrypt.hash(Math.random().toString(36) + Date.now(), 10);
+      const generatedUsername = cleanEmail.split('@')[0].replace(/[^a-zA-Z0-9_]/g, '') + '_' + crypto.randomBytes(6).toString('hex');
+      const randomPassword = await bcrypt.hash(crypto.randomBytes(32).toString('hex'), 10);
 
       user = await prisma.user.create({
         data: {

@@ -1,3 +1,4 @@
+import { BoundedCache } from '../utils/bounded-cache';
 import crypto from 'crypto';
 import { prisma } from '../utils/prisma';
 import { normalizeIp, isValidIp, areIpsEqual, isPrivateOrLocalIp } from '../utils/ipUtils';
@@ -14,7 +15,7 @@ let cachedRestrictionState: CachedSettings | null = null;
 const CACHE_TTL_MS = 5000;
 
 // Throttle lastAccessAt updates to avoid unnecessary write load
-const lastAccessUpdateMap = new Map<string, number>();
+const lastAccessUpdateMap = new BoundedCache<string, number>(2000, 256 * 1024, 5 * 60 * 1000);
 
 export async function isIpRestrictionEnabled(): Promise<boolean> {
   const now = Date.now();

@@ -1,10 +1,11 @@
 import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import bcrypt from "bcryptjs";
-import { isAdmin, authenticateToken } from "../middleware/auth";
+import { isAdmin, authenticateToken, generateToken } from "../middleware/auth";
 import { dashboardIpGuard } from "../middleware/dashboardIpGuard";
 import { checkAndAutoUpgradeMembership } from "../utils/membershipUpgrade";
 import { prepareApiActivation } from "../utils/api-activation";
+import { ensureStableApiKey } from "../utils/stable-api-key";
 
 const router = Router();
 
@@ -111,10 +112,10 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
         } else if (requestedEmail) {
           u = await prisma.user.findUnique({ where: { email: requestedEmail }, select: safeUserSelect });
         } else {
-          u = await prisma.user.findUnique({ where: { id: authUser.id }, select: safeUserSelect });
+          u = await prisma.user.findUnique({ where: { id: authUser.id }, select: { ...safeUserSelect, apiKey: true } });
         }
       } else {
-        u = await prisma.user.findUnique({ where: { id: authUser.id }, select: safeUserSelect });
+        u = await prisma.user.findUnique({ where: { id: authUser.id }, select: { ...safeUserSelect, apiKey: true } });
       }
 
       if (!u) {
@@ -208,13 +209,14 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: updateData,
-      select: safeUserSelect
+      select: { ...safeUserSelect, tokenVersion: true }
     });
-
+    const { tokenVersion, ...safeUpdatedUser } = updatedUser;
     return res.json({
       success: true,
       message: "تم تحديث بيانات الحساب بنجاح",
-      user: updatedUser
+      user: safeUpdatedUser,
+      token: generateToken({ id: updatedUser.id, email: updatedUser.email, role: updatedUser.role, tokenVersion })
     });
   } catch (error: any) {
     console.error("Error updating credentials:", error);
@@ -451,10 +453,7 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
     const { userId, apiEnabled, apiSiteName, apiSiteUrl, apiMargin, apiAllowedIps, apiDailyLimit } = req.body;
     if (!userId) return res.status(400).json({ error: "معرف المستخدم مطلوب" });
 
-    let apiKey = req.body.apiKey;
-    if (apiEnabled && !apiKey) {
-      apiKey = "ATS-" + require('crypto').randomBytes(16).toString('hex');
-    }
+    if (apiEnabled) await ensureStableApiKey(prisma, userId);
 
     const marginValue = apiMargin !== undefined && apiMargin !== null && !isNaN(parseFloat(apiMargin))
       ? parseFloat(apiMargin)
@@ -473,7 +472,6 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
         apiMargin: marginValue,
         apiAllowedIps: apiAllowedIps !== undefined ? (apiAllowedIps ? String(apiAllowedIps).trim() : null) : undefined,
         ...(cleanDailyLimit !== undefined && { apiDailyLimit: cleanDailyLimit }),
-        ...(apiKey && { apiKey })
       },
       select: safeUserSelect
     });
@@ -512,10 +510,12 @@ router.post("/request-api", authenticateToken, async (req: any, res) => {
       return res.status(400).json({ error: validationError.message || "بيانات تفعيل API غير صحيحة" });
     }
 
+    await ensureStableApiKey(prisma, userId);
+    const { apiKey: _activationKey, ...stableActivationData } = activationData;
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: {
-        ...activationData,
+        ...stableActivationData,
         apiMargin: 8.0
       },
       select: {

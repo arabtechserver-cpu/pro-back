@@ -1,13 +1,15 @@
 import crypto from 'crypto';
+import { digestOtp, matchesOtp } from './otp-security';
 
 interface OtpChallenge {
   userId: string;
   username: string;
   email: string;
-  code: string;
+  codeDigest: string;
   attempts: number;
   expiresAt: number;
   lastSentAt: number;
+  resends: number;
 }
 
 const challengeStore = new Map<string, OtpChallenge>();
@@ -26,6 +28,10 @@ setInterval(() => {
 }, 60 * 1000).unref();
 
 export function createAdminOtpChallenge(user: { id: string; username: string; email: string }): { challengeToken: string; code: string } {
+  for (const [token, challenge] of challengeStore) {
+    if (challenge.expiresAt <= Date.now() || challenge.userId === user.id) challengeStore.delete(token);
+  }
+  if (challengeStore.size >= 200) throw new Error('OTP service is busy. Please retry shortly.');
   const challengeToken = crypto.randomBytes(32).toString('hex');
   const code = crypto.randomInt(100000, 1000000).toString();
   const now = Date.now();
@@ -34,10 +40,11 @@ export function createAdminOtpChallenge(user: { id: string; username: string; em
     userId: user.id,
     username: user.username,
     email: user.email,
-    code,
+    codeDigest: digestOtp(challengeToken, code),
     attempts: 0,
     expiresAt: now + EXPIRATION_TIME_MS,
-    lastSentAt: now
+    lastSentAt: now,
+    resends: 0
   });
 
   return { challengeToken, code };
@@ -65,7 +72,7 @@ export function verifyAdminOtp(
   }
 
   const cleanInput = String(inputCode || '').trim();
-  if (cleanInput !== challenge.code) {
+  if (!matchesOtp(challengeToken, cleanInput, challenge.codeDigest)) {
     challenge.attempts += 1;
     const remaining = MAX_ATTEMPTS - challenge.attempts;
     if (remaining <= 0) {
@@ -96,6 +103,10 @@ export function resendAdminOtp(
     if (challenge) challengeStore.delete(challengeToken);
     return { success: false, error: 'انتهت صلاحية جلسة التحقق، يرجى تسجيل الدخول مجدداً' };
   }
+  if (challenge.resends >= 3 || challenge.attempts >= MAX_ATTEMPTS) {
+    challengeStore.delete(challengeToken);
+    return { success: false, error: 'تم تجاوز حد إعادة الإرسال، يرجى تسجيل الدخول مجدداً' };
+  }
 
   const timeSinceLastSent = now - challenge.lastSentAt;
   if (timeSinceLastSent < RESEND_COOLDOWN_MS) {
@@ -103,10 +114,11 @@ export function resendAdminOtp(
     return { success: false, error: `يرجى الانتظار ${remainingSeconds} ثانية قبل إعادة طلب الكود` };
   }
 
-  const newCode = crypto.randomInt(100000, 1000000).toString();
-  challenge.code = newCode;
-  challenge.attempts = 0;
-  challenge.expiresAt = now + EXPIRATION_TIME_MS;
+  let newCode: string;
+  do { newCode = crypto.randomInt(100000, 1000000).toString(); }
+  while (matchesOtp(challengeToken, newCode, challenge.codeDigest));
+  challenge.codeDigest = digestOtp(challengeToken, newCode);
+  challenge.resends++;
   challenge.lastSentAt = now;
 
   return {

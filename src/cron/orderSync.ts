@@ -5,29 +5,29 @@ import { getFoxreloadOrderDetails } from '../services/foxreloadService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';
 import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
+import { pagedRows } from '../utils/paged-rows';
+import { BoundedCache } from '../utils/bounded-cache';
+
+let syncRunning = false;
+const missingProviderWarnings = new BoundedCache<string, boolean>(1000, 128 * 1024, 24 * 60 * 60 * 1000);
 
 // Run every 3 minutes to avoid flooding provider APIs and triggering rate-limits
 export function initOrderSyncCron() {
   console.log('[CRON] Initializing Order Sync Cron Job (runs every 3 minutes)');
 
   cron.schedule('*/3 * * * *', async () => {
+    if (syncRunning) return;
+    syncRunning = true;
     try {
       // Find orders that are processing and have an API Order ID
-      const pendingOrders = await prisma.order.findMany({
+      const pendingOrders = pagedRows(prisma.order, {
         where: {
           status: 'processing',
           apiOrderId: { not: null }
-        },
-        include: { user: true }
-      });
+        }
+      }, 25);
 
-      if (pendingOrders.length === 0) {
-        return;
-      }
-
-      console.log(`[CRON] Found ${pendingOrders.length} pending orders to check with providers.`);
-
-      for (const order of pendingOrders) {
+      for await (const order of pendingOrders) {
         if (!order.apiOrderId) continue;
 
         try {
@@ -120,33 +120,49 @@ export function initOrderSyncCron() {
           }
 
           // 2. Dhru Fusion order checking
+          let dispatchNotes: any = {};
+          try { dispatchNotes = JSON.parse(order.notes || '{}'); } catch {}
           const dhruService = await prisma.dhruService.findFirst({
             where: {
               OR: [
-                { id: String(order.serviceId) },
+                { id: String(dispatchNotes.dispatchServiceId || order.serviceId) },
                 { dhruId: String(order.serviceId) }
               ]
             },
             include: { dhruCategory: true, apiProvider: true }
           });
 
-          const providerConfig = dhruService?.apiProvider
+          const savedProvider = dispatchNotes.dispatchProviderId
+            ? await prisma.apiProvider.findUnique({ where: { id: dispatchNotes.dispatchProviderId } })
+            : null;
+          const provider = dispatchNotes.dispatchProviderId ? savedProvider : dhruService?.apiProvider;
+          const providerConfig = provider
             ? {
-                apiUrl: dhruService.apiProvider.apiUrl,
-                username: dhruService.apiProvider.username,
-                apiKey: dhruService.apiProvider.apiKey
+                apiUrl: provider.apiUrl,
+                username: provider.username,
+                apiKey: provider.apiKey
               }
             : undefined;
 
-          if (!providerConfig && !DHRU_API_URL) {
-            console.warn(`[CRON] Order #${order.id.slice(-6)} (Provider Ref: #${order.apiOrderId}) has no provider configured and no default DHRU_API_URL. Keeping in processing.`);
+          if (!providerConfig && (!DHRU_API_URL || dispatchNotes.dispatchProviderId)) {
+            if (!missingProviderWarnings.get(order.id)) {
+              missingProviderWarnings.set(order.id, true);
+              console.warn(`[CRON] Order #${order.id.slice(-6)} cannot sync: restore its original provider mapping. Provider Ref: #${order.apiOrderId}.`);
+              dispatchNotes.providerSyncError = 'MISSING_PROVIDER_CONFIGURATION';
+              await prisma.order.update({ where: { id: order.id }, data: { notes: JSON.stringify(dispatchNotes) } });
+            }
             continue;
           }
+          missingProviderWarnings.delete(order.id);
+          if (dispatchNotes.providerSyncError) {
+            delete dispatchNotes.providerSyncError;
+            await prisma.order.update({ where: { id: order.id }, data: { notes: JSON.stringify(dispatchNotes) } });
+          }
 
-          const isImei = dhruService && resolveOrderServiceType(
-            dhruService.apiServiceType,
-            dhruService.dhruCategory?.name,
-            dhruService.groupName
+          const isImei = resolveOrderServiceType(
+            dispatchNotes.dispatchServiceType || dhruService?.apiServiceType,
+            dhruService?.dhruCategory?.name,
+            dhruService?.groupName
           ) === "imei";
 
           let response: any = null;
@@ -298,6 +314,8 @@ export function initOrderSyncCron() {
 
     } catch (error) {
       console.error('[CRON] General error in order sync:', error);
+    } finally {
+      syncRunning = false;
     }
   });
 }

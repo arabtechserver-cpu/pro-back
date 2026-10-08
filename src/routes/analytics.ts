@@ -1,3 +1,4 @@
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
 import { prisma } from "../utils/prisma";
@@ -7,6 +8,7 @@ import { enrichOrdersWithProviderData } from './orders';
 const router = Router();
 
 const analyticsLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
   windowMs: 60 * 1000,
   max: 60,
   message: { error: 'Too many requests' },

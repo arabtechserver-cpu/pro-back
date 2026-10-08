@@ -1,4 +1,6 @@
 import { Router } from 'express';
+import { writeBackupSnapshot } from '../utils/streaming-backup';
+import { pagedRows } from '../utils/paged-rows';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
@@ -19,85 +21,27 @@ try {
 }
 
 // Helper: Extract all data into a JSON structure
-async function generateBackupSnapshot() {
-  const [
-    users,
-    orders,
-    transactions,
-    walletTransactions,
-    dhruCategories,
-    dhruServices,
-    blogPosts,
-    videoSeries,
-    videoTutorials,
-    subscribers,
-    newsletterBroadcasts,
-    storedImages,
-    paymentIntents,
-    apiProviders,
-    allowedIps,
-    settings,
-    coupons
-  ] = await Promise.all([
-    prisma.user.findMany({
-      select: {
-        id: true,
-        fullName: true,
-        email: true,
-        username: true,
-        phone: true,
-        country: true,
-        role: true,
-        status: true,
-        balance: true,
-        membershipTierId: true,
-        createdAt: true,
-        updatedAt: true,
-        // password and apiKey deliberately excluded from backup
-      }
-    }),
-    prisma.order.findMany(),
-    prisma.transaction.findMany(),
-    prisma.walletTransaction.findMany(),
-    prisma.dhruCategory.findMany(),
-    prisma.dhruService.findMany(),
-    prisma.blogPost.findMany(),
-    prisma.videoSeries.findMany(),
-    prisma.videoTutorial.findMany(),
-    prisma.subscriber.findMany(),
-    prisma.newsletterBroadcast.findMany(),
-    prisma.storedImage.findMany(),
-    prisma.paymentIntent.findMany(),
-    prisma.apiProvider.findMany(),
-    prisma.allowedDashboardIP.findMany(),
-    prisma.setting.findMany(),
-    prisma.coupon.findMany()
-  ]);
+async function generateBackupSnapshot(filePath: string) {
+  const userSelect = Object.fromEntries([
+    'id', 'fullName', 'email', 'username', 'phone', 'country', 'role', 'status',
+    'balance', 'membershipTierId', 'createdAt', 'updatedAt'
+  ].map(key => [key, true]));
+  return writeBackupSnapshot(filePath, {
+    users: { model: prisma.user, select: userSelect },
+    orders: { model: prisma.order }, transactions: { model: prisma.transaction },
+    walletTransactions: { model: prisma.walletTransaction },
+    dhruCategories: { model: prisma.dhruCategory }, dhruServices: { model: prisma.dhruService },
+    blogPosts: { model: prisma.blogPost }, videoSeries: { model: prisma.videoSeries },
+    videoTutorials: { model: prisma.videoTutorial }, subscribers: { model: prisma.subscriber },
+    newsletterBroadcasts: { model: prisma.newsletterBroadcast }, storedImages: { model: prisma.storedImage }
+  }, { version: '2.0', createdAt: new Date().toISOString() }, {
+    totalUsers: 'users', totalOrders: 'orders', totalTransactions: 'transactions',
+    totalServices: 'dhruServices', totalBlogPosts: 'blogPosts', totalVideos: 'videoTutorials'
+  });
+}
 
-  return {
-    version: '2.0',
-    createdAt: new Date().toISOString(),
-    summary: {
-      totalUsers: users.length,
-      totalOrders: orders.length,
-      totalTransactions: transactions.length,
-      totalServices: dhruServices.length,
-      totalBlogPosts: blogPosts.length,
-      totalVideos: videoTutorials.length,
-    },
-    users,
-    orders,
-    transactions,
-    walletTransactions,
-    dhruCategories,
-    dhruServices,
-    blogPosts,
-    videoSeries,
-    videoTutorials,
-    subscribers,
-    newsletterBroadcasts,
-    storedImages,
-  };
+function readBackupSnapshot(filePath: string) {
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
 }
 
 // Helper: Perform Selective Restore / Merge
@@ -228,8 +172,8 @@ async function performSelectiveRestore(
 
   // Ensure map is populated for existing users even if customers section wasn't checked
   if (userIdMap.size === 0) {
-    const allCurrentUsers = await prisma.user.findMany();
-    for (const u of allCurrentUsers) {
+    const allCurrentUsers = pagedRows(prisma.user, { select: { id: true, username: true, email: true } });
+    for await (const u of allCurrentUsers) {
       userIdMap.set(u.username, u.id);
       userIdMap.set(u.email, u.id);
       userIdMap.set(u.id, u.id);
@@ -473,12 +417,11 @@ router.get('/', isAdmin, async (req, res) => {
 // POST /api/backup/create - Create a new JSON backup
 router.post('/create', isAdmin, async (req, res) => {
   try {
-    const backupData = await generateBackupSnapshot();
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupFilename = `backup-${timestamp}.json`;
     const destPath = path.join(BACKUPS_DIR, backupFilename);
 
-    fs.writeFileSync(destPath, JSON.stringify(backupData, null, 2), 'utf8');
+    await generateBackupSnapshot(destPath);
 
     res.json({
       success: true,
@@ -518,7 +461,7 @@ router.post('/selective-restore', isAdmin, async (req, res) => {
       const safeFilename = path.basename(filename);
       const filePath = path.join(BACKUPS_DIR, safeFilename);
       if (fs.existsSync(filePath)) {
-        data = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+        data = readBackupSnapshot(filePath);
       }
     }
 
@@ -549,7 +492,7 @@ router.post('/selective-restore', isAdmin, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Selective restore error:', error);
-    res.status(500).json({ error: `فشل الاسترجاع المخصص: ${error.message}` });
+    res.status(error.status || 500).json({ error: `فشل الاسترجاع المخصص: ${error.message}` });
   }
 });
 
@@ -567,7 +510,7 @@ router.post('/restore', isAdmin, async (req, res) => {
       return res.status(404).json({ error: 'ملف النسخة الاحتياطية غير موجود' });
     }
 
-    const content = JSON.parse(fs.readFileSync(backupPath, 'utf8'));
+    const content = readBackupSnapshot(backupPath);
     const stats = await performSelectiveRestore(content, {
       customers: true,
       updateBalances: true,
@@ -586,7 +529,7 @@ router.post('/restore', isAdmin, async (req, res) => {
     });
   } catch (error: any) {
     console.error('Restore backup error:', error);
-    res.status(500).json({ error: `حدث خطأ أثناء استرجاع النسخة الاحتياطية: ${error.message}` });
+    res.status(error.status || 500).json({ error: `حدث خطأ أثناء استرجاع النسخة الاحتياطية: ${error.message}` });
   }
 });
 

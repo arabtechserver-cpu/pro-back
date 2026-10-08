@@ -1,6 +1,7 @@
 import https from 'https';
 import { prisma } from '../utils/prisma';
-import { withinDeadline } from '../utils/request-deadline';
+import { withinDeadline, RequestDeadlineError } from '../utils/request-deadline';
+import { invalidateCatalogRevision } from '../utils/catalog-revision';
 import { BoundedCache, estimateBytes } from '../utils/bounded-cache';
 import { AsyncGate } from '../utils/async-gate';
 const providerReads = new AsyncGate(12, 64, 22000);
@@ -95,9 +96,14 @@ export async function callFoxreloadApi(
   bodyPayload?: any,
   lang: string = 'en',
   currency: string = 'usd',
-  customApiKey?: string
+  customApiKey?: string,
+  readTimeoutMs?: number
 ): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
-  return (method === 'GET' ? providerReads : providerWrites).run(() => requestFoxreloadApi(endpointPath, method, bodyPayload, lang, currency, customApiKey));
+  const readDeadline = readTimeoutMs === undefined ? Infinity : Date.now() + readTimeoutMs;
+  return (method === 'GET' ? providerReads : providerWrites).run(() => {
+    if (method === 'GET' && Date.now() >= readDeadline) throw new RequestDeadlineError();
+    return requestFoxreloadApi(endpointPath, method, bodyPayload, lang, currency, customApiKey, readTimeoutMs === undefined ? 5000 : Math.max(1, readDeadline - Date.now()));
+  });
 }
 
 async function requestFoxreloadApi(
@@ -106,10 +112,10 @@ async function requestFoxreloadApi(
   bodyPayload?: any,
   lang: string = 'en',
   currency: string = 'usd',
-  customApiKey?: string
+  customApiKey?: string,
+  readTimeoutMs = 5000
 ): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
-  const settings = await getFoxreloadSettings();
-  const apiKey = (customApiKey || settings.apiKey || getEnvApiKey()).trim();
+  const apiKey = (customApiKey || (await getFoxreloadSettings()).apiKey || getEnvApiKey()).trim();
 
   if (!apiKey) {
     return {
@@ -141,7 +147,7 @@ async function requestFoxreloadApi(
       path: endpointPath,
       method,
       headers,
-      timeout: method === 'GET' ? 5000 : 15000,
+      timeout: method === 'GET' ? readTimeoutMs : 15000,
     };
 
     const req = https.request({ ...options, signal: AbortSignal.timeout(options.timeout) }, (res) => {
@@ -360,13 +366,111 @@ let catalogInFlight: Promise<any> | null = null;
 const productsInFlight = new Map<string, Promise<FoxreloadProduct[]>>();
 const categoryProductsCache = new BoundedCache<string, { timestamp: number; data: FoxreloadProduct[] }>(1000, 16 * 1024 * 1024, 30 * 60 * 1000);
 const treeCache = new BoundedCache<string, { timestamp: number; data: FoxreloadBundle[] }>(10, 2 * 1024 * 1024, 30 * 60 * 1000);
+const allProductsCache = new BoundedCache<string, { timestamp: number; data: FoxreloadProduct[] }>(1, 16 * 1024 * 1024, 30 * 60 * 1000);
+let allProductsInFlight: Promise<FoxreloadProduct[]> | null = null;
+let foxCatalogRevision = 0;
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
 export function clearCatalogCache() {
+  foxCatalogRevision++;
+  invalidateCatalogRevision();
   catalogCache = null;
   categoryProductsCache.clear();
   treeCache.clear();
+  allProductsCache.clear();
+  allProductsInFlight = null;
+}
+
+// Follow the documented offset/cursor pagination; publish only complete snapshots.
+export async function readFoxreloadProductPages(
+  fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; data: any }>,
+  categoryId?: string,
+  budgetMs = 22000
+): Promise<any[]> {
+  const started = Date.now();
+  const products = new Map<string, any>();
+  const cursors = new Set<string>();
+  let cursor = '', offset = 0;
+  while (true) {
+    if (Date.now() - started >= budgetMs) throw new RequestDeadlineError();
+    const query = new URLSearchParams({ withStockOnly: 'true', limit: '200' });
+    if (categoryId) { query.set('categoryId', categoryId); query.set('offset', String(offset)); }
+    else { query.set('includeDescendants', 'true'); if (cursor) query.set('cursor', cursor); }
+    const response = await fetchPage(`/api/products/?${query}`, Math.min(10000, budgetMs - (Date.now() - started)));
+    if (!response.ok || !Array.isArray(response.data?.items)) {
+      throw new Error('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published');
+    }
+    const page = response.data;
+    const previousSize = products.size;
+    for (const product of page.items) {
+      if (!product?.id) throw new Error('FoxReload returned a product without an ID');
+      products.set(String(product.id), product);
+    }
+    const next = typeof page.nextCursor === 'string' ? page.nextCursor : '';
+    const total = Number(page.total);
+    const limit = Number(page.limit) || 200;
+    if (!categoryId) {
+      if (!next) {
+        if (Number.isFinite(total) && total > products.size) throw new Error('FoxReload returned an incomplete catalog without a next cursor');
+        break;
+      }
+      if (cursors.has(next) || products.size === previousSize) throw new Error('FoxReload catalog cursor did not advance');
+      cursors.add(next); cursor = next;
+    } else {
+      offset += page.items.length;
+      if (Number.isFinite(total) ? offset >= total : page.items.length < limit) break;
+      if (!page.items.length || products.size === previousSize) throw new Error('FoxReload catalog page did not advance');
+    }
+  }
+  return Array.from(products.values());
+}
+
+export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 22000): Promise<FoxreloadProduct[]> {
+  const cached = allProductsCache.get('all');
+  if (!forceRefresh && cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.data;
+  if (!allProductsInFlight) {
+    const revision = foxCatalogRevision;
+    const work = (async () => {
+      const settings = await getFoxreloadSettings();
+      if (!settings.isEnabled || !settings.apiKey) return [];
+      const hidden = new Set(settings.hiddenItems);
+      const deadline = Date.now() + 15 * 60 * 1000;
+      const items = await readFoxreloadProductPages(async (path, budget) => {
+        if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
+        let response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, budget);
+        // Retry only a failed read page. Never replay order writes.
+        if (!response.ok && (response.status >= 500 || response.status === 429)) {
+          const remaining = deadline - Date.now();
+          if (remaining <= 0) throw new RequestDeadlineError();
+          response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
+        }
+        return response;
+      }, undefined, 15 * 60 * 1000);
+      const data = items.map(p => mapProductItem(p, settings, hidden, p.categoryId)).filter(isValidProduct);
+      if (revision === foxCatalogRevision) allProductsCache.set('all', { timestamp: Date.now(), data });
+      return data;
+    })();
+    const pending = work.finally(() => {
+      if (allProductsInFlight === pending) allProductsInFlight = null;
+    });
+    allProductsInFlight = pending;
+  }
+  if (!forceRefresh && cached) { allProductsInFlight.catch(() => {}); return cached.data; }
+  // A timed-out HTTP reader does not restart or abandon the shared catalog refresh.
+  return withinDeadline(allProductsInFlight, waitMs);
+}
+
+let catalogWarmupTimer: ReturnType<typeof setInterval> | undefined;
+export function startFoxreloadCatalogWarmup(): void {
+  if (catalogWarmupTimer) return;
+  const warm = () => {
+    getFoxreloadFullCatalog(false).catch(() => {});
+    getFoxreloadAllProducts(false, 15 * 60 * 1000).catch(() => {});
+  };
+  warm();
+  catalogWarmupTimer = setInterval(warm, 10 * 60 * 1000);
+  catalogWarmupTimer.unref();
 }
 
 async function fetchParentTree(
@@ -466,19 +570,13 @@ async function loadFoxreloadCategoryProducts(
   const settings = await getFoxreloadSettings();
   const hiddenSet = new Set(settings.hiddenItems);
 
-  const res = await callFoxreloadApi(
-    `/api/products/?categoryId=${encodeURIComponent(categoryId)}&withStockOnly=true&limit=100`,
-    'GET',
-    undefined,
-    'en',
-    'usd'
-  );
-
-  const items = Array.isArray(res.data?.items) ? res.data.items : [];
-  if (!res.ok) {
+  let items: any[];
+  try {
+    items = await readFoxreloadProductPages((path, budget) => callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', undefined, budget), categoryId);
+  } catch (error) {
     const cached = categoryProductsCache.get(categoryId);
     if (cached) return cached.data;
-    throw new Error('FoxReload products are temporarily unavailable');
+    throw error;
   }
   const mapped = items
     .map((p: any) => mapProductItem(p, settings, hiddenSet, categoryId))
@@ -651,7 +749,8 @@ async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<
 }
 
 function mapProductItem(p: any, settings: FoxreloadSettings, hiddenSet: Set<string>, categorySlug: string) {
-  const cost = parseFloat(p.price || '0') || 0;
+  const cost = typeof p.price === 'number' ? p.price
+    : (typeof p.price === 'string' && p.price.trim() ? Number(p.price) : NaN);
   const { finalPrice, marginAmount, marginPercent } = computeClientPrice(cost, p.id, settings);
   const stock = typeof p.quantity === 'number' ? p.quantity : 999;
 
@@ -679,17 +778,17 @@ function mapProductItem(p: any, settings: FoxreloadSettings, hiddenSet: Set<stri
     userGuide: p.userGuide || null,
     imagePath: p.imagePath || p.image || p.imageUrl || null,
     thumbnailPath: p.thumbnailPath || p.thumbnail || null,
-    isHidden: hiddenSet.has(p.id) || hiddenSet.has(p.slug),
+    isHidden: hiddenSet.has(p.id) || hiddenSet.has(p.slug) || hiddenSet.has(p.categoryId) || hiddenSet.has(categorySlug),
   };
 }
 
 function isValidProduct(item: any): boolean {
   return (
     Boolean(item) &&
-    typeof item.costPrice === 'number' &&
-    item.costPrice > 0 &&
-    typeof item.price === 'number' &&
-    item.price > 0 &&
+    Number.isFinite(item.costPrice) &&
+    item.costPrice >= 0 &&
+    Number.isFinite(item.price) &&
+    item.price >= 0 &&
     typeof item.stock === 'number' &&
     item.stock > 0 &&
     !item.isHidden

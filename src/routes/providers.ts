@@ -2,6 +2,7 @@ import { Router } from "express";
 import { prisma } from "../utils/prisma";
 import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
+import { getCatalogSection } from '../utils/catalog-section';
 import https from "https";
 import { withinDeadline } from "../utils/request-deadline";
 import http from "http";
@@ -706,6 +707,7 @@ router.put("/:id", async (req, res) => {
       }
     });
 
+    invalidateDhruServicesCache();
     return res.json({
       success: true,
       provider: sanitizeProvider(updated),
@@ -733,6 +735,7 @@ router.delete("/:id", async (req, res) => {
     });
 
     await prisma.apiProvider.delete({ where: { id } });
+    invalidateDhruServicesCache();
 
     return res.json({
       success: true,
@@ -936,6 +939,9 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
           category_name: apiServiceType === "imei" ? "IMEI Service" : (apiServiceType === "remote" ? "Remote Service" : "Server Service"),
           service_type: apiServiceType,
           api_service_type: apiServiceType,
+          section_id: s.section_id || s.sectionId || s.category_key || g.section_id || g.sectionId || g.category_key || getCatalogSection(apiServiceType, s.category, g.category, groupName),
+          category_key: s.category_key || s.section_id || s.sectionId || g.category_key || g.section_id || g.sectionId || getCatalogSection(apiServiceType, s.category, g.category, groupName),
+          section_name: s.category || g.category || '',
           credit: sCredit,
           price: sCredit,
           time: sTime,
@@ -957,7 +963,11 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
   if (serverRes?.data) processGroups(serverRes.data, "server");
   if (remoteRes?.data) processGroups(remoteRes.data, "remote");
 
-  return extractedServices;
+  // Standard DHRU's IMEI list can already contain server/remote entries.
+  // Fetching separate lists must not duplicate them in previews and imports.
+  return Array.from(new Map(extractedServices.map(service => [
+    `${service.api_service_type}:${service.id}`, service
+  ])).values());
 }
 
 // GET & POST /api/providers/:id/fetch-services - Fetch live remote services for preview
@@ -1109,6 +1119,9 @@ async function buildProviderExportData(provider: any, includeRaw = true) {
       group_name: s.group_name || s.groupName || "General",
       category_name: s.category_name || (s.service_type === "imei" ? "IMEI Service" : "Server Service"),
       service_type: s.service_type || "server",
+      api_service_type: s.api_service_type || s.service_type || "server",
+      section_id: s.section_id || getCatalogSection(s.api_service_type || s.service_type || 'server', s.category_name, s.group_name),
+      category_key: s.category_key || s.section_id || getCatalogSection(s.api_service_type || s.service_type || 'server', s.category_name, s.group_name),
       credit: Number(s.credit || s.price) || 0,
       price: Number(s.credit || s.price) || 0,
       margin: matchedDb ? Number(matchedDb.margin) : 0,
@@ -1711,6 +1724,7 @@ router.get("/:id/services", async (req, res) => {
           category_name: service.dhruCategory?.name || null,
           service_type: service.apiServiceType || getProviderServiceType(service.dhruCategory?.name),
           api_service_type: service.apiServiceType || null,
+          section_id: getCatalogSection(service.apiServiceType || getProviderServiceType(service.dhruCategory?.name), service.dhruCategory?.name, service.groupName),
           supportsQty: qtyConfig.supportsQty,
           supports_quantity: qtyConfig.supportsQty,
           minQty: qtyConfig.minQty,

@@ -112,6 +112,7 @@ import { getUploadDir, ensureUploadDir, restoreImagesToDisk } from './utils/uplo
 import { bootstrapDatabase } from './utils/bootstrap';
 import { initOrderSyncCron } from './cron/orderSync';
 import { initBackupCron } from './cron/backupDb';
+import { startFoxreloadCatalogWarmup } from './services/foxreloadService';
 
 ensureUploadDir();
 // Guard each static mount, after Express has stripped the mount prefix.
@@ -219,6 +220,7 @@ async function startServer() {
       await startTelegramBotPolling();
       initOrderSyncCron();
       initBackupCron();
+      startFoxreloadCatalogWarmup();
     }
 
     app.listen(PORT, '0.0.0.0', () => {

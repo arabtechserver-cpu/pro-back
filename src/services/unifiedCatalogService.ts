@@ -2,6 +2,7 @@ import { prisma } from '../utils/prisma';
 import {
   getFoxreloadFullCatalog,
   getFoxreloadCategoryProducts,
+  getFoxreloadAllProducts,
   getFoxreloadSettings,
   computeClientPrice,
   callFoxreloadApi,
@@ -12,6 +13,8 @@ import { createHash } from 'crypto';
 import { mapWithinDeadline } from '../utils/request-deadline';
 import { BoundedCache } from '../utils/bounded-cache';
 import { AsyncGate } from '../utils/async-gate';
+import { getCatalogRevision } from '../utils/catalog-revision';
+import { getCatalogSection } from '../utils/catalog-section';
 const mergedBuilds = new AsyncGate(1, 64, 22000);
 
 function dhruGroupId(name: string): string {
@@ -86,12 +89,13 @@ const SECTION_METADATA: Record<string, { nameAr: string; nameEn: string; icon: s
   'dhru-remote': { nameAr: 'خدمات التحكم والريموت', nameEn: 'Remote Services', icon: 'settings_remote' }
 };
 
-let sectionsCache: { timestamp: number; data: UnifiedSection[] } | null = null;
+let sectionsCache: { timestamp: number; revision: number; data: UnifiedSection[] } | null = null;
 const CACHE_TTL_MS = 5 * 60 * 1000;
 
 export async function getUnifiedSections(): Promise<UnifiedSection[]> {
   const now = Date.now();
-  if (sectionsCache && now - sectionsCache.timestamp < CACHE_TTL_MS) {
+  const revision = getCatalogRevision();
+  if (sectionsCache && sectionsCache.revision === revision && now - sectionsCache.timestamp < CACHE_TTL_MS) {
     return sectionsCache.data;
   }
 
@@ -104,7 +108,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         _count: {
           select: {
             dhruServices: {
-              where: { isActive: true }
+              where: { isActive: true, OR: [{ apiProvider: { isActive: true } }, { providerId: null }] }
             }
           }
         }
@@ -123,7 +127,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.popular.nameEn,
         icon: SECTION_METADATA.popular.icon,
         type: 'foxreload',
-        totalServices: s.popular.bundles?.length || 18
+        totalServices: s.popular.bundles?.length || 0
       });
     }
     if (s.topups) {
@@ -133,7 +137,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.topups.nameEn,
         icon: SECTION_METADATA.topups.icon,
         type: 'foxreload',
-        totalServices: s.topups.bundles?.length || 219
+        totalServices: s.topups.bundles?.length || 0
       });
     }
     if (s.appStores) {
@@ -143,7 +147,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.appStores.nameEn,
         icon: SECTION_METADATA.appStores.icon,
         type: 'foxreload',
-        totalServices: s.appStores.bundles?.length || 3
+        totalServices: s.appStores.bundles?.length || 0
       });
     }
     if (s.gameCurrency) {
@@ -153,7 +157,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.gameCurrency.nameEn,
         icon: SECTION_METADATA.gameCurrency.icon,
         type: 'foxreload',
-        totalServices: s.gameCurrency.bundles?.length || 70
+        totalServices: s.gameCurrency.bundles?.length || 0
       });
     }
     if (s.subscriptions) {
@@ -163,7 +167,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.subscriptions.nameEn,
         icon: SECTION_METADATA.subscriptions.icon,
         type: 'foxreload',
-        totalServices: s.subscriptions.bundles?.length || 23
+        totalServices: s.subscriptions.bundles?.length || 0
       });
     }
     if (s.esim) {
@@ -173,7 +177,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.esim.nameEn,
         icon: SECTION_METADATA.esim.icon,
         type: 'foxreload',
-        totalServices: s.esim.bundles?.length || 243
+        totalServices: s.esim.bundles?.length || 0
       });
     }
     if (s.rewarble) {
@@ -183,7 +187,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
         nameEn: SECTION_METADATA.rewarble.nameEn,
         icon: SECTION_METADATA.rewarble.icon,
         type: 'foxreload',
-        totalServices: s.rewarble.bundles?.length || 5
+        totalServices: s.rewarble.bundles?.length || 0
       });
     }
   }
@@ -218,7 +222,7 @@ export async function getUnifiedSections(): Promise<UnifiedSection[]> {
     else uniqueSections.set(section.id, { ...section });
   }
   const data = Array.from(uniqueSections.values());
-  sectionsCache = { timestamp: now, data };
+  sectionsCache = { timestamp: now, revision, data };
   return data;
 }
 
@@ -508,13 +512,14 @@ export async function getUnifiedPackages(
   };
 }
 
-let catalogTreeCache: { timestamp: number; margin: number; data: any } | null = null;
+let catalogTreeCache: { timestamp: number; margin: number; revision: number; data: any } | null = null;
 
 export async function getUnifiedCatalogTree(userMarginPercent: number = 8.0): Promise<any> {
   const margin = Math.max(0, userMarginPercent);
   const now = Date.now();
 
-  if (catalogTreeCache && catalogTreeCache.margin === margin && now - catalogTreeCache.timestamp < CACHE_TTL_MS) {
+  const revision = getCatalogRevision();
+  if (catalogTreeCache && catalogTreeCache.revision === revision && catalogTreeCache.margin === margin && now - catalogTreeCache.timestamp < CACHE_TTL_MS) {
     return catalogTreeCache.data;
   }
 
@@ -563,50 +568,69 @@ export async function getUnifiedCatalogTree(userMarginPercent: number = 8.0): Pr
     updatedAt: new Date().toISOString()
   };
 
-  catalogTreeCache = { timestamp: now, margin, data: response };
+  catalogTreeCache = { timestamp: now, margin, revision, data: response };
   return response;
 }
 
-const dhruMergedCaches = new BoundedCache<string, { timestamp: number; data: any }>(4, 8 * 1024 * 1024, 15 * 60 * 1000);
+const dhruMergedCaches = new BoundedCache<string, { timestamp: number; data: any }>(2, 24 * 1024 * 1024, 30 * 60 * 1000);
 const mergedInFlight = new Map<string, Promise<any>>();
 
 export async function getDhruCompatibleMergedCatalog(
   userMarginPercent: number = 8.0,
-  filterType: 'imei' | 'server' | 'all' = 'all',
+  filterType: 'imei' | 'server' | 'remote' | 'all' = 'all',
   sectionFilter?: string
 ): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number }> {
-  const key = `${Math.max(0, userMarginPercent)}_${filterType}_${(sectionFilter || '').trim().toLowerCase()}`;
+  // All protocol views share one complete snapshot, including simultaneous IMEI/server/remote calls.
+  const revision = getCatalogRevision();
+  const key = `${revision}_${Math.max(0, userMarginPercent)}`;
   const cached = dhruMergedCaches.get(key);
-  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.data;
+  const select = (data: any) => {
+    const section = (sectionFilter || '').trim().toLowerCase();
+    const groupsList = data.groupsList.filter((group: any) =>
+      (filterType === 'all' || group.service_type === filterType) &&
+      (!section || section === 'all' || group.section_id === section || group.service_type === section)
+    );
+    return {
+      groupsList,
+      groupsObject: Object.fromEntries(groupsList.map((group: any) => [group.GROUPID, { ...group, SERVICES: group.services_map }])),
+      totalServices: groupsList.reduce((total: number, group: any) => total + group.SERVICES.length, 0)
+    };
+  };
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return select(cached.data);
   let work = mergedInFlight.get(key);
   if (!work) {
-    work = mergedBuilds.run(() => buildDhruCompatibleMergedCatalog(userMarginPercent, filterType, sectionFilter))
+    work = mergedBuilds.run(() => buildDhruCompatibleMergedCatalog(userMarginPercent))
+      .then(data => {
+        if (revision !== getCatalogRevision()) throw new Error('Catalog changed during refresh; please retry');
+        dhruMergedCaches.set(key, { timestamp: Date.now(), data });
+        return data;
+      })
       .finally(() => { mergedInFlight.delete(key); });
     mergedInFlight.set(key, work);
   }
-  if (cached) { work.catch(() => {}); return cached.data; }
-  return work;
+  if (cached) { work.catch(() => {}); return select(cached.data); }
+  return select(await work);
 }
 
 async function buildDhruCompatibleMergedCatalog(
-  userMarginPercent: number = 8.0,
-  filterType: 'imei' | 'server' | 'all' = 'all',
-  sectionFilter?: string
+  userMarginPercent: number = 8.0
 ): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number }> {
   const margin = Math.max(0, userMarginPercent);
-  const normalizedSec = (sectionFilter || '').trim().toLowerCase();
-  const cacheKey = `${margin}_${filterType}_${normalizedSec}`;
-
-  const isImeiOnly = filterType === 'imei';
-  const isServerOnly = filterType === 'server';
 
   const groupsMap = new Map<string, any>();
   const groupsObject: Record<string, any> = {};
   let totalServicesCount = 0;
 
-  const ensureGroup = (groupName: string, categoryName: string) => {
-    if (!groupsMap.has(groupName)) {
+  const ensureGroup = (groupName: string, categoryName: string, type: string, sectionId: string) => {
+    const groupId = dhruGroupId(JSON.stringify([type, sectionId, groupName]));
+    if (!groupsMap.has(groupId)) {
       const g = {
+        GROUPID: groupId,
+        GROUPTYPE: type.toUpperCase(),
+        service_type: type,
+        section_id: sectionId,
+        sectionId,
+        category_key: sectionId,
         GROUPNAME: groupName,
         group_name: groupName,
         GroupName: groupName,
@@ -616,118 +640,106 @@ async function buildDhruCompatibleMergedCatalog(
         category: categoryName,
         SERVICES: [] as any[],
         services: [] as any[],
-        services_map: {} as Record<string, any>
+        services_map: Object.create(null) as Record<string, any>
       };
-      groupsMap.set(groupName, g);
-      groupsObject[groupName] = g;
+      groupsMap.set(groupId, g);
+      groupsObject[groupId] = g;
     }
-    return groupsMap.get(groupName);
+    return groupsMap.get(groupId);
   };
 
-  if (!isImeiOnly) {
-    const foxCatalog = await getFoxreloadFullCatalog(false);
+  {
+    const [foxCatalog, foxProducts] = await Promise.all([getFoxreloadFullCatalog(false), getFoxreloadAllProducts(false)]);
     if (foxCatalog?.sections) {
       const sectionConfigs = [
-        { sec: foxCatalog.sections.popular, name: SECTION_METADATA.popular.nameAr, key: 'popular', limit: 18 },
-        { sec: foxCatalog.sections.topups, name: SECTION_METADATA.topups.nameAr, key: 'topups', limit: 35 },
-        { sec: foxCatalog.sections.appStores, name: SECTION_METADATA.appStores.nameAr, key: 'app-stores', limit: 10 },
-        { sec: foxCatalog.sections.gameCurrency, name: SECTION_METADATA.gameCurrency.nameAr, key: 'game-currency', limit: 25 },
-        { sec: foxCatalog.sections.subscriptions, name: SECTION_METADATA.subscriptions.nameAr, key: 'subscriptions', limit: 25 },
-        { sec: foxCatalog.sections.esim, name: SECTION_METADATA.esim.nameAr, key: 'esim', limit: 20 },
-        { sec: foxCatalog.sections.rewarble, name: SECTION_METADATA.rewarble.nameAr, key: 'rewarble', limit: 5 }
+        { sec: foxCatalog.sections.topups, name: SECTION_METADATA.topups.nameAr, key: 'topups' },
+        { sec: foxCatalog.sections.appStores, name: SECTION_METADATA.appStores.nameAr, key: 'app-stores' },
+        { sec: foxCatalog.sections.gameCurrency, name: SECTION_METADATA.gameCurrency.nameAr, key: 'game-currency' },
+        { sec: foxCatalog.sections.subscriptions, name: SECTION_METADATA.subscriptions.nameAr, key: 'subscriptions' },
+        { sec: foxCatalog.sections.esim, name: SECTION_METADATA.esim.nameAr, key: 'esim' },
+        { sec: foxCatalog.sections.rewarble, name: SECTION_METADATA.rewarble.nameAr, key: 'rewarble' },
+        { sec: foxCatalog.sections.popular, name: SECTION_METADATA.popular.nameAr, key: 'popular' }
       ];
 
-      const targetBundlesToSample: any[] = [];
-      const seenBundleIds = new Set<string>();
+      const categoryGroups = new Map<string, { bundle: any; secName: string; sectionId: string }>();
 
       for (const config of sectionConfigs) {
         if (!config.sec?.bundles) continue;
-        if (normalizedSec && normalizedSec !== 'all' && normalizedSec !== config.key && !config.key.includes(normalizedSec)) {
-          continue;
-        }
-
-        const bundles = config.sec.bundles;
-        for (const b of bundles) {
-          if (!seenBundleIds.has(b.id)) {
-            seenBundleIds.add(b.id);
-            targetBundlesToSample.push({ bundle: b, secName: config.name });
+        for (const b of config.sec.bundles) {
+          for (const id of [b.id, ...(b.regions || []).map((region: any) => region.id)]) {
+            if (!categoryGroups.has(id)) categoryGroups.set(id, { bundle: b, secName: config.name, sectionId: config.key });
           }
         }
       }
 
-      const jobs: { bundle: any; secName: string; regionId: string }[] = [];
-      for (const { bundle, secName } of targetBundlesToSample) {
-        const regions = bundle.regions?.length ? bundle.regions : [bundle];
-        for (const regionId of new Set<string>(regions.map((region: any) => region.id))) {
-          jobs.push({ bundle, secName, regionId });
-        }
-      }
-      const batchResults = await mapWithinDeadline(jobs, async ({ bundle, secName, regionId }) => ({
-        bundle, secName, prods: await getFoxreloadCategoryProducts(regionId, false)
-      }));
-
-      for (const { bundle, secName, prods } of batchResults) {
-        if (!prods || prods.length === 0) continue;
+      for (const p of foxProducts) {
+        const { bundle, secName, sectionId } = categoryGroups.get(p.categoryId) || {
+          bundle: { name: p.categoryId || 'Other Services' }, secName: 'Server Services', sectionId: 'dhru-server'
+        };
+        if (p.isHidden || bundle.isHidden) continue;
         const groupName = `[${secName}] ${bundle.name}`;
-        const targetGroup = ensureGroup(groupName, secName);
+        const targetGroup = ensureGroup(groupName, secName, 'server', sectionId);
 
-        for (const p of prods) {
-          if (targetGroup.services_map[p.id]) continue;
-          const baseCost = Math.max(0, p.costPrice || 0);
-          const finalPrice = Number((baseCost * (1 + margin / 100)).toFixed(4));
-          const reqFields = Array.isArray(p.requiredNoteFields) && p.requiredNoteFields.length > 0
-            ? p.requiredNoteFields
-            : (p.isService ? ['Player ID'] : []);
+        if (targetGroup.services_map[p.id]) continue;
+        const baseCost = Math.max(0, p.costPrice || 0);
+        const finalPrice = Number((baseCost * (1 + margin / 100)).toFixed(4));
+        const reqFields = Array.isArray(p.requiredNoteFields) ? p.requiredNoteFields : [];
+        const fieldNames = Array.from(new Set([...reqFields, ...Object.keys(p.noteFieldTypes || {}), ...Object.keys(p.noteFieldOptions || {})]));
+        const customFields = fieldNames.map((f: string) => ({
+          name: f, fieldname: f, label: f,
+          type: 'serviceserver',
+          fieldtype: p.noteFieldTypes?.[f] || (p.noteFieldOptions?.[f] ? 'dropdown' : 'text'),
+          options: p.noteFieldOptions?.[f] || [],
+          fieldoptions: p.noteFieldOptions?.[f] || [],
+          required: reqFields.includes(f)
+        }));
 
-          const srvItem = {
-            SERVICEID: p.id,
-            service_id: p.id,
-            ID: p.id,
-            id: p.id,
-            SERVICENAME: `${bundle.name} - ${p.name}`,
-            service_name: `${bundle.name} - ${p.name}`,
-            name: `${bundle.name} - ${p.name}`,
-            CREDIT: finalPrice.toFixed(2),
-            credit: finalPrice.toFixed(2),
-            PRICE: finalPrice.toFixed(2),
-            price: finalPrice.toFixed(2),
-            TIME: "فوري (Instant Delivery)",
-            time: "Instant",
-            INFO: p.description || p.userGuide || "",
-            info: p.description || p.userGuide || "",
-            GROUPNAME: groupName,
-            group_name: groupName,
-            GroupName: groupName,
-            group: groupName,
-            package: groupName,
-            PACKAGE: groupName,
-            category: secName,
-            Requires: reqFields.join(','),
-            RequiresCustom: reqFields.map((f: string) => ({
-              name: f,
-              fieldname: f,
-              label: f,
-              type: 'text',
-              required: true
-            })),
-            CUSTOM: reqFields.map((f: string) => ({
-              name: f,
-              fieldname: f,
-              label: f,
-              type: 'text',
-              required: true
-            })),
-            SupportsQty: true,
-            supports_quantity: true,
-            MIN_QNT: p.minQty || 1,
-            MAX_QNT: p.maxQty || 10
-          };
+        const srvItem = {
+          SERVICETYPE: 'SERVER',
+          service_type: 'server',
+          api_service_type: 'server',
+          section_id: sectionId,
+          sectionId,
+          category_key: sectionId,
+          SERVICEID: p.id,
+          service_id: p.id,
+          ID: p.id,
+          id: p.id,
+          SERVICENAME: `${bundle.name} - ${p.name}`,
+          service_name: `${bundle.name} - ${p.name}`,
+          name: `${bundle.name} - ${p.name}`,
+          CREDIT: finalPrice.toFixed(2),
+          credit: finalPrice.toFixed(2),
+          PRICE: finalPrice.toFixed(2),
+          price: finalPrice.toFixed(2),
+          TIME: "فوري (Instant Delivery)",
+          time: "Instant",
+          INFO: p.description || p.userGuide || "",
+          info: p.description || p.userGuide || "",
+          GROUPNAME: groupName,
+          group_name: groupName,
+          GroupName: groupName,
+          group: groupName,
+          package: groupName,
+          PACKAGE: groupName,
+          category: secName,
+          Requires: reqFields.join(','),
+          RequiresCustom: customFields,
+          CUSTOM: customFields,
+          SupportsQty: true,
+          supports_quantity: true,
+          MIN_QNT: p.minQty || 1,
+          MAX_QNT: p.maxQty || 0,
+          QNT: 1,
+          MINQNT: p.minQty || 1,
+          MAXQNT: p.maxQty || 0
+        };
+        (srvItem as any)['Requires.Custom'] = srvItem.CUSTOM;
 
-          targetGroup.SERVICES.push(srvItem);
-          targetGroup.services.push(srvItem);
-          targetGroup.services_map[srvItem.SERVICEID] = srvItem;
-          totalServicesCount++;
-        }
+        targetGroup.SERVICES.push(srvItem);
+        targetGroup.services.push(srvItem);
+        targetGroup.services_map[srvItem.SERVICEID] = srvItem;
+        totalServicesCount++;
       }
     }
   }
@@ -747,26 +759,17 @@ async function buildDhruCompatibleMergedCatalog(
     orderBy: [{ groupName: 'asc' }, { name: 'asc' }]
   });
 
-  const filteredDhru = dhruServices.filter((srv) => {
-    const srvType = resolveOrderServiceType(
-      srv.apiServiceType,
-      srv.dhruCategory?.name,
-      srv.groupName
-    );
-
-    if (isImeiOnly) return srvType === 'imei';
-    if (isServerOnly) return srvType === 'server';
-    return true;
-  });
-
-  for (const srv of filteredDhru) {
+  for (const srv of dhruServices) {
+    const resolvedType = resolveOrderServiceType(srv.apiServiceType, srv.dhruCategory?.name, srv.groupName);
+    const srvType = resolvedType === 'unknown' ? 'server' : resolvedType;
     const rawGroupName = (srv.groupName && srv.groupName.trim() !== ''
       ? srv.groupName
-      : (srv.dhruCategory?.name || (isImeiOnly ? 'IMEI Services' : 'Server Services'))).trim();
+      : (srv.dhruCategory?.name || `${srvType.toUpperCase()} Services`)).trim();
     const groupName = rawGroupName;
-    const catName = srv.dhruCategory?.name || (isImeiOnly ? 'IMEI Services' : 'Server Services');
+    const catName = srv.dhruCategory?.name || `${srvType.toUpperCase()} Services`;
 
-    const targetGroup = ensureGroup(groupName, catName);
+    const sectionId = getCatalogSection(srvType, catName, groupName);
+    const targetGroup = ensureGroup(groupName, catName, srvType, sectionId);
 
     const baseCost = Math.max(0, srv.credit || 0);
     const finalPrice = Number((baseCost * (1 + margin / 100)).toFixed(4));
@@ -781,7 +784,7 @@ async function buildDhruCompatibleMergedCatalog(
     }
 
     const requiresFields: string[] = [];
-    if (isImeiOnly || catName.toLowerCase().includes('imei')) {
+    if (srvType === 'imei' && customReq.length === 0) {
       requiresFields.push('IMEI');
     }
 
@@ -793,10 +796,16 @@ async function buildDhruCompatibleMergedCatalog(
     }
 
     const srvItem = {
+      SERVICETYPE: srvType.toUpperCase(),
+      service_type: srvType,
+      api_service_type: srvType,
+      section_id: sectionId,
+      sectionId,
+      category_key: sectionId,
       SERVICEID: srv.dhruId || srv.id,
       service_id: srv.dhruId || srv.id,
-      ID: srv.id,
-      id: srv.id,
+      ID: srv.dhruId || srv.id,
+      id: srv.dhruId || srv.id,
       SERVICENAME: srv.name,
       service_name: srv.name,
       name: srv.name,
@@ -821,7 +830,11 @@ async function buildDhruCompatibleMergedCatalog(
       SupportsQty: srv.supportsQty,
       supports_quantity: srv.supportsQty,
       MIN_QNT: srv.minQty || 1,
-      MAX_QNT: srv.maxQty || 0
+      MAX_QNT: srv.maxQty || 0,
+      QNT: srv.supportsQty ? 1 : 0,
+      MINQNT: srv.minQty || 1,
+      MAXQNT: srv.maxQty || 0,
+      'Requires.Custom': customReq
     };
 
     targetGroup.SERVICES.push(srvItem);
@@ -845,6 +858,5 @@ async function buildDhruCompatibleMergedCatalog(
     totalServices: totalServicesCount
   };
 
-  dhruMergedCaches.set(cacheKey, { timestamp: Date.now(), data: finalPayload });
   return finalPayload;
 }

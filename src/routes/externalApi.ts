@@ -4,6 +4,7 @@ import { BoundedCache } from '../utils/bounded-cache';
 import { withinDeadline, RequestDeadlineError } from '../utils/request-deadline';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
+import { streamDhruCatalog } from '../utils/streaming-catalog';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { extractClientIp, areIpsEqual } from '../utils/ipUtils';
 import {
@@ -341,7 +342,8 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
         { id: targetServiceId },
         { dhruId: targetServiceId }
       ],
-      isActive: true
+      isActive: true,
+      AND: [{ OR: [{ apiProvider: { isActive: true } }, { providerId: null }] }]
     },
     include: {
       apiProvider: true,
@@ -773,23 +775,38 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
       case 'getservicelist':
       case 'getservices':
       case 'services': {
-        const filterType: 'imei' | 'server' | 'all' =
-          normalizedAction === 'imeiservicelist' ? 'imei' :
-          normalizedAction === 'serverservicelist' ? 'server' : 'all';
+        // DHRU 6.1 uses imeiservicelist for IMEI, server and remote groups.
+        const requestedType = String(parsedParams.service_type || req.query?.service_type || '').toLowerCase();
+        const filterType: 'imei' | 'server' | 'remote' | 'all' =
+          ['imei', 'server', 'remote'].includes(requestedType) ? requestedType as 'imei' | 'server' | 'remote' :
+          normalizedAction === 'serverservicelist' ? 'server' :
+          normalizedAction === 'remoteservicelist' ? 'remote' : 'all';
 
         const targetSection = (parsedParams.section || parsedParams.sectionId || parsedParams.category || req.query?.section || req.query?.category || '').toString();
-        const { groupsList, groupsObject, totalServices } = await withinDeadline(getDhruCompatibleMergedCatalog(margin, filterType, targetSection));
-        const isObjectFormat = req.query.format === 'object' || parsedParams.format === 'object';
-        const listPayload = isObjectFormat ? groupsObject : groupsList;
+        const { groupsList, totalServices } = await withinDeadline(getDhruCompatibleMergedCatalog(margin, filterType, targetSection));
+        const format = String(req.query.format || parsedParams.format || '');
+        const isStandardList = normalizedAction.endsWith('servicelist');
+        const isObjectFormat = format === 'object' || (!format && isStandardList);
+        if (isStandardList && typeof res.write === 'function') {
+          await streamDhruCatalog(res, groupsList, isObjectFormat, totalServices);
+          return;
+        }
+        // Avoid serializing each catalog four times and every group's services three times.
+        const compactGroups = groupsList.map(({ services, services_map, ...group }) => ({
+          ...group,
+          SERVICES: isObjectFormat ? services_map : group.SERVICES
+        }));
+        const listPayload = isObjectFormat
+          ? Object.fromEntries(compactGroups.map(group => [group.GROUPID, group]))
+          : compactGroups;
 
         return res.json({
           SUCCESS: [{
             LIST: listPayload,
-            GROUPS: groupsList,
-            PACKAGES: groupsList,
-            serviceList: groupsList,
+            ...(!isStandardList ? { GROUPS: compactGroups, PACKAGES: compactGroups, serviceList: compactGroups } : {}),
             total_groups: groupsList.length,
-            total_services: totalServices
+            total_services: totalServices,
+            catalog_complete: true
           }]
         });
       }
@@ -884,6 +901,7 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
       }
     }
   } catch (error: any) {
+    if (res.headersSent || res.destroyed) { if (!res.destroyed) res.destroy(); return; }
     console.error("API Error:", error);
     return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({
       SUCCESS: [{

@@ -3,6 +3,7 @@ import { getAccountInfo, getImeiServiceList } from '../utils/dhru-api';
 import { isAdmin, optionalAuth } from '../middleware/auth';
 import { estimateBytes } from '../utils/bounded-cache';
 import { createHash } from 'crypto';
+import { invalidateCatalogRevision } from '../utils/catalog-revision';
 
 const router = Router();
 
@@ -29,6 +30,7 @@ let pricingRevision = 0;
 const PRICING_CACHE_TTL = 60 * 1000; // 60 seconds TTL
 
 export function invalidateDhruServicesCache() {
+  invalidateCatalogRevision();
   pricingCache = null;
   pricingPending = null;
   pricingRevision++;

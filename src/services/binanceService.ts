@@ -1,8 +1,6 @@
 import crypto from 'crypto';
 import axios from 'axios';
 
-const BINANCE_PAY_API_KEY = process.env.BINANCE_PAY_API_KEY;
-const BINANCE_PAY_SECRET_KEY = process.env.BINANCE_PAY_SECRET_KEY;
 const BINANCE_PAY_BASE_URL = 'https://bpay.binanceapi.com';
 
 export interface BinanceCreateOrderResult {
@@ -25,6 +23,22 @@ export interface BinanceOrderQueryResult {
   raw?: any;
 }
 
+function getCredentials(): { apiKey: string; secretKey: string } {
+  const apiKey = process.env.BINANCE_PAY_API_KEY;
+  const secretKey = process.env.BINANCE_PAY_SECRET_KEY;
+
+  if (!apiKey || !secretKey) {
+    const err: any = new Error(
+      'بيانات بوابة Binance Pay غير متوفرة في متغيرات بيئة الخادم (BINANCE_PAY_API_KEY و BINANCE_PAY_SECRET_KEY). تأكد من إضافتها في لوحة Dokploy / .env وإعادة تشغيل الحاوية.'
+    );
+    err.isOperational = true;
+    err.status = 503;
+    throw err;
+  }
+
+  return { apiKey, secretKey };
+}
+
 function buildHeaders(jsonBody: string): {
   'Content-Type': string;
   'BinancePay-Timestamp': string;
@@ -32,15 +46,13 @@ function buildHeaders(jsonBody: string): {
   'BinancePay-Certificate-SN': string;
   'BinancePay-Signature': string;
 } {
-  if (!BINANCE_PAY_API_KEY || !BINANCE_PAY_SECRET_KEY) {
-    throw new Error('Binance Pay API credentials are not configured in server environment');
-  }
+  const { apiKey, secretKey } = getCredentials();
 
   const timestamp = Date.now().toString();
   const nonce = crypto.randomBytes(16).toString('hex');
   const payload = `${timestamp}\n${nonce}\n${jsonBody}\n`;
   const signature = crypto
-    .createHmac('sha512', BINANCE_PAY_SECRET_KEY)
+    .createHmac('sha512', secretKey)
     .update(payload)
     .digest('hex')
     .toUpperCase();
@@ -49,7 +61,7 @@ function buildHeaders(jsonBody: string): {
     'Content-Type': 'application/json',
     'BinancePay-Timestamp': timestamp,
     'BinancePay-Nonce': nonce,
-    'BinancePay-Certificate-SN': BINANCE_PAY_API_KEY,
+    'BinancePay-Certificate-SN': apiKey,
     'BinancePay-Signature': signature
   };
 }
@@ -98,7 +110,9 @@ export async function createBinanceOrder(
     if (body.status !== 'SUCCESS' || !body.data) {
       const errCode = body.code || 'UNKNOWN';
       const errMsg = body.errorMessage || 'Failed to create Binance Pay order';
-      throw new Error(`[Binance Pay Error ${errCode}] ${errMsg}`);
+      const err: any = new Error(`[Binance Pay Error ${errCode}] ${errMsg}`);
+      err.isOperational = true;
+      throw err;
     }
 
     const data = body.data;
@@ -114,16 +128,25 @@ export async function createBinanceOrder(
   } catch (error: any) {
     const axiosError = error?.response?.data;
     if (axiosError) {
-      const code = axiosError.code || error.response?.status;
-      const message = axiosError.errorMessage || axiosError.message || 'Unknown error';
+      const code = String(axiosError.code || error.response?.status || 'UNKNOWN');
+      const message = String(axiosError.errorMessage || axiosError.message || '');
       if (code === '400004' || message.includes('Invalid API-key')) {
-        throw new Error(
-          'مفتاح Binance Pay يتطلب تفعيل الصلاحيات أو ضبط إعدادات الـ IP من لوحة باينانس (Binance Pay Merchant / API Restrictions).'
+        const ipMatch = message.match(/request ip:\s*([0-9a-fA-F.:]+)/);
+        const requestIp = ipMatch ? ipMatch[1] : '';
+        const ipHint = requestIp ? ` (عنوان IP خادمك الذي يحتاج إذن: ${requestIp})` : '';
+        const err: any = new Error(
+          `خطأ باينانس (400004): مفتاح API غير مفعل أو عنوان IP مقيد في باينانس${ipHint}. يرجى تفعيل مفاتيح التاجر Binance Pay Merchant أو إضافة عنوان IP إلى القائمة البيضاء في إعدادات API في Binance.`
         );
+        err.isOperational = true;
+        err.status = 400;
+        throw err;
       }
-      throw new Error(`خطأ بوابة باينانس (${code}): ${message}`);
+      const err: any = new Error(`خطأ بوابة باينانس (${code}): ${message || 'فشل معالجة الطلب'}`);
+      err.isOperational = true;
+      err.status = 400;
+      throw err;
     }
-    throw new Error(error.message || 'تعذر الاتصال بخوادم Binance Pay');
+    throw error;
   }
 }
 

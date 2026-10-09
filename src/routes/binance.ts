@@ -52,8 +52,10 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
       amount: numAmount
     });
   } catch (error: any) {
-    console.error('[Binance Create Order Error]:', error);
-    return res.status(500).json({
+    console.error('[Binance Create Order Error]:', error?.message || error);
+    const statusCode = error?.status || (error?.isOperational ? 400 : 502);
+    return res.status(statusCode).json({
+      success: false,
       error: error.message || 'حدث خطأ أثناء التواصل مع بوابة Binance Pay'
     });
   }

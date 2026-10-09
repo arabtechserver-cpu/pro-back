@@ -9,7 +9,7 @@ Changes are built and tested locally. They have not been deployed to the running
 - Client requests normalize the stored token, support the legacy token storage key, and clear an expired session once. A delayed response cannot sign out a newer session. Changing a password returns a new token while revoking older sessions.
 - Catalog reads have a 25-second application deadline. External API authentication has a 3-second deadline, and the frontend proxy has one 29-second budget covering backend discovery and response-body reading. A timeout returns an error; it does not guarantee successful provider fulfillment within 30 seconds.
 - DHRU groups return their matching packages without querying FoxReload. Group IDs avoid shared-prefix collisions, and service discovery no longer truncates at 200 rows.
-- Merged catalogs include all available products through cursor/offset pagination. Requests share an in-progress refresh; startup warms the provider catalog, complete snapshots can serve during refresh, and standard JSON replies stream with backpressure. Provider failures do not replace a successful product cache with an empty list. See [catalog compatibility and cold-start behavior](CATALOG-COMPATIBILITY.md).
+- Catalog lists return ready database services without waiting for FoxReload. Additional provider products load through shared, resumable pagination; complete snapshots serve during refresh and can restore from a private compressed file after restart. A cold list explicitly identifies pending provider discovery, and full synchronization refuses an incomplete source list. Standard JSON streams with backpressure. Provider failures cannot replace a complete catalog with an empty list. The frontend retains its backend address after a deadline; only connection/DNS failure clears it. See [catalog compatibility and cold-start behavior](CATALOG-COMPATIBILITY.md).
 - Order confirmations return after saving the order and charging the wallet; Telegram delivery runs asynchronously.
 - Provider dispatch from the dashboard and Telegram saves provider identity and service type for later synchronization. A missing original provider is recorded as `MISSING_PROVIDER_CONFIGURATION`; it does not trigger an automatic refund or reassignment to another provider.
 
@@ -26,5 +26,7 @@ Changes are built and tested locally. They have not been deployed to the running
 Both production builds passed. Backend security, wallet/provider regressions, API reliability and Telegram persistence checks passed; frontend type checking, token handling and session race checks passed.
 
 Local database read: 195 DHRU groups loaded in 67 ms; packages for one group loaded in 70 ms. These measurements are local and do not establish production latency or remote provider availability.
+
+The available catalog check returned 1,197 local services across 310 groups in 168 ms while FoxReload was refreshing. Stalled-provider integration tests verify HTTP 200 for IMEI/server/remote lists and correct readiness metadata. Run `node validation/check-exported-catalog.cjs --available` after building to check available services independently of upstream warmup.
 
 After building the backend, run `npm test` there. Frontend session checks: `node client-auth-token.test.js` and `node user-api-fetch.test.js`.

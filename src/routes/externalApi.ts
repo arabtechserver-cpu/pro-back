@@ -783,12 +783,16 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
           normalizedAction === 'remoteservicelist' ? 'remote' : 'all';
 
         const targetSection = (parsedParams.section || parsedParams.sectionId || parsedParams.category || req.query?.section || req.query?.category || '').toString();
-        const { groupsList, totalServices } = await withinDeadline(getDhruCompatibleMergedCatalog(margin, filterType, targetSection));
+        const { groupsList, totalServices, catalogComplete, refreshingSources } = await withinDeadline(getDhruCompatibleMergedCatalog(margin, filterType, targetSection));
+        if (typeof res.setHeader === 'function') {
+          res.setHeader('X-Catalog-Complete', String(catalogComplete));
+          if (!catalogComplete) res.setHeader('Retry-After', '5');
+        }
         const format = String(req.query.format || parsedParams.format || '');
         const isStandardList = normalizedAction.endsWith('servicelist');
         const isObjectFormat = format === 'object' || (!format && isStandardList);
         if (isStandardList && typeof res.write === 'function') {
-          await streamDhruCatalog(res, groupsList, isObjectFormat, totalServices);
+          await streamDhruCatalog(res, groupsList, isObjectFormat, totalServices, catalogComplete);
           return;
         }
         // Avoid serializing each catalog four times and every group's services three times.
@@ -806,7 +810,8 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
             ...(!isStandardList ? { GROUPS: compactGroups, PACKAGES: compactGroups, serviceList: compactGroups } : {}),
             total_groups: groupsList.length,
             total_services: totalServices,
-            catalog_complete: true
+            catalog_complete: catalogComplete,
+            ...(!catalogComplete ? { refreshing_sources: refreshingSources, MESSAGE: 'Local services are ready. Additional provider services are refreshing; retry shortly.' } : {})
           }]
         });
       }

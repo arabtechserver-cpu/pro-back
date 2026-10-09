@@ -1,6 +1,6 @@
 import { Response } from 'express';
 
-export function* dhruCatalogChunks(groups: any[], objectFormat: boolean, totalServices: number): Generator<string> {
+export function* dhruCatalogChunks(groups: any[], objectFormat: boolean, totalServices: number, catalogComplete = true): Generator<string> {
   yield '{"SUCCESS":[{"LIST":' + (objectFormat ? '{' : '[');
   for (let index = 0; index < groups.length; index++) {
     const { SERVICES, services, services_map, ...metadata } = groups[index];
@@ -15,10 +15,12 @@ export function* dhruCatalogChunks(groups: any[], objectFormat: boolean, totalSe
     }
     yield (objectFormat ? '}' : ']') + '}';
   }
-  yield (objectFormat ? '}' : ']') + `,"total_groups":${groups.length},"total_services":${totalServices},"catalog_complete":true}]}`;
+  const status = { total_groups: groups.length, total_services: totalServices, catalog_complete: catalogComplete,
+    ...(!catalogComplete ? { refreshing_sources: ['foxreload'], MESSAGE: 'Local services are ready. Additional provider services are refreshing; retry shortly.' } : {}) };
+  yield (objectFormat ? '}' : ']') + ',' + JSON.stringify(status).slice(1) + ']}';
 }
 
-export async function streamDhruCatalog(res: Response, groups: any[], objectFormat: boolean, totalServices: number): Promise<void> {
+export async function streamDhruCatalog(res: Response, groups: any[], objectFormat: boolean, totalServices: number, catalogComplete = true): Promise<void> {
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   const write = async (chunk: string) => {
     if (res.destroyed || res.writableEnded) throw new Error('Catalog response closed');
@@ -32,7 +34,7 @@ export async function streamDhruCatalog(res: Response, groups: any[], objectForm
     });
   };
   let buffer = '';
-  for (const chunk of dhruCatalogChunks(groups, objectFormat, totalServices)) {
+  for (const chunk of dhruCatalogChunks(groups, objectFormat, totalServices, catalogComplete)) {
     buffer += chunk;
     if (buffer.length >= 32768) { await write(buffer); buffer = ''; }
   }

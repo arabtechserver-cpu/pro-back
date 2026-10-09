@@ -15,7 +15,7 @@ const { getFoxreloadAllProducts, getFoxreloadFullCatalog, callFoxreloadApi } = r
       elapsedMs: Math.round(performance.now() - started) }, null, 2));
     return;
   }
-  await Promise.all([getFoxreloadFullCatalog(), getFoxreloadAllProducts(false, 15 * 60 * 1000)]);
+  if (!process.argv.includes('--available')) await Promise.all([getFoxreloadFullCatalog(), getFoxreloadAllProducts(false, 15 * 60 * 1000)]);
   const warmupMs = Math.round(performance.now() - started);
   const requestStarted = performance.now();
   const catalog = await getDhruCompatibleMergedCatalog(8);
@@ -33,6 +33,7 @@ const { getFoxreloadAllProducts, getFoxreloadFullCatalog, callFoxreloadApi } = r
   }
   console.log(JSON.stringify({
     totalServices: catalog.totalServices, groups: catalog.groupsList.length,
+    catalogComplete: catalog.catalogComplete, refreshingSources: catalog.refreshingSources,
     sections, protocols, elapsedMs: Math.round(performance.now() - started),
     warmupMs, warmCatalogRequestMs: Math.round(performance.now() - requestStarted),
     processRssMiB: Number((process.memoryUsage().rss / 1048576).toFixed(2))
@@ -41,4 +42,7 @@ const { getFoxreloadAllProducts, getFoxreloadFullCatalog, callFoxreloadApi } = r
   // Avoid logging upstream URLs, payloads or credentials.
   console.error(error.name === 'RequestDeadlineError' ? 'Catalog deadline exceeded' : 'Read-only catalog check failed');
   process.exitCode = 1;
-}).finally(() => prisma.$disconnect());
+}).finally(async () => {
+  await prisma.$disconnect();
+  if (process.argv.includes('--available')) process.exit(process.exitCode || 0);
+});

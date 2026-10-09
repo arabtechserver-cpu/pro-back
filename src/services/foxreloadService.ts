@@ -2,8 +2,10 @@ import https from 'https';
 import { prisma } from '../utils/prisma';
 import { withinDeadline, RequestDeadlineError } from '../utils/request-deadline';
 import { invalidateCatalogRevision } from '../utils/catalog-revision';
-import { BoundedCache, estimateBytes } from '../utils/bounded-cache';
+import { BoundedCache } from '../utils/bounded-cache';
 import { AsyncGate } from '../utils/async-gate';
+import { createHash } from 'crypto';
+import { providerCatalogSnapshotPath, loadProviderCatalogSnapshot, saveProviderCatalogSnapshot } from '../utils/provider-catalog-snapshot';
 const providerReads = new AsyncGate(12, 64, 22000);
 const providerWrites = new AsyncGate(2, 12, 3000);
 
@@ -366,9 +368,45 @@ let catalogInFlight: Promise<any> | null = null;
 const productsInFlight = new Map<string, Promise<FoxreloadProduct[]>>();
 const categoryProductsCache = new BoundedCache<string, { timestamp: number; data: FoxreloadProduct[] }>(1000, 16 * 1024 * 1024, 30 * 60 * 1000);
 const treeCache = new BoundedCache<string, { timestamp: number; data: FoxreloadBundle[] }>(10, 2 * 1024 * 1024, 30 * 60 * 1000);
-const allProductsCache = new BoundedCache<string, { timestamp: number; data: FoxreloadProduct[] }>(1, 16 * 1024 * 1024, 30 * 60 * 1000);
 let allProductsInFlight: Promise<FoxreloadProduct[]> | null = null;
 let foxCatalogRevision = 0;
+// Retain exactly one complete snapshot; a cache budget must not discard the catalog.
+let lastProductsSnapshot: { timestamp: number; data: FoxreloadProduct[] } | null = null;
+let snapshotRestore: Promise<void> | null = null;
+let snapshotRestoreAttempted = false;
+let snapshotWrite: Promise<void> | null = null;
+let snapshotWriteRequested = false;
+let nextCatalogRefreshAt = 0;
+export type ProductWalkState = { products: Map<string, any>; cursors: Set<string>; cursor: string; offset: number };
+let resumableProductWalk: { revision: number; state: ProductWalkState } | null = null;
+
+function newProductWalk(): ProductWalkState { return { products: new Map(), cursors: new Set(), cursor: '', offset: 0 }; }
+
+class ProductPageUnavailable extends Error {}
+
+function settingsFingerprint(settings: FoxreloadSettings): string {
+  return createHash('sha256').update(JSON.stringify(settings)).digest('hex');
+}
+
+// Serialize and coalesce publications so an older file cannot replace a newer snapshot.
+function persistAvailableSnapshot(): Promise<void> {
+  snapshotWriteRequested = true;
+  if (!snapshotWrite) {
+    const pending = (async () => {
+      while (snapshotWriteRequested) {
+        snapshotWriteRequested = false;
+        const revision = foxCatalogRevision;
+        const settings = await getFoxreloadSettings();
+        const snapshot = lastProductsSnapshot;
+        if (!snapshot || revision !== foxCatalogRevision) continue;
+        await saveProviderCatalogSnapshot(providerCatalogSnapshotPath(), settingsFingerprint(settings), snapshot.data, catalogCache?.data || { sections: {} }, snapshot.timestamp)
+          .catch(() => { console.warn('[Catalog Snapshot] Unable to persist snapshot; current complete in-memory catalog remains available.'); });
+      }
+    })().finally(() => { if (snapshotWrite === pending) snapshotWrite = null; });
+    snapshotWrite = pending;
+  }
+  return snapshotWrite;
+}
 
 const CACHE_TTL_MS = 15 * 60 * 1000;
 
@@ -376,30 +414,35 @@ export function clearCatalogCache() {
   foxCatalogRevision++;
   invalidateCatalogRevision();
   catalogCache = null;
+  catalogInFlight = null;
+  productsInFlight.clear();
   categoryProductsCache.clear();
   treeCache.clear();
-  allProductsCache.clear();
   allProductsInFlight = null;
+  lastProductsSnapshot = null;
+  snapshotRestore = null;
+  snapshotRestoreAttempted = false;
+  nextCatalogRefreshAt = 0;
+  resumableProductWalk = null;
 }
 
 // Follow the documented offset/cursor pagination; publish only complete snapshots.
 export async function readFoxreloadProductPages(
   fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; data: any }>,
   categoryId?: string,
-  budgetMs = 22000
+  budgetMs = 22000,
+  state: ProductWalkState = newProductWalk()
 ): Promise<any[]> {
   const started = Date.now();
-  const products = new Map<string, any>();
-  const cursors = new Set<string>();
-  let cursor = '', offset = 0;
+  const { products, cursors } = state;
   while (true) {
     if (Date.now() - started >= budgetMs) throw new RequestDeadlineError();
     const query = new URLSearchParams({ withStockOnly: 'true', limit: '200' });
-    if (categoryId) { query.set('categoryId', categoryId); query.set('offset', String(offset)); }
-    else { query.set('includeDescendants', 'true'); if (cursor) query.set('cursor', cursor); }
+    if (categoryId) { query.set('categoryId', categoryId); query.set('offset', String(state.offset)); }
+    else { query.set('includeDescendants', 'true'); if (state.cursor) query.set('cursor', state.cursor); }
     const response = await fetchPage(`/api/products/?${query}`, Math.min(10000, budgetMs - (Date.now() - started)));
     if (!response.ok || !Array.isArray(response.data?.items)) {
-      throw new Error('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published');
+      throw new ProductPageUnavailable('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published');
     }
     const page = response.data;
     const previousSize = products.size;
@@ -416,10 +459,10 @@ export async function readFoxreloadProductPages(
         break;
       }
       if (cursors.has(next) || products.size === previousSize) throw new Error('FoxReload catalog cursor did not advance');
-      cursors.add(next); cursor = next;
+      cursors.add(next); state.cursor = next;
     } else {
-      offset += page.items.length;
-      if (Number.isFinite(total) ? offset >= total : page.items.length < limit) break;
+      state.offset += page.items.length;
+      if (Number.isFinite(total) ? state.offset >= total : page.items.length < limit) break;
       if (!page.items.length || products.size === previousSize) throw new Error('FoxReload catalog page did not advance');
     }
   }
@@ -427,7 +470,7 @@ export async function readFoxreloadProductPages(
 }
 
 export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 22000): Promise<FoxreloadProduct[]> {
-  const cached = allProductsCache.get('all');
+  const cached = lastProductsSnapshot;
   if (!forceRefresh && cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.data;
   if (!allProductsInFlight) {
     const revision = foxCatalogRevision;
@@ -435,6 +478,8 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
       const settings = await getFoxreloadSettings();
       if (!settings.isEnabled || !settings.apiKey) return [];
       const hidden = new Set(settings.hiddenItems);
+      if (!resumableProductWalk || resumableProductWalk.revision !== revision) resumableProductWalk = { revision, state: newProductWalk() };
+      const walk = resumableProductWalk;
       const deadline = Date.now() + 15 * 60 * 1000;
       const items = await readFoxreloadProductPages(async (path, budget) => {
         if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
@@ -446,12 +491,25 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
           response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
         }
         return response;
-      }, undefined, 15 * 60 * 1000);
+      }, undefined, 15 * 60 * 1000, walk.state);
       const data = items.map(p => mapProductItem(p, settings, hidden, p.categoryId)).filter(isValidProduct);
-      if (revision === foxCatalogRevision) allProductsCache.set('all', { timestamp: Date.now(), data });
+      walk.state.products.clear();
+      items.length = 0;
+      if (resumableProductWalk === walk) resumableProductWalk = null;
+      if (revision === foxCatalogRevision) {
+        lastProductsSnapshot = { timestamp: Date.now(), data };
+        invalidateCatalogRevision();
+        await persistAvailableSnapshot();
+      }
       return data;
     })();
-    const pending = work.finally(() => {
+    const pending = work.catch(error => {
+      if (revision === foxCatalogRevision) {
+        if (!(error instanceof ProductPageUnavailable) && !(error instanceof RequestDeadlineError)) resumableProductWalk = null;
+        nextCatalogRefreshAt = Date.now() + 30000;
+      }
+      throw error;
+    }).finally(() => {
       if (allProductsInFlight === pending) allProductsInFlight = null;
     });
     allProductsInFlight = pending;
@@ -461,12 +519,49 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
   return withinDeadline(allProductsInFlight, waitMs);
 }
 
+export interface AvailableFoxreloadCatalog {
+  catalog: any;
+  products: FoxreloadProduct[];
+  complete: boolean;
+  refreshing: boolean;
+}
+
+export async function getAvailableFoxreloadCatalog(): Promise<AvailableFoxreloadCatalog> {
+  const settings = await getFoxreloadSettings();
+  if (!settings.isEnabled || !settings.apiKey) {
+    return { catalog: { sections: {} }, products: [], complete: true, refreshing: false };
+  }
+  if (!lastProductsSnapshot && !snapshotRestoreAttempted) {
+    snapshotRestoreAttempted = true;
+    const revision = foxCatalogRevision;
+    snapshotRestore = loadProviderCatalogSnapshot(providerCatalogSnapshotPath(), settingsFingerprint(settings)).then(snapshot => {
+      if (snapshot && revision === foxCatalogRevision && !lastProductsSnapshot) {
+        lastProductsSnapshot = { timestamp: snapshot.timestamp, data: snapshot.products };
+        if (!catalogCache && Object.keys(snapshot.catalog?.sections || {}).length) catalogCache = { timestamp: snapshot.timestamp, data: snapshot.catalog };
+        invalidateCatalogRevision();
+      }
+    });
+  }
+  if (snapshotRestore) await withinDeadline(snapshotRestore, 1000).catch(() => {});
+  // HTTP catalog readers never wait for the external provider. A shared background
+  // job fills the complete snapshot; an old complete snapshot stays usable.
+  if (Date.now() >= nextCatalogRefreshAt) {
+    getFoxreloadFullCatalog(false).catch(() => {});
+    getFoxreloadAllProducts(false, 15 * 60 * 1000).catch(() => {});
+  }
+  return {
+    catalog: catalogCache?.data || { sections: {} },
+    products: lastProductsSnapshot?.data || [],
+    complete: lastProductsSnapshot !== null,
+    refreshing: allProductsInFlight !== null
+  };
+}
+
 let catalogWarmupTimer: ReturnType<typeof setInterval> | undefined;
 export function startFoxreloadCatalogWarmup(): void {
   if (catalogWarmupTimer) return;
   const warm = () => {
-    getFoxreloadFullCatalog(false).catch(() => {});
-    getFoxreloadAllProducts(false, 15 * 60 * 1000).catch(() => {});
+    getAvailableFoxreloadCatalog().catch(() => {});
   };
   warm();
   catalogWarmupTimer = setInterval(warm, 10 * 60 * 1000);
@@ -477,7 +572,8 @@ async function fetchParentTree(
   parentSlug: string,
   sectionId: string,
   settings: FoxreloadSettings,
-  hiddenSet: Set<string>
+  hiddenSet: Set<string>,
+  revision: number
 ): Promise<FoxreloadBundle[]> {
   const cached = treeCache.get(parentSlug);
   const now = Date.now();
@@ -490,7 +586,8 @@ async function fetchParentTree(
     'GET',
     undefined,
     'en',
-    'usd'
+    'usd',
+    settings.apiKey
   );
 
   const rawList = res.data?.items || (Array.isArray(res.data) ? res.data : []);
@@ -537,7 +634,7 @@ async function fetchParentTree(
     })
     .filter((b: FoxreloadBundle) => b.inStockCount > 0 || b.regions.length > 0);
 
-  treeCache.set(parentSlug, { timestamp: now, data: bundles });
+  if (revision === foxCatalogRevision) treeCache.set(parentSlug, { timestamp: now, data: bundles });
   return bundles;
 }
 
@@ -560,6 +657,7 @@ async function loadFoxreloadCategoryProducts(
   forceRefresh: boolean = false
 ): Promise<FoxreloadProduct[]> {
   const now = Date.now();
+  const revision = foxCatalogRevision;
   if (!forceRefresh) {
     const cached = categoryProductsCache.get(categoryId);
     if (cached && now - cached.timestamp < CACHE_TTL_MS) {
@@ -572,7 +670,7 @@ async function loadFoxreloadCategoryProducts(
 
   let items: any[];
   try {
-    items = await readFoxreloadProductPages((path, budget) => callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', undefined, budget), categoryId);
+    items = await readFoxreloadProductPages((path, budget) => callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, budget), categoryId);
   } catch (error) {
     const cached = categoryProductsCache.get(categoryId);
     if (cached) return cached.data;
@@ -582,6 +680,7 @@ async function loadFoxreloadCategoryProducts(
     .map((p: any) => mapProductItem(p, settings, hiddenSet, categoryId))
     .filter(isValidProduct);
 
+  if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
   categoryProductsCache.set(categoryId, { timestamp: now, data: mapped });
   return mapped;
 }
@@ -608,19 +707,21 @@ export async function searchFoxreloadProducts(query: string): Promise<FoxreloadP
 export async function getFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
   if (!forceRefresh && catalogCache && Date.now() - catalogCache.timestamp < CACHE_TTL_MS) return catalogCache.data;
   if (!catalogInFlight) {
-    catalogInFlight = withinDeadline(loadFoxreloadFullCatalog(forceRefresh), 12000)
-      .finally(() => { catalogInFlight = null; });
+    const pending = loadFoxreloadFullCatalog(forceRefresh)
+      .finally(() => { if (catalogInFlight === pending) catalogInFlight = null; });
+    catalogInFlight = pending;
   }
   // Serve the last successful snapshot while one shared refresh runs.
   if (!forceRefresh && catalogCache) {
     catalogInFlight.catch(() => {});
     return catalogCache.data;
   }
-  return catalogInFlight;
+  return withinDeadline(catalogInFlight, 12000);
 }
 
 async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
   const now = Date.now();
+  const revision = foxCatalogRevision;
   if (!forceRefresh && catalogCache && now - catalogCache.timestamp < CACHE_TTL_MS) {
     return catalogCache.data;
   }
@@ -638,12 +739,12 @@ async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<
     rewarbleBundles,
     popularLegacyItems,
   ] = await Promise.all([
-    fetchParentTree('topups', 'topups', settings, hiddenSet),
-    fetchParentTree('app-stores', 'app-stores', settings, hiddenSet),
-    fetchParentTree('game-currency', 'game-currency', settings, hiddenSet),
-    fetchParentTree('subscriptions', 'subscriptions', settings, hiddenSet),
-    fetchParentTree('esim', 'esim', settings, hiddenSet),
-    fetchParentTree('rewarble', 'rewarble', settings, hiddenSet),
+    fetchParentTree('topups', 'topups', settings, hiddenSet, revision),
+    fetchParentTree('app-stores', 'app-stores', settings, hiddenSet, revision),
+    fetchParentTree('game-currency', 'game-currency', settings, hiddenSet, revision),
+    fetchParentTree('subscriptions', 'subscriptions', settings, hiddenSet, revision),
+    fetchParentTree('esim', 'esim', settings, hiddenSet, revision),
+    fetchParentTree('rewarble', 'rewarble', settings, hiddenSet, revision),
     fetchPopularCatalogItems(settings, hiddenSet).catch(() => []),
   ]);
 
@@ -744,7 +845,10 @@ async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<
     updatedAt: new Date().toISOString(),
   };
 
-  if (estimateBytes(catalog) <= 3 * 1024 * 1024) catalogCache = { timestamp: now, data: catalog };
+  if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
+  catalogCache = { timestamp: now, data: catalog };
+  invalidateCatalogRevision();
+  if (lastProductsSnapshot) await persistAvailableSnapshot();
   return catalog;
 }
 

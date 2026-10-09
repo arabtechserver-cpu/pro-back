@@ -970,6 +970,11 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
   ])).values());
 }
 
+export function getProviderCatalogWarning(responses: any[]): string | null {
+  return responses.some(response => Array.isArray(response?.data?.SUCCESS) && response.data.SUCCESS.some((item: any) => item?.catalog_complete === false))
+    ? 'الخدمات الجاهزة ظاهرة الآن، وخدمات إضافية من المزود ما زالت تتحدث. أعد جلب API Live بعد اكتمال التحديث.' : null;
+}
+
 // GET & POST /api/providers/:id/fetch-services - Fetch live remote services for preview
 const fetchRemoteServicesHandler = async (req: any, res: any) => {
   try {
@@ -993,8 +998,9 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
     }
 
     const services = parseAllProviderServices(imeiRes, serverRes, remoteRes);
+    const catalogWarning = getProviderCatalogWarning(responses);
 
-    if (services.length === 0) {
+    if (services.length === 0 && !catalogWarning) {
       return res.status(400).json({
         error: "اتصلنا بالمزود لكن لم يتم العثور على خدمات قابلة للقراءة في الرد"
       });
@@ -1025,7 +1031,8 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       success: true,
       services,
       servicesCount: services.length,
-      count: services.length
+      count: services.length,
+      ...(catalogWarning ? { catalogComplete: false, warning: catalogWarning } : {})
     });
   } catch (error: any) {
     console.error("Fetch remote services error:", error);
@@ -1522,6 +1529,8 @@ router.post("/:id/sync", async (req, res) => {
       }))
     );
     const responses = fetchedResponses.map(({ response }) => response);
+    const catalogWarning = getProviderCatalogWarning(responses);
+    if (catalogWarning) return res.status(503).json({ error: catalogWarning, catalogComplete: false });
     if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
       return res.status(400).json({
         error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`

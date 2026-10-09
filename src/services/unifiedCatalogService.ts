@@ -3,6 +3,8 @@ import {
   getFoxreloadFullCatalog,
   getFoxreloadCategoryProducts,
   getFoxreloadAllProducts,
+  getAvailableFoxreloadCatalog,
+  AvailableFoxreloadCatalog,
   getFoxreloadSettings,
   computeClientPrice,
   callFoxreloadApi,
@@ -579,10 +581,14 @@ export async function getDhruCompatibleMergedCatalog(
   userMarginPercent: number = 8.0,
   filterType: 'imei' | 'server' | 'remote' | 'all' = 'all',
   sectionFilter?: string
-): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number }> {
-  // All protocol views share one complete snapshot, including simultaneous IMEI/server/remote calls.
+): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number; catalogComplete: boolean; refreshingSources: string[] }> {
+  // Local protocols need no upstream calls; other views reuse the available shared snapshot.
+  const localOnly = ['imei', 'remote'].includes(filterType) || ['imei', 'remote', 'dhru-imei', 'dhru-remote'].includes((sectionFilter || '').trim().toLowerCase());
+  const available = localOnly
+    ? { catalog: { sections: {} }, products: [], complete: true, refreshing: false }
+    : await getAvailableFoxreloadCatalog();
   const revision = getCatalogRevision();
-  const key = `${revision}_${Math.max(0, userMarginPercent)}`;
+  const key = `${revision}_${Math.max(0, userMarginPercent)}_${localOnly ? 'local' : 'merged'}_${available.complete}`;
   const cached = dhruMergedCaches.get(key);
   const select = (data: any) => {
     const section = (sectionFilter || '').trim().toLowerCase();
@@ -593,16 +599,18 @@ export async function getDhruCompatibleMergedCatalog(
     return {
       groupsList,
       groupsObject: Object.fromEntries(groupsList.map((group: any) => [group.GROUPID, { ...group, SERVICES: group.services_map }])),
-      totalServices: groupsList.reduce((total: number, group: any) => total + group.SERVICES.length, 0)
+      totalServices: groupsList.reduce((total: number, group: any) => total + group.SERVICES.length, 0),
+      catalogComplete: data.catalogComplete,
+      refreshingSources: data.catalogComplete ? [] : ['foxreload']
     };
   };
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return select(cached.data);
   let work = mergedInFlight.get(key);
   if (!work) {
-    work = mergedBuilds.run(() => buildDhruCompatibleMergedCatalog(userMarginPercent))
+    work = mergedBuilds.run(() => buildDhruCompatibleMergedCatalog(userMarginPercent, available))
       .then(data => {
-        if (revision !== getCatalogRevision()) throw new Error('Catalog changed during refresh; please retry');
-        dhruMergedCaches.set(key, { timestamp: Date.now(), data });
+        // A background publication must not fail an otherwise usable DB response.
+        if (revision === getCatalogRevision()) dhruMergedCaches.set(key, { timestamp: Date.now(), data });
         return data;
       })
       .finally(() => { mergedInFlight.delete(key); });
@@ -613,8 +621,9 @@ export async function getDhruCompatibleMergedCatalog(
 }
 
 async function buildDhruCompatibleMergedCatalog(
-  userMarginPercent: number = 8.0
-): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number }> {
+  userMarginPercent: number = 8.0,
+  available: AvailableFoxreloadCatalog
+): Promise<{ groupsList: any[]; groupsObject: Record<string, any>; totalServices: number; catalogComplete: boolean }> {
   const margin = Math.max(0, userMarginPercent);
 
   const groupsMap = new Map<string, any>();
@@ -649,7 +658,8 @@ async function buildDhruCompatibleMergedCatalog(
   };
 
   {
-    const [foxCatalog, foxProducts] = await Promise.all([getFoxreloadFullCatalog(false), getFoxreloadAllProducts(false)]);
+    const foxCatalog = available.catalog;
+    const foxProducts = available.products;
     if (foxCatalog?.sections) {
       const sectionConfigs = [
         { sec: foxCatalog.sections.topups, name: SECTION_METADATA.topups.nameAr, key: 'topups' },
@@ -855,7 +865,8 @@ async function buildDhruCompatibleMergedCatalog(
   const finalPayload = {
     groupsList,
     groupsObject: formattedGroupsObject,
-    totalServices: totalServicesCount
+    totalServices: totalServicesCount,
+    catalogComplete: available.complete
   };
 
   return finalPayload;

@@ -1,5 +1,15 @@
 const assert = require('node:assert/strict');
 const { test } = require('node:test');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const catalogTestDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'arad-catalog-test-'));
+process.env.FOXRELOAD_CATALOG_CACHE_DIR = catalogTestDirectory;
+process.on('exit', () => {
+  if (path.dirname(path.resolve(catalogTestDirectory)) === path.resolve(os.tmpdir()) && path.basename(catalogTestDirectory).startsWith('arad-catalog-test-')) {
+    fs.rmSync(catalogTestDirectory, { recursive: true, force: true });
+  }
+});
 
 process.env.JWT_SECRET = 'reliability-test-secret-at-least-32-chars';
 process.env.TELEGRAM_BOT_TOKEN = 'test-token';
@@ -109,6 +119,7 @@ test('merged catalog includes every bundle and region, coalesces concurrent clie
   const oldProducts = fox.getFoxreloadCategoryProducts;
   const bundles = Array.from({ length: 100 }, (_, i) => ({ id: `bundle-${i}`, name: `Game ${i}`, regions: [{ id: `region-${i}-a` }, { id: `region-${i}-b` }] }));
   const oldAll = fox.getFoxreloadAllProducts;
+  const oldAvailable = fox.getAvailableFoxreloadCatalog;
   prisma.dhruService.findMany = async () => [];
   fox.getFoxreloadFullCatalog = async () => ({ sections: { topups: { bundles } } });
   let calls = 0;
@@ -118,6 +129,8 @@ test('merged catalog includes every bundle and region, coalesces concurrent clie
     await new Promise(resolve => setTimeout(resolve, 2));
     return bundles.flatMap(bundle => bundle.regions.map(region => ({ id: region.id, categoryId: region.id, name: region.id, costPrice: 10, minQty: 1 })));
   };
+  let published;
+  fox.getAvailableFoxreloadCatalog = () => published ||= Promise.all([fox.getFoxreloadFullCatalog(), fox.getFoxreloadAllProducts()]).then(([catalog, products]) => ({ catalog, products, complete: true, refreshing: false }));
   try {
     const catalog = freshCatalog();
     const [a, b] = await Promise.all([catalog.getDhruCompatibleMergedCatalog(8), catalog.getDhruCompatibleMergedCatalog(8)]);
@@ -130,11 +143,12 @@ test('merged catalog includes every bundle and region, coalesces concurrent clie
     const other = await catalog.getDhruCompatibleMergedCatalog(12);
     assert.equal(other.groupsList[0].SERVICES[0].PRICE, '11.20');
     assert.equal((await catalog.getDhruCompatibleMergedCatalog(8)).groupsList[0].SERVICES[0].PRICE, '10.80');
-  } finally { prisma.dhruService.findMany = oldFind; fox.getFoxreloadFullCatalog = oldCatalog; fox.getFoxreloadCategoryProducts = oldProducts; fox.getFoxreloadAllProducts = oldAll; }
+  } finally { prisma.dhruService.findMany = oldFind; fox.getFoxreloadFullCatalog = oldCatalog; fox.getFoxreloadCategoryProducts = oldProducts; fox.getFoxreloadAllProducts = oldAll; fox.getAvailableFoxreloadCatalog = oldAvailable; }
 });
 
 test('DHRU single-list clients receive all sections, IDs, fields and accurate remote filters without duplicates', async () => {
   const oldFind = prisma.dhruService.findMany, oldCatalog = fox.getFoxreloadFullCatalog, oldAll = fox.getFoxreloadAllProducts;
+  const oldAvailable = fox.getAvailableFoxreloadCatalog;
   let records = ['imei', 'server', 'remote'].map(type => ({
     id: `local-${type}`, dhruId: `provider::${type}`, name: `${type} package`, apiServiceType: type,
     groupName: 'Same group name', credit: 10, supportsQty: false,
@@ -149,6 +163,8 @@ test('DHRU single-list clients receive all sections, IDs, fields and accurate re
   prisma.dhruService.findMany = async query => { assert.ok(query.where.OR, 'inactive provider services are excluded'); return records; };
   fox.getFoxreloadFullCatalog = async () => ({ sections });
   fox.getFoxreloadAllProducts = async () => { builds++; return products; };
+  let published;
+  fox.getAvailableFoxreloadCatalog = () => published ||= Promise.all([fox.getFoxreloadFullCatalog(), fox.getFoxreloadAllProducts()]).then(([catalog, products]) => ({ catalog, products, complete: true, refreshing: false }));
   try {
     freshCatalog();
     delete require.cache[require.resolve('./dist/routes/externalApi')];
@@ -187,7 +203,7 @@ test('DHRU single-list clients receive all sections, IDs, fields and accurate re
     records = records.slice(1);
     require('./dist/utils/catalog-revision').invalidateCatalogRevision();
     assert.equal((await request('imeiservicelist')).SUCCESS[0].total_services, 8, 'service edits invalidate previously exported catalogs');
-  } finally { prisma.dhruService.findMany = oldFind; fox.getFoxreloadFullCatalog = oldCatalog; fox.getFoxreloadAllProducts = oldAll; }
+  } finally { prisma.dhruService.findMany = oldFind; fox.getFoxreloadFullCatalog = oldCatalog; fox.getFoxreloadAllProducts = oldAll; fox.getAvailableFoxreloadCatalog = oldAvailable; }
 });
 
 test('FoxReload follows all cursor and offset pages; failed or stalled pagination never becomes a partial success', async () => {
@@ -213,6 +229,109 @@ test('FoxReload follows all cursor and offset pages; failed or stalled paginatio
   await assert.rejects(fox.readFoxreloadProductPages(async () => ({ ok: false, data: {} })), /incomplete catalog/);
   await assert.rejects(fox.readFoxreloadProductPages(async () => ({ ok: true, data: { items: [{ id: 'one' }], total: 2 } })), /incomplete catalog/);
   await assert.rejects(fox.readFoxreloadProductPages(async () => ({ ok: true, data: { items: [{ id: 'one' }], nextCursor: 'same' } })), /did not advance/);
+  const walk = { products: new Map(), cursors: new Set(), cursor: '', offset: 0 };
+  let pageCalls = 0;
+  await assert.rejects(fox.readFoxreloadProductPages(async () => {
+    pageCalls++;
+    return pageCalls === 1 ? { ok: true, data: { items: [{ id: 'saved' }], nextCursor: 'resume' } } : { ok: false, data: {} };
+  }, undefined, 1000, walk), /incomplete catalog/);
+  const resumed = await fox.readFoxreloadProductPages(async url => {
+    assert.equal(new URL(url, 'https://example.test').searchParams.get('cursor'), 'resume');
+    return { ok: true, data: { items: [{ id: 'last' }], total: 2, nextCursor: null } };
+  }, undefined, 1000, walk);
+  assert.deepEqual(resumed.map(product => product.id), ['saved', 'last']);
+});
+
+test('cold or stalled FoxReload never blocks local catalogs; 32 readers return honest readiness and reuse the DB build', async () => {
+  const https = require('node:https');
+  const { EventEmitter } = require('node:events');
+  const oldRequest = https.request, oldSetting = prisma.setting.findUnique, oldFind = prisma.dhruService.findMany;
+  const oldUser = prisma.user.findFirst;
+  let server;
+  const oldKey = process.env.FOXRELOAD_API_KEY;
+  const pending = [];
+  let dbReads = 0, settingReads = 0, releaseImmediately = false;
+  process.env.FOXRELOAD_API_KEY = '';
+  prisma.setting.findUnique = async () => { settingReads++; return { value: JSON.stringify({ apiKey: 'cold-provider-fixture', isEnabled: true, hiddenItems: [] }) }; };
+  prisma.dhruService.findMany = async () => { dbReads++; return ['imei', 'server', 'remote'].map(type => ({ id: type, name: type, apiServiceType: type, groupName: type, credit: 10, dhruCategory: { name: `${type} Service` } })); };
+  https.request = (options, callback) => {
+    const req = new EventEmitter(); req.write = () => {}; req.destroy = () => {};
+    req.end = () => {
+      const finish = () => {
+      const res = new EventEmitter(); res.statusCode = 401;
+      callback(res); res.emit('data', '{"error":"fixture provider unavailable"}'); res.emit('end');
+      };
+      if (releaseImmediately) setImmediate(finish); else pending.push(finish);
+    };
+    return req;
+  };
+  try {
+    fox.clearCatalogCache();
+    const catalog = freshCatalog();
+    const start = performance.now();
+    const results = await withinDeadline(Promise.all(Array.from({ length: 32 }, () => catalog.getDhruCompatibleMergedCatalog(8))), 1500);
+    assert.ok(performance.now() - start < 1500);
+    assert.equal(dbReads, 1);
+    assert.ok(results.every(result => result.totalServices === 3 && result.catalogComplete === false));
+    assert.deepEqual(results[0].refreshingSources, ['foxreload']);
+    const before = settingReads;
+    const remote = await catalog.getDhruCompatibleMergedCatalog(8, 'remote');
+    const imei = await catalog.getDhruCompatibleMergedCatalog(8, 'imei');
+    assert.equal(remote.totalServices, 1); assert.equal(imei.totalServices, 1);
+    assert.equal(remote.catalogComplete, true);
+    assert.equal(settingReads, before, 'local protocol lists never need FoxReload settings or connections');
+    const { dhruCatalogChunks } = require('./dist/utils/streaming-catalog');
+    const body = JSON.parse(Array.from(dhruCatalogChunks(results[0].groupsList, true, 3, false)).join(''));
+    assert.equal(body.SUCCESS[0].catalog_complete, false);
+    assert.deepEqual(body.SUCCESS[0].refreshing_sources, ['foxreload']);
+    assert.ok(require('./dist/routes/providers').getProviderCatalogWarning([{ data: body }]));
+    const express = require('express');
+    const app = express(); app.use(express.json());
+    prisma.user.findFirst = async () => ({ id: 'cold-catalog-client', status: 'active', apiEnabled: true });
+    app.use('/api/v1/provider', require('./dist/routes/externalApi').default);
+    server = app.listen(0, '127.0.0.1');
+    await new Promise(resolve => server.once('listening', resolve));
+    const responses = await withinDeadline(Promise.all(['imeiservicelist', 'serverservicelist', 'remoteservicelist'].map(async action => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/api/v1/provider`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-key': 'catalog-fixture-key' }, body: JSON.stringify({ action })
+      });
+      assert.equal(response.status, 200, 'ready catalog must not turn a cold provider into HTTP 504');
+      const parsed = await response.json();
+      assert.equal(parsed.SUCCESS[0].total_services, action === 'imeiservicelist' ? 3 : 1);
+      const complete = action === 'remoteservicelist';
+      assert.equal(parsed.SUCCESS[0].catalog_complete, complete);
+      assert.equal(response.headers.get('x-catalog-complete'), String(complete));
+      assert.equal(response.headers.get('retry-after'), complete ? null : '5');
+      return parsed;
+    })), 1500);
+    assert.equal(responses.length, 3);
+  } finally {
+    server?.closeAllConnections();
+    if (server) await new Promise(resolve => server.close(resolve));
+    releaseImmediately = true;
+    for (const finish of pending) finish();
+    await new Promise(resolve => setTimeout(resolve, 30));
+    https.request = oldRequest; prisma.setting.findUnique = oldSetting; prisma.dhruService.findMany = oldFind;
+    prisma.user.findFirst = oldUser;
+    if (oldKey === undefined) delete process.env.FOXRELOAD_API_KEY; else process.env.FOXRELOAD_API_KEY = oldKey;
+    fox.clearCatalogCache();
+  }
+});
+
+test('private compressed snapshots survive restarts and reject mismatched settings or incomplete files', async () => {
+  const snapshot = require('./dist/utils/provider-catalog-snapshot');
+  const file = path.join(catalogTestDirectory, 'persisted.jsonl.gz');
+  const products = [{ id: 'product', name: 'Product', costPrice: 0, price: 0 }];
+  await snapshot.saveProviderCatalogSnapshot(file, 'fingerprint', products, { sections: { topups: {} } });
+  assert.deepEqual((await snapshot.loadProviderCatalogSnapshot(file, 'fingerprint')).products, products);
+  assert.equal(await snapshot.loadProviderCatalogSnapshot(file, 'different-settings'), null);
+  await snapshot.saveProviderCatalogSnapshot(file, 'fingerprint', products, { sections: {} }, Date.now() - 25 * 60 * 60 * 1000);
+  assert.equal(await snapshot.loadProviderCatalogSnapshot(file, 'fingerprint'), null, 'metadata updates cannot renew old product freshness');
+  fs.writeFileSync(file, require('node:zlib').gzipSync(JSON.stringify({ version: 1, timestamp: Date.now(), fingerprint: 'fingerprint' }) + '\n' + JSON.stringify({ product: products[0] }) + '\n'));
+  assert.equal(await snapshot.loadProviderCatalogSnapshot(file, 'fingerprint'), null, 'missing completion footer cannot become a successful snapshot');
+  fs.writeFileSync(file, 'invalid gzip');
+  assert.equal(await snapshot.loadProviderCatalogSnapshot(file, 'fingerprint'), null);
+  assert.equal(await snapshot.loadProviderCatalogSnapshot(path.join(catalogTestDirectory, 'missing.gz'), 'fingerprint'), null);
 });
 
 test('a timed-out reader leaves one shared FoxReload refresh running and subsequent clients receive its complete snapshot', async () => {
@@ -248,6 +367,19 @@ test('a timed-out reader leaves one shared FoxReload refresh running and subsequ
     assert.equal(calls, 2, 'timeout and concurrent clients must not restart pagination');
     assert.equal((await fox.getFoxreloadAllProducts()).length, 250);
     assert.equal(calls, 2, 'completed snapshot serves immediately without more provider reads');
+    // Include a published section tree in the restart fixture so background topology
+    // discovery is not needed to verify persisted product readiness.
+    const { createHash } = require('node:crypto');
+    const settings = await fox.getFoxreloadSettings();
+    await require('./dist/utils/provider-catalog-snapshot').saveProviderCatalogSnapshot(
+      path.join(catalogTestDirectory, 'foxreload.jsonl.gz'), createHash('sha256').update(JSON.stringify(settings)).digest('hex'), first,
+      { sections: { topups: { bundles: [] } } }
+    );
+    fox.clearCatalogCache();
+    const restored = await fox.getAvailableFoxreloadCatalog();
+    assert.equal(restored.complete, true);
+    assert.equal(restored.products.length, 250);
+    assert.equal(calls, 2, 'restart restores a complete private snapshot without waiting for upstream');
   } finally {
     https.request = originalRequest; prisma.setting.findUnique = originalSetting; fox.clearCatalogCache();
   }

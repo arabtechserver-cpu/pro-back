@@ -15,6 +15,8 @@ import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emailService';
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
 import { getUploadDir, ensureUploadDir } from '../utils/uploads';
+import { validateBody } from '../middleware/validate';
+import { createDepositTransactionSchema, approveTransactionSchema } from '../schemas/transaction.schema';
 
 const router = Router();
 
@@ -235,7 +237,7 @@ router.get('/receipts/:filename', authenticateToken, async (req: any, res) => {
 });
 
 // POST /api/transactions - Submit New Deposit Transaction
-router.post('/', authenticateToken, async (req: any, res) => {
+router.post('/', authenticateToken, validateBody(createDepositTransactionSchema), async (req: any, res) => {
   try {
     const { amount, method, refNo, receiptImage, type } = req.body;
 
@@ -432,7 +434,7 @@ ${receiptLink}
 });
 
 // POST /api/transactions/approve - Admin Approve Deposit
-router.post('/approve', isAdmin, async (req, res) => {
+router.post('/approve', isAdmin, validateBody(approveTransactionSchema), async (req, res) => {
   try {
     const { transactionId } = req.body;
     if (!transactionId) {

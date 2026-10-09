@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js",
+    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js && node binance-pay-integration.test.js",
     "dev": "nodemon --watch src --exec tsx src/server.ts",
     "build": "npx prisma generate && tsc",
     "start": "node dist/server.js",
@@ -23,9 +23,9 @@
     "@prisma/client": "^5.22.0",
     "@types/archiver": "^8.0.0",
     "archiver": "^8.0.0",
-    "axios": "^1.19.0",
+    "axios": "^1.20.0",
     "bcryptjs": "^3.0.3",
-    "compression": "^1.8.1",
+    "compression": "^1.8.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
     "express-rate-limit": "^8.6.2",
@@ -33,10 +33,14 @@
     "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.6.0",
-    "prisma": "^5.22.0"
+    "prisma": "^5.22.0",
+    "zod": "^3.24.2"
   },
   "overrides": {
-    "qs": "6.16.0"
+    "qs": "6.16.0",
+    "proxy-addr": "^2.0.8",
+    "ip-address": "^10.7.1",
+    "brace-expansion": "^5.0.12"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

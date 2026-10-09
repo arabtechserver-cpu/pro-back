@@ -63,6 +63,14 @@ export const authenticateApi = async (req: any, res: any, next: any) => {
       bearerKey = authHeader.slice(7).trim();
     }
 
+    if (req.query?.apiaccesskey || req.query?.key || req.query?.apiKey) {
+      return res.status(400).json({
+        SUCCESS: [{
+          ERROR: "Insecure request: Passing API keys in URL query parameters is prohibited. Please transmit your API key via Authorization header (Bearer <KEY>), x-api-key header, or request body."
+        }]
+      });
+    }
+
     const apiKey = (
       bearerKey ||
       req.headers['x-api-key'] ||
@@ -71,9 +79,9 @@ export const authenticateApi = async (req: any, res: any, next: any) => {
       req.body?.apiaccesskey ||
       req.body?.key ||
       req.body?.apiKey ||
-      req.query?.apiaccesskey ||
-      req.query?.key ||
-      req.query?.apiKey ||
+
+
+
       ''
     ).toString().trim();
 
@@ -93,9 +101,9 @@ export const authenticateApi = async (req: any, res: any, next: any) => {
     }
 
     // Security warning header when API key is passed in URL query
-    if (req.query?.apiaccesskey || req.query?.key || req.query?.apiKey) {
-      res.setHeader('X-Security-Warning', 'Passing API key in query parameters is insecure. Please use Authorization header or request body.');
-    }
+
+
+
 
     const userWhere: any = {
       apiKey,

@@ -6,6 +6,8 @@ import { dashboardIpGuard } from "../middleware/dashboardIpGuard";
 import { checkAndAutoUpgradeMembership } from "../utils/membershipUpgrade";
 import { prepareApiActivation } from "../utils/api-activation";
 import { ensureStableApiKey } from "../utils/stable-api-key";
+import { validateBody } from "../middleware/validate";
+import { updateCredentialsSchema } from "../schemas/auth.schema";
 
 const router = Router();
 
@@ -154,7 +156,7 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
 });
 
 // POST /api/users/update-credentials - Update self profile credentials
-router.post("/update-credentials", authenticateToken, async (req: any, res) => {
+router.post("/update-credentials", authenticateToken, validateBody(updateCredentialsSchema), async (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ error: "غير مصرح لك" });
@@ -212,11 +214,22 @@ router.post("/update-credentials", authenticateToken, async (req: any, res) => {
       select: { ...safeUserSelect, tokenVersion: true }
     });
     const { tokenVersion, ...safeUpdatedUser } = updatedUser;
+    const newToken = generateToken({ id: updatedUser.id, email: updatedUser.email, role: updatedUser.role, tokenVersion });
+    const isProd = process.env.NODE_ENV === 'production';
+    const isAdminRole = ['admin', 'super_admin'].includes(updatedUser.role);
+    res.cookie?.(isAdminRole ? 'admin_token' : 'user_token', newToken, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: 'lax',
+      maxAge: (isAdminRole ? 12 : 7 * 24) * 60 * 60 * 1000,
+      path: '/'
+    });
+
     return res.json({
       success: true,
       message: "تم تحديث بيانات الحساب بنجاح",
       user: safeUpdatedUser,
-      token: generateToken({ id: updatedUser.id, email: updatedUser.email, role: updatedUser.role, tokenVersion })
+      token: newToken
     });
   } catch (error: any) {
     console.error("Error updating credentials:", error);

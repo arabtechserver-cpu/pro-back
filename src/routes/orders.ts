@@ -10,6 +10,8 @@ import { isAdmin, authenticateToken } from '../middleware/auth';
 import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { getServiceQuantityConfig } from '../utils/provider-quantity';
 import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
+import { validateBody } from '../middleware/validate';
+import { createOrderSchema } from '../schemas/order.schema';
 
 const router = Router();
 
@@ -204,7 +206,7 @@ router.get('/', authenticateToken, async (req: any, res) => {
 });
 
 // POST /api/orders - Create & Save New Order (Saved as PENDING - waiting for admin approval)
-router.post('/', authenticateToken, async (req, res) => {
+router.post('/', authenticateToken, validateBody(createOrderSchema), async (req, res) => {
   try {
     const { serviceId, serviceName, targetInput, rawImei, quantity, notes, customFields, couponCode } = req.body;
 

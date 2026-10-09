@@ -1,6 +1,8 @@
 import { Router } from 'express';
 import { prisma } from "../utils/prisma";
 import { authenticateToken } from '../middleware/auth';
+import { validateBody } from '../middleware/validate';
+import { createWalletRequestSchema } from '../schemas/transaction.schema';
 
 const router = Router();
 
@@ -34,7 +36,7 @@ router.get('/', authenticateToken, async (req: any, res) => {
   }
 });
 
-router.post('/', authenticateToken, async (req: any, res) => {
+router.post('/', authenticateToken, validateBody(createWalletRequestSchema), async (req: any, res) => {
   try {
     const userId = req.user?.id;
     if (!userId) {

@@ -10,11 +10,25 @@ import { createAdminOtpChallenge, verifyAdminOtp, resendAdminOtp } from '../util
 import { turnstileMiddleware } from '../middleware/turnstileMiddleware';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
+import { validateBody } from '../middleware/validate';
+import { registerSchema, loginSchema } from '../schemas/auth.schema';
 import { extractClientIp } from '../utils/ipUtils';
 import { checkIpAccess, logDashboardAccess } from '../services/ipAccessService';
 
 
 const router = Router();
+
+const isProduction = process.env.NODE_ENV === 'production';
+const setAuthCookies = (res: any, token: string, role: string) => {
+  const isAdminRole = ['admin', 'super_admin'].includes(role);
+  res.cookie?.(isAdminRole ? 'admin_token' : 'user_token', token, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'lax',
+    maxAge: (isAdminRole ? 12 : 7 * 24) * 60 * 60 * 1000,
+    path: '/'
+  });
+};
 
 const authLimiter = rateLimit({
   store: new BoundedRateLimitStore(),
@@ -44,7 +58,7 @@ setInterval(() => {
 }, 60 * 1000).unref();
 
 // POST /api/auth/register - Direct & Fast Registration with Cloudflare Turnstile Protection
-router.post('/register', turnstileMiddleware, async (req, res) => {
+router.post('/register', turnstileMiddleware, validateBody(registerSchema), async (req, res) => {
   try {
     const { fullName, email, username, password, country, phone } = req.body;
 
@@ -108,6 +122,7 @@ router.post('/register', turnstileMiddleware, async (req, res) => {
       role: newUser.role,
       tokenVersion: newUser.tokenVersion ?? 1
     }, '7d');
+    setAuthCookies(res, token, newUser.role);
 
     return res.json({
       success: true,
@@ -255,6 +270,8 @@ router.post('/logout', authenticateToken, async (req: any, res) => {
         data: { tokenVersion: { increment: 1 } }
       });
     }
+    res.clearCookie('user_token', { path: '/' });
+    res.clearCookie('admin_token', { path: '/' });
     return res.json({ success: true, message: 'تم تسجيل الخروج وإبطال الجلسة بنجاح' });
   } catch (error: any) {
     console.error('Logout error:', error);
@@ -263,7 +280,7 @@ router.post('/logout', authenticateToken, async (req: any, res) => {
 });
 
 // POST /api/auth/login - Fast Login Authentication with Cloudflare Turnstile Protection
-router.post('/login', turnstileMiddleware, async (req, res) => {
+router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -352,6 +369,7 @@ router.post('/login', turnstileMiddleware, async (req, res) => {
       role: dbUser.role,
       tokenVersion: dbUser.tokenVersion ?? 1
     }, '7d');
+    setAuthCookies(res, token, dbUser.role);
 
     const effectiveDiscount = Math.max(
       dbUser.customDiscount || 0,
@@ -455,6 +473,7 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
       role: dbUser.role,
       tokenVersion: dbUser.tokenVersion ?? 1
     }, '12h');
+    setAuthCookies(res, token, dbUser.role);
     const effectiveDiscount = Math.max(
       dbUser.customDiscount || 0,
       dbUser.membershipTier?.discountPercentage || 0

@@ -7,6 +7,8 @@ import { publicFileGuard } from './middleware/publicFileGuard';
 import { getTrustedProxies } from './utils/trustedProxy';
 import { startTelegramBotPolling } from './utils/telegramService';
 import { createResourceGuard } from './middleware/resourceGuard';
+import rateLimit from 'express-rate-limit';
+import { BoundedRateLimitStore } from './utils/bounded-rate-limit-store';
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
@@ -54,6 +56,17 @@ app.use(cors({
 const generalJsonParser = express.json({ limit: '5mb' });
 const imageJsonParser = express.json({ limit: '15mb' });
 app.use(createResourceGuard());
+
+const globalApiLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
+  windowMs: 60 * 1000,
+  max: 300,
+  message: { error: 'Too many requests. Please slow down.' },
+  validate: { xForwardedForHeader: false },
+  skip: (req) => req.path === '/api/health' || req.path.startsWith('/api/wallet/paypal/webhook') || req.path.startsWith('/api/wallet/binance/webhook')
+});
+
+app.use('/api', globalApiLimiter);
 
 app.use((req, res, next) => {
   if (req.path.startsWith('/api/upload') || req.path.startsWith('/api/transactions')) {
@@ -135,6 +148,7 @@ import uploadRoutes from './routes/upload';
 import usersRoutes from './routes/users';
 import transactionsRoutes from './routes/transactions';
 import paypalRoutes from './routes/paypal';
+import binanceRoutes from './routes/binance';
 import analyticsRoutes from './routes/analytics';
 import backupRoutes from './routes/backup';
 import newsletterRoutes from './routes/newsletter';
@@ -154,6 +168,7 @@ app.use('/api/ai', aiRoutes);
 app.use('/api/orders', ordersRoutes);
 app.use('/api/currencies', currenciesRoutes);
 app.use('/api/wallet/paypal', paypalRoutes);
+app.use('/api/wallet/binance', binanceRoutes);
 app.use('/api/wallet', walletRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/dhru', dhruRoutes);

@@ -7,8 +7,8 @@ import { Readable } from 'stream';
 import { createInterface } from 'readline';
 import { randomUUID } from 'crypto';
 
-export function providerCatalogSnapshotPath(): string {
-  return path.join(process.env.FOXRELOAD_CATALOG_CACHE_DIR || path.join(process.cwd(), 'backups', '.catalog'), 'foxreload.jsonl.gz');
+export function providerCatalogSnapshotPath(section: 'all' | 'esim' = 'all'): string {
+  return path.join(process.env.FOXRELOAD_CATALOG_CACHE_DIR || path.join(process.cwd(), 'backups', '.catalog'), section === 'all' ? 'foxreload.jsonl.gz' : 'foxreload-esim.jsonl.gz');
 }
 
 export async function saveProviderCatalogSnapshot(filePath: string, fingerprint: string, products: any[], catalog: any, timestamp = Date.now()): Promise<void> {

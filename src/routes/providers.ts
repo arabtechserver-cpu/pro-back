@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
 import { getCatalogSection } from '../utils/catalog-section';
+import { fieldChoices } from '../utils/foxreload-contract';
 import https from "https";
 import { withinDeadline } from "../utils/request-deadline";
 import http from "http";
@@ -167,22 +168,7 @@ export function normalizeFieldType(value: any): string {
 }
 
 export function normalizeFieldOptions(value: any): string[] {
-  if (Array.isArray(value)) {
-    return value.map(option => stripHtml(option)).filter(Boolean);
-  }
-  if (value && typeof value === "object") {
-    return Object.values(value).map(option => stripHtml(option)).filter(Boolean);
-  }
-  if (typeof value !== "string") return [];
-
-  const trimmed = value.trim();
-  if (!trimmed) return [];
-  if (trimmed.startsWith("[")) {
-    try {
-      return normalizeFieldOptions(JSON.parse(trimmed));
-    } catch (e) {}
-  }
-  return trimmed.split(/[,\n|]+/).map(option => stripHtml(option)).filter(Boolean);
+  return fieldChoices(value).map(choice => choice.value);
 }
 
 export function isRequiredField(value: any): boolean {
@@ -336,7 +322,8 @@ export function normalizeCustomField(cf: any): any {
   if (isAdminOnly) return null;
 
   const description = stripHtml(String(field.description || field.DESCRIPTION || field.placeholder || field.custominfo || "").trim());
-  const fieldoptions = normalizeFieldOptions(field.fieldoptions ?? field.FIELDOPTIONS ?? field.options);
+  const choices = fieldChoices(field.option_choices ?? field.fieldoptions ?? field.FIELDOPTIONS ?? field.options);
+  const fieldoptions = choices.map(choice => choice.value);
   const rawType = field.fieldtype || field.FIELDTYPE || field.type;
   const normalizedType = normalizeFieldType(rawType);
   const isQty = isQuantityField(field, name);
@@ -349,7 +336,7 @@ export function normalizeCustomField(cf: any): any {
     id: `custom_${rawFieldId}`,
     field_id: rawFieldId,
     name,
-    label: isQty ? "الكمية (Quantity)" : name,
+    label: isQty ? "الكمية (Quantity)" : stripHtml(field.label || name),
     type: resolvedType,
     fieldtype: resolvedType,
     is_quantity: isQty,
@@ -359,6 +346,8 @@ export function normalizeCustomField(cf: any): any {
     placeholder: description || (isQty ? "أدخل الكمية المطلوبة" : `أدخل ${name}`),
     options: fieldoptions,
     fieldoptions,
+    option_choices: choices.map(choice => ({ value: choice.value, label: stripHtml(choice.label) })),
+    provider_field_type: field.provider_field_type || rawType,
     min_quantity: field.min_quantity ?? field.minQty ?? field.min ?? field.MIN ?? field.MINQNT ?? undefined,
     max_quantity: field.max_quantity ?? field.maxQty ?? field.max ?? field.MAX ?? field.MAXQNT ?? undefined
   };
@@ -884,7 +873,7 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
         if (!sId || !sName) continue;
 
         const sCredit = parseFloat(s.CREDIT || s.credit || s.PRICE || s.price || "0") || 0;
-        const sTime = String(s.TIME || s.time || "1-24 Hours");
+        const sTime = String(s.TIME ?? s.time ?? "1-24 Hours");
         const sInfo = String(s.INFO || s.info || "");
         const apiServiceType = normalizeProviderApiServiceType(
           s.SERVICETYPE ?? s.SERVICE_TYPE ?? s.serviceType ?? s.service_type ?? groupType,

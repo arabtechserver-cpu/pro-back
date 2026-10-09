@@ -137,7 +137,7 @@ test('merged catalog includes every bundle and region, coalesces concurrent clie
     assert.deepEqual(a, b);
     assert.equal(calls, 1);
     assert.equal(a.totalServices, 200);
-    assert.equal(a.groupsList.length, 100);
+    assert.equal(a.groupsList.length, 200);
     assert.ok(a.groupsList.every(group => group.section_id === 'topups' && group.GROUPTYPE === 'SERVER'));
     assert.equal(a.groupsList[0].SERVICES[0].PRICE, '10.80');
     const other = await catalog.getDhruCompatibleMergedCatalog(12);
@@ -190,7 +190,7 @@ test('DHRU single-list clients receive all sections, IDs, fields and accurate re
     const imei = rawServices.find(s => s.SERVICETYPE === 'IMEI');
     assert.equal(imei.Requires, 'Serial', 'serial-only services do not get a fabricated IMEI field');
     const topup = rawServices.find(s => s.section_id === 'topups');
-    assert.equal(topup['Requires.Custom'][0].fieldtype, 'dropdown');
+    assert.equal(topup['Requires.Custom'][0].fieldtype, 'select');
     assert.deepEqual(topup['Requires.Custom'][0].fieldoptions, ['EU', 'US']);
     assert.equal(topup.MAXQNT, 100);
     assert.equal(topup['Requires.Custom'].find(field => field.name === 'Extra').required, false);
@@ -204,6 +204,91 @@ test('DHRU single-list clients receive all sections, IDs, fields and accurate re
     require('./dist/utils/catalog-revision').invalidateCatalogRevision();
     assert.equal((await request('imeiservicelist')).SUCCESS[0].total_services, 8, 'service edits invalidate previously exported catalogs');
   } finally { prisma.dhruService.findMany = oldFind; fox.getFoxreloadFullCatalog = oldCatalog; fox.getFoxreloadAllProducts = oldAll; fox.getAvailableFoxreloadCatalog = oldAvailable; }
+});
+
+test('FoxReload regions and complete field contract survive wire export, client import and package lookup', async () => {
+  const oldFind = prisma.dhruService.findMany, oldAvailable = fox.getAvailableFoxreloadCatalog;
+  const options = [{ value: 'eu-1', label: 'Europe' }, { value: 'us-2', label: 'United States' }];
+  const products = ['eu', 'us'].map(region => ({ id: `plan-${region}`, categoryId: region, name: '10 GB / 30 days',
+    costPrice: 1.2345, stock: 0, minQty: 2, maxQty: 7, deliveryType: 'esim', isService: true,
+    description: 'Plan description', userGuide: 'Activation instructions', attributes: { data_gb: 10 },
+    requiredNoteFields: ['Email', 'Region'], noteFieldTypes: { Email: 'email', Region: 'select', retries: 'integer', player_id: 'string' },
+    noteFieldOptions: { Region: options } }));
+  prisma.dhruService.findMany = async () => [];
+  fox.getAvailableFoxreloadCatalog = async () => ({ complete: true, refreshing: false, products,
+    catalog: { sections: { esim: { bundles: [{ id: 'airalo', name: 'Airalo', regions: [{ id: 'eu', name: 'Europe' }, { id: 'us', name: 'United States' }] }] } } } });
+  try {
+    const catalog = freshCatalog();
+    const merged = await catalog.getDhruCompatibleMergedCatalog(0);
+    assert.equal(merged.groupsList.length, 2);
+    const { dhruCatalogChunks } = require('./dist/utils/streaming-catalog');
+    const wire = JSON.parse(Array.from(dhruCatalogChunks(merged.groupsList, true, 2)).join(''));
+    const services = Object.values(wire.SUCCESS[0].LIST).flatMap(group => Object.values(group.SERVICES));
+    assert.deepEqual(services.map(s => s.region_name), ['Europe', 'United States']);
+    assert.notEqual(services[0].GROUPNAME, services[1].GROUPNAME);
+    for (const s of services) {
+      assert.equal(s.product_name, '10 GB / 30 days'); assert.equal(s.bundle_id, 'airalo');
+      assert.deepEqual(s.noteFieldOptions.Region, options); assert.deepEqual(s.requiredNoteFields, ['Email', 'Region']);
+      assert.equal(s.CREDIT, '1.2345'); assert.equal(s.deliveryType, 'esim'); assert.equal(s.quantity, 0);
+      assert.deepEqual(s.attributes, { data_gb: 10 }); assert.match(s.INFO, /description[\s\S]*instructions/);
+      assert.equal(s.CUSTOM.find(f => f.name === 'player_id').required, false);
+      assert.equal(s.CUSTOM.find(f => f.name === 'player_id').type, 'text');
+      assert.deepEqual(s.CUSTOM.find(f => f.name === 'Region').option_choices, options);
+      assert.equal(s.costPrice, undefined);
+    }
+    const { parseAllProviderServices, normalizeCustomField } = require('./dist/routes/providers');
+    const imported = parseAllProviderServices({ data: wire });
+    assert.equal(imported.length, 2);
+    for (const s of imported) {
+      const region = s.customFields.find(f => f.name === 'Region');
+      assert.deepEqual(normalizeCustomField(region).option_choices, options);
+      assert.deepEqual(region.options, ['eu-1', 'us-2']);
+      assert.equal(s.customFields.find(f => f.name === 'retries').required, false);
+      assert.equal(s.minQty, 2); assert.equal(s.maxQty, 7); assert.equal(s.time, '');
+    }
+    const detail = await catalog.getUnifiedPackages(merged.groupsList[0].GROUPID, 0);
+    assert.equal(detail.packages.length, 1); assert.equal(detail.packages[0].region_id, 'eu');
+    assert.deepEqual(detail.packages[0].noteFieldOptions.Region, options);
+    assert.equal(detail.packages[0].stock, 0); assert.equal(detail.packages[0].price, 1.2345);
+  } finally { prisma.dhruService.findMany = oldFind; fox.getAvailableFoxreloadCatalog = oldAvailable; }
+});
+
+test('FoxReload orders preserve optional zero, exact select values and identifiers; reject invalid requirements before billing', async () => {
+  const { validateFoxreloadOrder } = require('./dist/utils/foxreload-contract');
+  const product = { price: '1', orderMinQuantity: 2, orderMaxQuantity: 5, requiredNoteFields: ['Email', 'account_id'],
+    noteFieldTypes: { Email: 'email', account_id: 'string', extra: 'integer', region: 'select' },
+    noteFieldOptions: { region: [{ value: 'eu-1', label: 'Europe' }] } };
+  const valid = validateFoxreloadOrder(product, 2, { Email: 'user@example.test', custom_account_id: '00123', extra: 0, region: 'eu-1', ignored: 'internal' });
+  assert.deepEqual({ ...valid.notes }, { Email: 'user@example.test', account_id: '00123', extra: 0, region: 'eu-1' });
+  for (const qty of [0, 1, 6, 2.5, '2x']) assert.throws(() => validateFoxreloadOrder(product, qty, valid.notes), /Quantity/);
+  assert.throws(() => validateFoxreloadOrder(product, 2, { ...valid.notes, Email: '' }), /Required field: Email/);
+  assert.throws(() => validateFoxreloadOrder(product, 2, { ...valid.notes, region: 'Europe' }), /Invalid option/);
+  assert.throws(() => validateFoxreloadOrder(product, 2, { ...valid.notes, extra: 2.2 }), /Invalid integer/);
+  assert.throws(() => validateFoxreloadOrder({ ...product, quantity: 1 }, 2, valid.notes), /stock/);
+  assert.throws(() => validateFoxreloadOrder({ ...product, price: null }, 2, valid.notes), /unavailable/);
+  assert.deepEqual(Object.keys(validateFoxreloadOrder({ requiredNoteFields: [] }, 1, {}, 'unrelated').notes), []);
+  const oldFind = prisma.dhruService.findFirst, oldApi = fox.callFoxreloadApi, oldTransaction = prisma.$transaction;
+  const oldSettings = fox.getFoxreloadSettings;
+  let writes = 0;
+  prisma.dhruService.findFirst = async () => null;
+  fox.callFoxreloadApi = async () => ({ ok: true, data: product });
+  fox.getFoxreloadSettings = async () => ({ isEnabled: true, hiddenItems: [] });
+  prisma.$transaction = async () => { writes++; throw new Error('Unexpected billing'); };
+  const response = () => ({ status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } });
+  try {
+    delete require.cache[require.resolve('./dist/routes/externalApi')];
+    const api = require('./dist/routes/externalApi').default;
+    const apiHandler = api.stack.find(layer => Array.isArray(layer.route?.path)).route.stack.at(-1).handle;
+    const res = response();
+    await apiHandler({ apiUser: { id: 'client', username: 'client', balance: 100 }, body: { action: 'placeorder', ID: 'plan', QNT: 2 }, query: {}, headers: {}, method: 'POST' }, res);
+    assert.match(res.body.SUCCESS[0].ERROR, /Required field: Email/);
+    const shop = require('./dist/routes/foxreload').default;
+    const shopHandler = shop.stack.find(layer => layer.route?.path === '/order').route.stack.at(-1).handle;
+    const shopRes = response();
+    await shopHandler({ user: { id: 'client' }, body: { productId: 'plan', quantity: 2, notes: {} } }, shopRes);
+    assert.equal(shopRes.statusCode, 400); assert.match(shopRes.body.error, /Required field: Email/);
+    assert.equal(writes, 0);
+  } finally { prisma.dhruService.findFirst = oldFind; fox.callFoxreloadApi = oldApi; prisma.$transaction = oldTransaction; fox.getFoxreloadSettings = oldSettings; }
 });
 
 test('FoxReload follows all cursor and offset pages; failed or stalled pagination never becomes a partial success', async () => {
@@ -314,6 +399,84 @@ test('cold or stalled FoxReload never blocks local catalogs; 32 readers return h
     https.request = oldRequest; prisma.setting.findUnique = oldSetting; prisma.dhruService.findMany = oldFind;
     prisma.user.findFirst = oldUser;
     if (oldKey === undefined) delete process.env.FOXRELOAD_API_KEY; else process.env.FOXRELOAD_API_KEY = oldKey;
+    fox.clearCatalogCache();
+  }
+});
+
+test('eSIM country plans publish independently of a stalled global catalog, paginate descendants and survive restart', async () => {
+  const https = require('node:https');
+  const { EventEmitter } = require('node:events');
+  const oldRequest = https.request, oldSetting = prisma.setting.findUnique, oldFind = prisma.dhruService.findMany;
+  let productReads = 0, treeReads = 0;
+  prisma.setting.findUnique = async () => ({ value: JSON.stringify({ apiKey: 'esim-fixture', isEnabled: true, hiddenItems: [] }) });
+  prisma.dhruService.findMany = async () => [{ id: 'compatibility-check', name: 'Model + eSIM Compatibility [IMEI]', apiServiceType: 'imei', credit: 1, groupName: 'Device checks', dhruCategory: { name: 'IMEI Service' } }];
+  https.request = (options, callback) => {
+    const url = new URL(options.path, 'https://example.test');
+    const req = new EventEmitter(); req.write = () => {}; req.destroy = () => {};
+    req.end = () => setTimeout(() => {
+      const res = new EventEmitter(); let data;
+      res.statusCode = 200;
+      if (url.pathname === '/api/categories/tree' && url.searchParams.get('parentId') === 'esim') {
+        treeReads++;
+        data = { items: [{ id: 'egypt', name: 'Egypt', inStockCount: 1, hasProducts: true, children: [] }, { id: 'airalo', name: 'Airalo', inStockCount: 1, children: [{ id: 'global', name: 'Airalo Global', hasProducts: true, inStockCount: 1 }] }] };
+      } else if (url.pathname === '/api/products/' && url.searchParams.get('categoryId') === 'esim') {
+        productReads++;
+        assert.equal(url.searchParams.get('includeDescendants'), 'true');
+        assert.equal(url.searchParams.has('offset'), false, 'subtree pagination must follow cursor instead of direct-category offsets');
+        const second = url.searchParams.has('cursor');
+        data = { items: [{ id: second ? 'global-plan' : 'egypt-plan', name: '10 GB / 30 days', categoryId: second ? 'global' : 'egypt', price: 5, quantity: 999, requiredNoteFields: ['Email'], noteFieldTypes: { Email: 'email' } }], total: 2, nextCursor: second ? null : 'second-country' };
+      } else { res.statusCode = 401; data = { error: 'global provider fixture unavailable' }; }
+      callback(res); res.emit('data', JSON.stringify(data)); res.emit('end');
+    }, 5);
+    return req;
+  };
+  try {
+    fox.clearCatalogCache();
+    await assert.rejects(fox.getFoxreloadEsimProducts(false, 1), RequestDeadlineError);
+    const results = await Promise.all(Array.from({ length: 16 }, () => fox.getFoxreloadEsimProducts(false, 500)));
+    assert.equal(productReads, 2); assert.equal(treeReads, 1);
+    assert.ok(results.every(products => products === results[0] && products.length === 2));
+    const available = await fox.getAvailableFoxreloadCatalog();
+    assert.equal(available.complete, false); assert.deepEqual(available.completeSections, ['esim']);
+    const catalog = freshCatalog();
+    const scoped = await catalog.getDhruCompatibleMergedCatalog(8, 'all', 'esim');
+    assert.equal(scoped.totalServices, 2); assert.equal(scoped.catalogComplete, true);
+    assert.deepEqual(scoped.refreshingSources, []);
+    assert.ok(scoped.groupsList.every(group => group.section_id === 'esim' && group.GROUPTYPE === 'SERVER'));
+    assert.deepEqual(scoped.groupsList.flatMap(group => group.SERVICES.map(service => service.SERVICEID)).sort(), ['egypt-plan', 'global-plan']);
+    assert.equal(scoped.groupsList[0].SERVICES[0].CUSTOM[0].fieldtype, 'email');
+    const all = await catalog.getDhruCompatibleMergedCatalog(8);
+    assert.equal(all.totalServices, 3); assert.equal(all.catalogComplete, false);
+    await new Promise(resolve => setTimeout(resolve, 40));
+    fox.clearCatalogCache();
+    const restored = await fox.getAvailableFoxreloadCatalog();
+    assert.deepEqual(restored.completeSections, ['esim']);
+    assert.equal(restored.products.length, 2);
+    assert.equal(productReads, 2, 'persisted eSIM plans require no new provider walk after restart');
+    const fingerprint = require('node:crypto').createHash('sha256').update(JSON.stringify(await fox.getFoxreloadSettings())).digest('hex');
+    await require('./dist/utils/provider-catalog-snapshot').saveProviderCatalogSnapshot(
+      path.join(catalogTestDirectory, 'foxreload.jsonl.gz'), fingerprint,
+      [{ ...results[0][0], costPrice: 9 }, { id: 'other-product', name: 'Other product', categoryId: 'other', costPrice: 1, price: 1 }],
+      { sections: { topups: { bundles: [] } } }, Date.now() - 1000
+    );
+    await new Promise(resolve => setTimeout(resolve, 40));
+    fox.clearCatalogCache();
+    const combined = await fox.getAvailableFoxreloadCatalog();
+    assert.equal(combined.products.length, 3, 'overlapping global and eSIM products are exported once');
+    assert.equal(new Set(combined.products.map(product => product.id)).size, 3);
+    assert.equal(combined.products.find(product => product.id === 'egypt-plan').costPrice, 5, 'fresh section prices override the older global snapshot');
+    await require('./dist/utils/provider-catalog-snapshot').saveProviderCatalogSnapshot(
+      path.join(catalogTestDirectory, 'foxreload.jsonl.gz'), fingerprint,
+      [{ ...results[0][0], costPrice: 11 }], { sections: {} }, Date.now() + 500
+    );
+    await new Promise(resolve => setTimeout(resolve, 40));
+    fox.clearCatalogCache();
+    const newerGlobal = await fox.getAvailableFoxreloadCatalog();
+    assert.equal(newerGlobal.products.length, 1, 'older eSIM snapshots cannot resurrect stock removed by a newer complete global list');
+    assert.equal(newerGlobal.products[0].costPrice, 11, 'newer global prices take precedence');
+  } finally {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    https.request = oldRequest; prisma.setting.findUnique = oldSetting; prisma.dhruService.findMany = oldFind;
     fox.clearCatalogCache();
   }
 });

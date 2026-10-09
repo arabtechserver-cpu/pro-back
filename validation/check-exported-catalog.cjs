@@ -4,7 +4,7 @@ const envPath = path.join(__dirname, '..', '.env');
 if (require('node:fs').existsSync(envPath)) process.loadEnvFile(envPath);
 const { prisma } = require('../dist/utils/prisma');
 const { getDhruCompatibleMergedCatalog } = require('../dist/services/unifiedCatalogService');
-const { getFoxreloadAllProducts, getFoxreloadFullCatalog, callFoxreloadApi } = require('../dist/services/foxreloadService');
+const { getFoxreloadAllProducts, getFoxreloadFullCatalog, getFoxreloadEsimProducts, callFoxreloadApi } = require('../dist/services/foxreloadService');
 
 (async () => {
   const started = performance.now();
@@ -15,10 +15,12 @@ const { getFoxreloadAllProducts, getFoxreloadFullCatalog, callFoxreloadApi } = r
       elapsedMs: Math.round(performance.now() - started) }, null, 2));
     return;
   }
-  if (!process.argv.includes('--available')) await Promise.all([getFoxreloadFullCatalog(), getFoxreloadAllProducts(false, 15 * 60 * 1000)]);
+  const esimOnly = process.argv.includes('--esim');
+  if (esimOnly) await getFoxreloadEsimProducts(false, 15 * 60 * 1000);
+  else if (!process.argv.includes('--available')) await Promise.all([getFoxreloadFullCatalog(), getFoxreloadAllProducts(false, 15 * 60 * 1000)]);
   const warmupMs = Math.round(performance.now() - started);
   const requestStarted = performance.now();
-  const catalog = await getDhruCompatibleMergedCatalog(8);
+  const catalog = await getDhruCompatibleMergedCatalog(8, esimOnly ? 'server' : 'all', esimOnly ? 'esim' : undefined);
   const sections = {};
   const protocols = {};
   const ids = new Set();
@@ -44,5 +46,5 @@ const { getFoxreloadAllProducts, getFoxreloadFullCatalog, callFoxreloadApi } = r
   process.exitCode = 1;
 }).finally(async () => {
   await prisma.$disconnect();
-  if (process.argv.includes('--available')) process.exit(process.exitCode || 0);
+  if (process.argv.includes('--available') || process.argv.includes('--esim')) process.exit(process.exitCode || 0);
 });

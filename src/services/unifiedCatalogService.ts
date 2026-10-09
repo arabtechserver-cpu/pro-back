@@ -17,6 +17,7 @@ import { BoundedCache } from '../utils/bounded-cache';
 import { AsyncGate } from '../utils/async-gate';
 import { getCatalogRevision } from '../utils/catalog-revision';
 import { getCatalogSection } from '../utils/catalog-section';
+import { foxreloadCustomFields } from '../utils/foxreload-contract';
 const mergedBuilds = new AsyncGate(1, 64, 22000);
 
 function dhruGroupId(name: string): string {
@@ -368,8 +369,29 @@ export async function getUnifiedPackages(
     include: { dhruCategory: true }
   }).then((services) => isDhruGroup ? services.filter((srv) => {
     const name = srv.groupName || srv.dhruCategory?.name || 'سيرفر عام';
-    return dhruGroupId(name) === targetId || `dhru-group-${Buffer.from(name).toString('hex').slice(0, 16)}` === targetId;
+    const resolved = resolveOrderServiceType(srv.apiServiceType, srv.dhruCategory?.name, srv.groupName);
+    const type = resolved === 'unknown' ? 'server' : resolved;
+    const section = getCatalogSection(type, srv.dhruCategory?.name, name);
+    return dhruGroupId(JSON.stringify([type, section, name])) === targetId || dhruGroupId(name) === targetId || `dhru-group-${Buffer.from(name).toString('hex').slice(0, 16)}` === targetId;
   }) : services);
+  if (isDhruGroup && dhruServices.length === 0) {
+    const merged = await getDhruCompatibleMergedCatalog(margin);
+    const group = merged.groupsObject[targetId];
+    if (group?.bundle_id) {
+      return { serviceName: group.GROUPNAME, sectionId: group.section_id,
+        packages: Object.values(group.SERVICES).map((s: any) => {
+          const price = Number(s.CREDIT);
+          const costPrice = Number((price / (1 + margin / 100)).toFixed(4));
+          return { id: s.SERVICEID, slug: s.slug, name: s.product_name, description: s.description,
+            serviceId: group.GROUPID, serviceName: group.GROUPNAME, sectionId: group.section_id,
+            costPrice, price, marginAmount: price - costPrice, marginPercent: margin, currency: s.currency,
+            stock: s.stock, minQty: s.orderMinQuantity, maxQty: s.orderMaxQuantity, deliveryType: s.deliveryType,
+            isService: s.isService, requiredFields: s.requiredNoteFields, noteFieldTypes: s.noteFieldTypes,
+            noteFieldOptions: s.noteFieldOptions, userGuide: s.userGuide, attributes: s.attributes,
+            bundle_id: s.bundle_id, bundle_name: s.bundle_name, region_id: s.region_id, region_name: s.region_name };
+        }) };
+    }
+  }
   const foxCatalog = (isDhruGroup || dhruServices.length > 0) ? null : await getFoxreloadFullCatalog(false);
   let foundBundle: any = null;
   let sectionKey = 'topups';
@@ -429,17 +451,21 @@ export async function getUnifiedPackages(
         marginAmount,
         marginPercent: margin,
         currency: 'USD',
-        stock: p.stock || 999,
+        stock: p.stock ?? 0,
         minQty: p.minQty || 1,
         maxQty: p.maxQty,
         deliveryType: p.deliveryType || 'code',
         isService: Boolean(p.isService),
-        requiredFields: Array.isArray(p.requiredNoteFields) && p.requiredNoteFields.length > 0
-          ? p.requiredNoteFields
-          : (p.isService ? ['account_id'] : []),
+        requiredFields: Array.isArray(p.requiredNoteFields) ? p.requiredNoteFields : [],
         noteFieldTypes: p.noteFieldTypes,
         noteFieldOptions: p.noteFieldOptions,
-        userGuide: p.userGuide
+        userGuide: p.userGuide,
+        attributes: p.attributes,
+        categoryId: p.categoryId,
+        bundle_id: foundBundle?.id || p.categoryId,
+        bundle_name: foundBundle?.name || sName,
+        region_id: foundBundle?.regions?.find((region: any) => region.id === p.categoryId)?.id || null,
+        region_name: foundBundle?.regions?.find((region: any) => region.id === p.categoryId)?.name || null
       };
     });
 
@@ -600,8 +626,8 @@ export async function getDhruCompatibleMergedCatalog(
       groupsList,
       groupsObject: Object.fromEntries(groupsList.map((group: any) => [group.GROUPID, { ...group, SERVICES: group.services_map }])),
       totalServices: groupsList.reduce((total: number, group: any) => total + group.SERVICES.length, 0),
-      catalogComplete: data.catalogComplete,
-      refreshingSources: data.catalogComplete ? [] : ['foxreload']
+      catalogComplete: data.catalogComplete || (data.completeSections || []).includes(section),
+      refreshingSources: data.catalogComplete || (data.completeSections || []).includes(section) ? [] : ['foxreload']
     };
   };
   if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return select(cached.data);
@@ -630,8 +656,8 @@ async function buildDhruCompatibleMergedCatalog(
   const groupsObject: Record<string, any> = {};
   let totalServicesCount = 0;
 
-  const ensureGroup = (groupName: string, categoryName: string, type: string, sectionId: string) => {
-    const groupId = dhruGroupId(JSON.stringify([type, sectionId, groupName]));
+  const ensureGroup = (groupName: string, categoryName: string, type: string, sectionId: string, sourceIdentity?: string[]) => {
+    const groupId = dhruGroupId(JSON.stringify([type, sectionId, ...(sourceIdentity || [groupName])]));
     if (!groupsMap.has(groupId)) {
       const g = {
         GROUPID: groupId,
@@ -671,40 +697,55 @@ async function buildDhruCompatibleMergedCatalog(
         { sec: foxCatalog.sections.popular, name: SECTION_METADATA.popular.nameAr, key: 'popular' }
       ];
 
-      const categoryGroups = new Map<string, { bundle: any; secName: string; sectionId: string }>();
+      const categoryGroups = new Map<string, { bundle: any; region?: any; secName: string; sectionId: string }>();
 
       for (const config of sectionConfigs) {
         if (!config.sec?.bundles) continue;
         for (const b of config.sec.bundles) {
-          for (const id of [b.id, ...(b.regions || []).map((region: any) => region.id)]) {
-            if (!categoryGroups.has(id)) categoryGroups.set(id, { bundle: b, secName: config.name, sectionId: config.key });
+          if (!categoryGroups.has(b.id)) categoryGroups.set(b.id, { bundle: b, secName: config.name, sectionId: config.key });
+          for (const region of b.regions || []) {
+            if (!categoryGroups.has(region.id)) categoryGroups.set(region.id, { bundle: b, region, secName: config.name, sectionId: config.key });
           }
         }
       }
 
       for (const p of foxProducts) {
-        const { bundle, secName, sectionId } = categoryGroups.get(p.categoryId) || {
-          bundle: { name: p.categoryId || 'Other Services' }, secName: 'Server Services', sectionId: 'dhru-server'
+        const fallbackSection = p.categorySlug === 'esim' ? 'esim' : 'dhru-server';
+        const { bundle, region, secName, sectionId } = categoryGroups.get(p.categoryId) || {
+          bundle: { name: p.categoryId || 'Other Services' }, secName: SECTION_METADATA[fallbackSection].nameAr, sectionId: fallbackSection
         };
         if (p.isHidden || bundle.isHidden) continue;
-        const groupName = `[${secName}] ${bundle.name}`;
-        const targetGroup = ensureGroup(groupName, secName, 'server', sectionId);
+        const pathName = [bundle.name, region?.name].filter(Boolean).join(' / ');
+        const groupName = `[${secName}] ${pathName}`;
+        const targetGroup = ensureGroup(groupName, secName, 'server', sectionId, ['foxreload', bundle.id || p.categoryId, region?.id || p.categoryId]);
+        const hierarchy = { bundle_id: bundle.id || p.categoryId, bundle_name: bundle.name,
+          region_id: region?.id || null, region_name: region?.name || null, categoryId: p.categoryId };
+        Object.assign(targetGroup, hierarchy);
 
         if (targetGroup.services_map[p.id]) continue;
         const baseCost = Math.max(0, p.costPrice || 0);
         const finalPrice = Number((baseCost * (1 + margin / 100)).toFixed(4));
         const reqFields = Array.isArray(p.requiredNoteFields) ? p.requiredNoteFields : [];
-        const fieldNames = Array.from(new Set([...reqFields, ...Object.keys(p.noteFieldTypes || {}), ...Object.keys(p.noteFieldOptions || {})]));
-        const customFields = fieldNames.map((f: string) => ({
-          name: f, fieldname: f, label: f,
-          type: 'serviceserver',
-          fieldtype: p.noteFieldTypes?.[f] || (p.noteFieldOptions?.[f] ? 'dropdown' : 'text'),
-          options: p.noteFieldOptions?.[f] || [],
-          fieldoptions: p.noteFieldOptions?.[f] || [],
-          required: reqFields.includes(f)
-        }));
+        const customFields = foxreloadCustomFields(p);
+        const instructions = Array.from(new Set([p.description, p.userGuide].filter(Boolean))).join('\n\n');
 
         const srvItem = {
+          ...hierarchy,
+          product_name: p.name,
+          slug: p.slug,
+          description: p.description,
+          userGuide: p.userGuide,
+          attributes: p.attributes,
+          deliveryType: p.deliveryType,
+          isService: p.isService,
+          stock: p.stock,
+          quantity: p.stock,
+          currency: 'USD',
+          requiredNoteFields: reqFields,
+          noteFieldTypes: p.noteFieldTypes || {},
+          noteFieldOptions: p.noteFieldOptions || {},
+          orderMinQuantity: p.minQty || 1,
+          orderMaxQuantity: p.maxQty ?? null,
           SERVICETYPE: 'SERVER',
           service_type: 'server',
           api_service_type: 'server',
@@ -715,17 +756,17 @@ async function buildDhruCompatibleMergedCatalog(
           service_id: p.id,
           ID: p.id,
           id: p.id,
-          SERVICENAME: `${bundle.name} - ${p.name}`,
-          service_name: `${bundle.name} - ${p.name}`,
-          name: `${bundle.name} - ${p.name}`,
-          CREDIT: finalPrice.toFixed(2),
-          credit: finalPrice.toFixed(2),
-          PRICE: finalPrice.toFixed(2),
-          price: finalPrice.toFixed(2),
-          TIME: "فوري (Instant Delivery)",
-          time: "Instant",
-          INFO: p.description || p.userGuide || "",
-          info: p.description || p.userGuide || "",
+          SERVICENAME: `${pathName} - ${p.name}`,
+          service_name: `${pathName} - ${p.name}`,
+          name: `${pathName} - ${p.name}`,
+          CREDIT: finalPrice.toFixed(4).replace(/00$/, ''),
+          credit: finalPrice.toFixed(4).replace(/00$/, ''),
+          PRICE: finalPrice.toFixed(4).replace(/00$/, ''),
+          price: finalPrice.toFixed(4).replace(/00$/, ''),
+          TIME: '',
+          time: '',
+          INFO: instructions,
+          info: instructions,
           GROUPNAME: groupName,
           group_name: groupName,
           GroupName: groupName,
@@ -866,7 +907,8 @@ async function buildDhruCompatibleMergedCatalog(
     groupsList,
     groupsObject: formattedGroupsObject,
     totalServices: totalServicesCount,
-    catalogComplete: available.complete
+    catalogComplete: available.complete,
+    completeSections: available.completeSections || []
   };
 
   return finalPayload;

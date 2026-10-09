@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { prisma } from '../utils/prisma';
 import { authenticateToken, isAdmin } from '../middleware/auth';
+import { validateFoxreloadOrder } from '../utils/foxreload-contract';
 import {
   getFoxreloadSettings,
   updateFoxreloadSettings,
@@ -95,12 +96,10 @@ router.post('/order', authenticateToken, async (req: any, res) => {
       return res.status(401).json({ error: 'يرجى تسجيل الدخول أولاً لإتمام عملية الشراء' });
     }
 
-    const { productId, quantity = 1, targetInput, notes = {} } = req.body;
+    const { productId, quantity = 1, targetInput, notes: incomingNotes = {} } = req.body;
     if (!productId) {
       return res.status(400).json({ error: 'معرف المنتج مطلوب' });
     }
-
-    const qty = Math.max(1, parseInt(String(quantity), 10) || 1);
 
     const settings = await getFoxreloadSettings();
     if (!settings.isEnabled) {
@@ -117,6 +116,10 @@ router.post('/order', authenticateToken, async (req: any, res) => {
     }
 
     const product = prodRes.data;
+    let contract;
+    try { contract = validateFoxreloadOrder(product, quantity, incomingNotes, targetInput); }
+    catch (error: any) { return res.status(400).json({ error: error.message }); }
+    const { quantity: qty, notes } = contract;
     const cost = parseFloat(product.price || '0') || 0;
     const { finalPrice } = computeClientPrice(cost, productId, settings);
     const totalPrice = Number((finalPrice * qty).toFixed(2));

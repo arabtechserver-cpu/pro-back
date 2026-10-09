@@ -2,6 +2,7 @@ import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
 import { BoundedCache } from '../utils/bounded-cache';
 import { withinDeadline, RequestDeadlineError } from '../utils/request-deadline';
+import { validateFoxreloadOrder } from '../utils/foxreload-contract';
 import rateLimit from 'express-rate-limit';
 import { prisma } from '../utils/prisma';
 import { streamDhruCatalog } from '../utils/streaming-catalog';
@@ -262,8 +263,8 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
     return res.json({ SUCCESS: [{ ERROR: "Service ID (ID) is required" }] });
   }
 
-  const rawQty = parseInt(parsedParams.QNT || parsedParams.quantity || parsedParams.custom_QNT || '1', 10) || 1;
-  const finalQty = Math.max(1, rawQty);
+  const requestedQty = parsedParams.QNT ?? parsedParams.quantity ?? parsedParams.custom_QNT ?? 1;
+  let finalQty = Math.max(1, parseInt(String(requestedQty), 10) || 1);
 
   // Parse custom parameters
   let customFieldsObj: Record<string, string> = {};
@@ -364,6 +365,16 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
     return res.json({ SUCCESS: [{ ERROR: "Service not found or inactive" }] });
   }
 
+  let foxNotes: Record<string, string | number> = {};
+  if (foxProduct) {
+    try {
+      const notes = parsedParams.notes && typeof parsedParams.notes === 'object' ? parsedParams.notes : {};
+      const contract = validateFoxreloadOrder(foxProduct, requestedQty, { ...parsedParams, ...notes, ...customFieldsObj }, rawImei);
+      finalQty = contract.quantity;
+      foxNotes = contract.notes;
+    } catch (error: any) { return res.json({ SUCCESS: [{ ERROR: error.message }] }); }
+  }
+
   // Calculate pricing
   const baseCost = dhruService
     ? Math.max(0, dhruService.credit || 0)
@@ -410,22 +421,7 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
   // Scenario A: FoxReload Gaming / Digital Product
   // ----------------------------------------------------
   if (foxProduct) {
-    const notesPayload: Record<string, any> = {};
-    const reqNoteFields = Array.isArray(foxProduct.requiredNoteFields) ? foxProduct.requiredNoteFields : [];
-
-    for (const field of reqNoteFields) {
-      const fieldVal = customFieldsObj[field] ||
-        parsedParams[field] ||
-        (field === 'account_id' || field === 'player_id' || field === 'id' ? finalTargetInput : undefined);
-
-      if (fieldVal) {
-        notesPayload[field] = fieldVal;
-      }
-    }
-
-    if (Object.keys(notesPayload).length === 0 && finalTargetInput) {
-      notesPayload['account_id'] = finalTargetInput;
-    }
+    const notesPayload = foxNotes;
 
     const structuredNotes = JSON.stringify({
       userNote: `طلب API ألعاب: ${foxProduct.name} من (@${user.username})`,

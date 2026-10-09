@@ -379,6 +379,11 @@ let snapshotWriteRequested = false;
 let nextCatalogRefreshAt = 0;
 export type ProductWalkState = { products: Map<string, any>; cursors: Set<string>; cursor: string; offset: number };
 let resumableProductWalk: { revision: number; state: ProductWalkState } | null = null;
+let esimSnapshot: { timestamp: number; data: FoxreloadProduct[]; catalog: any } | null = null;
+let esimInFlight: Promise<FoxreloadProduct[]> | null = null;
+let esimWalk: { revision: number; state: ProductWalkState } | null = null;
+let nextEsimRefreshAt = 0;
+let productsView: { all: FoxreloadProduct[]; esim: FoxreloadProduct[]; data: FoxreloadProduct[] } | null = null;
 
 function newProductWalk(): ProductWalkState { return { products: new Map(), cursors: new Set(), cursor: '', offset: 0 }; }
 
@@ -424,6 +429,11 @@ export function clearCatalogCache() {
   snapshotRestoreAttempted = false;
   nextCatalogRefreshAt = 0;
   resumableProductWalk = null;
+  esimSnapshot = null;
+  esimInFlight = null;
+  esimWalk = null;
+  nextEsimRefreshAt = 0;
+  productsView = null;
 }
 
 // Follow the documented offset/cursor pagination; publish only complete snapshots.
@@ -431,15 +441,18 @@ export async function readFoxreloadProductPages(
   fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; data: any }>,
   categoryId?: string,
   budgetMs = 22000,
-  state: ProductWalkState = newProductWalk()
+  state: ProductWalkState = newProductWalk(),
+  includeDescendants = false
 ): Promise<any[]> {
   const started = Date.now();
   const { products, cursors } = state;
+  const useCursor = !categoryId || includeDescendants;
   while (true) {
     if (Date.now() - started >= budgetMs) throw new RequestDeadlineError();
     const query = new URLSearchParams({ withStockOnly: 'true', limit: '200' });
-    if (categoryId) { query.set('categoryId', categoryId); query.set('offset', String(state.offset)); }
-    else { query.set('includeDescendants', 'true'); if (state.cursor) query.set('cursor', state.cursor); }
+    if (categoryId) query.set('categoryId', categoryId);
+    if (useCursor) { query.set('includeDescendants', 'true'); if (state.cursor) query.set('cursor', state.cursor); }
+    else query.set('offset', String(state.offset));
     const response = await fetchPage(`/api/products/?${query}`, Math.min(10000, budgetMs - (Date.now() - started)));
     if (!response.ok || !Array.isArray(response.data?.items)) {
       throw new ProductPageUnavailable('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published');
@@ -453,7 +466,7 @@ export async function readFoxreloadProductPages(
     const next = typeof page.nextCursor === 'string' ? page.nextCursor : '';
     const total = Number(page.total);
     const limit = Number(page.limit) || 200;
-    if (!categoryId) {
+    if (useCursor) {
       if (!next) {
         if (Number.isFinite(total) && total > products.size) throw new Error('FoxReload returned an incomplete catalog without a next cursor');
         break;
@@ -498,6 +511,7 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
       if (resumableProductWalk === walk) resumableProductWalk = null;
       if (revision === foxCatalogRevision) {
         lastProductsSnapshot = { timestamp: Date.now(), data };
+        productsView = null;
         invalidateCatalogRevision();
         await persistAvailableSnapshot();
       }
@@ -524,6 +538,65 @@ export interface AvailableFoxreloadCatalog {
   products: FoxreloadProduct[];
   complete: boolean;
   refreshing: boolean;
+  completeSections?: string[];
+}
+
+// eSIM plans are named by allowance/duration and country, so searching for the
+// word "esim" misses them. Load the actual category subtree, independently of
+// the much larger global product walk, and publish only its complete snapshot.
+export async function getFoxreloadEsimProducts(forceRefresh = false, waitMs = 22000): Promise<FoxreloadProduct[]> {
+  const cached = esimSnapshot;
+  if (!forceRefresh && cached && Date.now() - cached.timestamp < CACHE_TTL_MS) return cached.data;
+  if (!esimInFlight) {
+    const revision = foxCatalogRevision;
+    const work = (async () => {
+      const settings = await getFoxreloadSettings();
+      if (!settings.isEnabled || !settings.apiKey) return [];
+      const hidden = new Set(settings.hiddenItems);
+      if (!esimWalk || esimWalk.revision !== revision) esimWalk = { revision, state: newProductWalk() };
+      const walk = esimWalk;
+      const deadline = Date.now() + 15 * 60 * 1000;
+      const [treeResult, productsResult] = await Promise.allSettled([
+        fetchParentTree('esim', 'esim', settings, hidden, revision),
+        readFoxreloadProductPages(async (endpoint, budget) => {
+          if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
+          let response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, budget);
+          if (!response.ok && (response.status >= 500 || response.status === 429)) {
+            const remaining = deadline - Date.now();
+            if (remaining <= 0) throw new RequestDeadlineError();
+            response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
+          }
+          return response;
+        }, 'esim', 15 * 60 * 1000, walk.state, true)
+      ]);
+      // Keep the shared refresh alive until both readers settle, even when one
+      // fails early; a new caller must not start a second pagination walk.
+      if (productsResult.status === 'rejected') throw productsResult.reason;
+      if (treeResult.status === 'rejected') throw new ProductPageUnavailable('FoxReload eSIM category tree is temporarily unavailable');
+      const bundles = treeResult.value, items = productsResult.value;
+      if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
+      const data = items.map(item => mapProductItem(item, settings, hidden, 'esim')).filter(isValidProduct);
+      walk.state.products.clear(); items.length = 0;
+      if (esimWalk === walk) esimWalk = null;
+      const catalog = { sections: { esim: { id: 'esim', nameAr: 'شرائح الإنترنت eSIM', nameEn: 'eSIM', bundles } } };
+      esimSnapshot = { timestamp: Date.now(), data, catalog };
+      productsView = null;
+      invalidateCatalogRevision();
+      await saveProviderCatalogSnapshot(providerCatalogSnapshotPath('esim'), settingsFingerprint(settings), data, catalog, esimSnapshot.timestamp)
+        .catch(() => console.warn('[Catalog Snapshot] Unable to persist eSIM snapshot; complete in-memory plans remain available.'));
+      return data;
+    })();
+    const pending = work.catch(error => {
+      if (revision === foxCatalogRevision) {
+        if (!(error instanceof ProductPageUnavailable) && !(error instanceof RequestDeadlineError)) esimWalk = null;
+        nextEsimRefreshAt = Date.now() + 30000;
+      }
+      throw error;
+    }).finally(() => { if (esimInFlight === pending) esimInFlight = null; });
+    esimInFlight = pending;
+  }
+  if (!forceRefresh && cached) { esimInFlight.catch(() => {}); return cached.data; }
+  return withinDeadline(esimInFlight, waitMs);
 }
 
 export async function getAvailableFoxreloadCatalog(): Promise<AvailableFoxreloadCatalog> {
@@ -534,26 +607,46 @@ export async function getAvailableFoxreloadCatalog(): Promise<AvailableFoxreload
   if (!lastProductsSnapshot && !snapshotRestoreAttempted) {
     snapshotRestoreAttempted = true;
     const revision = foxCatalogRevision;
-    snapshotRestore = loadProviderCatalogSnapshot(providerCatalogSnapshotPath(), settingsFingerprint(settings)).then(snapshot => {
+    snapshotRestore = loadProviderCatalogSnapshot(providerCatalogSnapshotPath(), settingsFingerprint(settings)).then(async snapshot => {
       if (snapshot && revision === foxCatalogRevision && !lastProductsSnapshot) {
         lastProductsSnapshot = { timestamp: snapshot.timestamp, data: snapshot.products };
+        productsView = null;
         if (!catalogCache && Object.keys(snapshot.catalog?.sections || {}).length) catalogCache = { timestamp: snapshot.timestamp, data: snapshot.catalog };
+        invalidateCatalogRevision();
+      }
+      const esim = await loadProviderCatalogSnapshot(providerCatalogSnapshotPath('esim'), settingsFingerprint(settings));
+      if (esim?.catalog?.sections?.esim && revision === foxCatalogRevision && !esimSnapshot) {
+        esimSnapshot = { timestamp: esim.timestamp, data: esim.products, catalog: esim.catalog };
+        productsView = null;
         invalidateCatalogRevision();
       }
     });
   }
   if (snapshotRestore) await withinDeadline(snapshotRestore, 1000).catch(() => {});
+  if (Date.now() >= nextEsimRefreshAt) getFoxreloadEsimProducts(false, 15 * 60 * 1000).catch(() => {});
   // HTTP catalog readers never wait for the external provider. A shared background
   // job fills the complete snapshot; an old complete snapshot stays usable.
   if (Date.now() >= nextCatalogRefreshAt) {
     getFoxreloadFullCatalog(false).catch(() => {});
     getFoxreloadAllProducts(false, 15 * 60 * 1000).catch(() => {});
   }
+  const catalog = catalogCache?.data || { sections: {} };
+  let products = lastProductsSnapshot?.data || esimSnapshot?.data || [];
+  if (lastProductsSnapshot && esimSnapshot && esimSnapshot.timestamp > lastProductsSnapshot.timestamp) {
+    if (!productsView || productsView.all !== lastProductsSnapshot.data || productsView.esim !== esimSnapshot.data) {
+      const unique = new Map(lastProductsSnapshot.data.map(product => [product.id, product]));
+      for (const product of esimSnapshot.data) unique.set(product.id, product);
+      productsView = { all: lastProductsSnapshot.data, esim: esimSnapshot.data, data: Array.from(unique.values()) };
+    }
+    products = productsView.data;
+  }
   return {
-    catalog: catalogCache?.data || { sections: {} },
-    products: lastProductsSnapshot?.data || [],
+    catalog: esimSnapshot && (!catalog.sections.esim || esimSnapshot.timestamp > (catalogCache?.timestamp || 0))
+      ? { ...catalog, sections: { ...catalog.sections, esim: esimSnapshot.catalog.sections.esim } } : catalog,
+    products,
     complete: lastProductsSnapshot !== null,
-    refreshing: allProductsInFlight !== null
+    refreshing: allProductsInFlight !== null || esimInFlight !== null,
+    completeSections: esimSnapshot ? ['esim'] : []
   };
 }
 

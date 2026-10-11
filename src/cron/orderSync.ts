@@ -1,6 +1,6 @@
 import cron from 'node-cron';
 import { prisma } from "../utils/prisma";
-import { getImeiOrder, getServerOrder, DHRU_API_URL } from '../utils/dhru-api';
+import { getImeiOrder, getServerOrder, getDhruApiErrorMessage, DHRU_API_URL } from '../utils/dhru-api';
 import { getFoxreloadOrderDetails } from '../services/foxreloadService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { resolveOrderServiceType } from '../utils/order-response';
@@ -171,7 +171,7 @@ export function initOrderSyncCron() {
           if (isImei) {
             response = await getImeiOrder(order.apiOrderId, providerConfig);
             // Fallback: If IMEI check failed or returned error, try server check
-            if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
+            if (!response?.transportError && (!response || response.SUCCESS === false || getDhruApiErrorMessage(response))) {
               const fallback = await getServerOrder(order.apiOrderId, providerConfig);
               if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
                 response = fallback;
@@ -180,7 +180,7 @@ export function initOrderSyncCron() {
           } else {
             response = await getServerOrder(order.apiOrderId, providerConfig);
             // Fallback: If server check failed or returned error, try IMEI check
-            if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
+            if (!response?.transportError && (!response || response.SUCCESS === false || getDhruApiErrorMessage(response))) {
               const fallback = await getImeiOrder(order.apiOrderId, providerConfig);
               if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
                 response = fallback;
@@ -190,8 +190,8 @@ export function initOrderSyncCron() {
 
           // Handle temporary API errors / "Order not found" from provider:
           // CRITICAL: NEVER auto-cancel or refund the order! The provider may be processing it or undergoing maintenance.
-          if (!response || response.SUCCESS === false || response.ERROR || response.Error) {
-            const errorMsg = response?.Error || response?.ERROR || "API check unavailable";
+          if (!response || response.SUCCESS === false || getDhruApiErrorMessage(response)) {
+            const errorMsg = getDhruApiErrorMessage(response) || "API check unavailable";
             console.warn(`[CRON] Order #${order.id.slice(-6)} (Provider Ref: #${order.apiOrderId}) status check returned: "${errorMsg}". Keeping in processing status.`);
             continue;
           }

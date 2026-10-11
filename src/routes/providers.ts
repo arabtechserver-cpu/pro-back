@@ -17,7 +17,7 @@ import {
   enrichCustomFieldsWithQuantity
 } from "../utils/provider-quantity";
 import { invalidateDhruServicesCache } from "./dhru";
-import { isPrivateIP, isPrivateHostname } from "../utils/dhru-api";
+import { isPrivateIP, isPrivateHostname, formatProviderConnectionError } from "../utils/dhru-api";
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -442,6 +442,7 @@ export function makeProviderApiCall(
         method: "POST",
         family: 4, 
         servername: urlObj.hostname,
+        rejectUnauthorized: true,
         headers: {
           Host: urlObj.hostname,
           "Content-Type": "application/x-www-form-urlencoded",
@@ -470,7 +471,7 @@ export function makeProviderApiCall(
         resolve({
           ok: false,
           status: 500,
-          data: { error: `Network error connecting to API: ${err.message}` },
+          data: { error: `Network error connecting to API: ${formatProviderConnectionError(err, urlObj.hostname)}` },
           raw: err.message,
           targetUrl
         });

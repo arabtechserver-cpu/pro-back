@@ -75,6 +75,22 @@ export interface ProviderConfig {
   apiKey?: string;
 }
 
+export function formatProviderConnectionError(error: { code?: string; message: string }, hostname: string): string {
+  if (error.code === "ERR_TLS_CERT_ALTNAME_INVALID") {
+    return `${error.message}. Correct the HTTPS certificate/DNS for ${hostname} or configure the provider's verified API URL.`;
+  }
+  return error.message;
+}
+
+export function getDhruApiErrorMessage(response: any): string | null {
+  const error = response?.error || response?.Error || response?.ERROR;
+  if (!error) return null;
+  const detail = Array.isArray(error) ? error[0] : error;
+  if (!detail) return null;
+  if (typeof detail === "string") return detail;
+  return String(detail.MESSAGE || detail.message || detail.error || JSON.stringify(detail));
+}
+
 type DhruAction =
   | "accountinfo"
   | "imeiservicelist"
@@ -172,7 +188,7 @@ export function dhruApiRequest(
         safeAddress = address;
       } catch (dnsErr) {
         console.error(`[DNS Lookup Error] Failed to resolve ${urlObj.hostname}:`, dnsErr);
-        return resolve({ error: "Failed to resolve provider hostname", SUCCESS: false });
+        return resolve({ error: "Failed to resolve provider hostname", SUCCESS: false, transportError: true });
       }
 
       const options = {
@@ -182,6 +198,7 @@ export function dhruApiRequest(
         method: "POST",
         family: 4,
         servername: urlObj.hostname,
+        rejectUnauthorized: true,
         headers: {
           Host: urlObj.hostname,
           "Content-Type": "application/x-www-form-urlencoded",
@@ -211,13 +228,13 @@ export function dhruApiRequest(
 
       req.on("error", (err) => {
         console.error(`[Dhru API Exception] URL: ${targetUrl} | Error:`, err.message);
-        resolve({ error: err.message, SUCCESS: false });
+        resolve({ error: formatProviderConnectionError(err, urlObj.hostname), SUCCESS: false, transportError: true });
       });
 
       req.on("timeout", () => {
         req.destroy();
         console.error(`[Dhru API Timeout] URL: ${targetUrl}`);
-        resolve({ error: "Request timeout", SUCCESS: false });
+        resolve({ error: "Request timeout", SUCCESS: false, transportError: true });
       });
 
       req.write(postData);

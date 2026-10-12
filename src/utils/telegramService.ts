@@ -302,9 +302,12 @@ async function handleIncomingTelegramUpdate(update: any) {
           });
           const rawErrMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION || 'خطأ غير معروف من المزود';
           const isCredit = JSON.stringify(dhruResponse || {}).toLowerCase().includes('credit');
+          const isInvalidAction = JSON.stringify(dhruResponse || {}).toLowerCase().includes('invalid action');
           const finalErrMsg = isCredit
             ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ. يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
-            : rawErrMsg;
+            : isInvalidAction
+              ? `رفض المزود الطلب: نوع العملية غير مدعوم لهذه الخدمة (Invalid Action). يرجى التأكد من معرف الخدمة (Service ID: ${remoteId}).`
+              : rawErrMsg;
           await sendTelegramMessage(chatId, `[ERROR] <b>فشل إرسال الطلب للمزود:</b>\n<code>${finalErrMsg}</code>`);
           return;
         }

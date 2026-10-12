@@ -645,9 +645,16 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
         responseStr.includes('insufficient credit') ||
         responseStr.includes('low credit');
 
+      const isInvalidAction =
+        responseStr.includes('invalid action') ||
+        responseStr.includes('command not found') ||
+        responseStr.includes('action not found');
+
       const userFacingMsg = isCreditError
         ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
-        : `رفض المزود الطلب: ${rawErrMsg}`;
+        : isInvalidAction
+          ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`
+          : `رفض المزود الطلب: ${rawErrMsg}`;
 
       // Record dispatch failure in order timeline
       const now = new Date();
@@ -655,7 +662,11 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
       events.push({
         time: now.toISOString(),
         action: 'DISPATCH_FAILED',
-        title: isCreditError ? 'فشل الإرسال: رصيد المزود غير كاف' : 'فشل الإرسال للمزود',
+        title: isCreditError
+          ? 'فشل الإرسال: رصيد المزود غير كاف'
+          : isInvalidAction
+            ? 'فشل الإرسال: نوع العملية غير مدعوم (Invalid Action)'
+            : 'فشل الإرسال للمزود',
         desc: userFacingMsg
       });
       parsedNotes.events = events;

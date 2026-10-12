@@ -351,8 +351,15 @@ async function buildLocalReply(message: string, userId?: string, guestInfo: any 
 
 // Call OpenRouter API
 async function callOpenRouter(messages: any[]) {
-  const apiKey = process.env.OPENROUTER_API_KEY || '';
-  const model = process.env.OPENROUTER_MODEL || 'openrouter/free';
+  const apiKey = (process.env.OPENROUTER_API_KEY || '').trim();
+  if (!apiKey) {
+    throw new Error('OPENROUTER_API_KEY is not configured');
+  }
+
+  const rawModel = (process.env.OPENROUTER_MODEL || '').trim();
+  const model = (!rawModel || rawModel === 'openrouter/free')
+    ? 'meta-llama/llama-3.3-70b-instruct:free'
+    : rawModel;
 
   const response = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',

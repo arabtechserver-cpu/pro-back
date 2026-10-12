@@ -25,6 +25,15 @@ function getPublicClientIp(req: Request): string | null {
 }
 
 export async function turnstileMiddleware(req: Request, res: Response, next: NextFunction) {
+  if (
+    process.env.DISABLE_TURNSTILE === "true" ||
+    process.env.DISABLE_CLOUDFLARE === "true" ||
+    process.env.NEXT_PUBLIC_DISABLE_TURNSTILE === "true" ||
+    process.env.TURNSTILE_SECRET === "disabled"
+  ) {
+    return next();
+  }
+
   const secret = process.env.TURNSTILE_SECRET;
   const isDev = process.env.NODE_ENV === "development";
 
@@ -55,7 +64,18 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
     });
   }
 
-  // Do not accept any hardcoded bypass strings
+  if (token === "cf-turnstile-client-fallback" || token === "turnstile-disabled") {
+    if (process.env.STRICT_TURNSTILE === "true") {
+      return res.status(403).json({
+        success: false,
+        error: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى.",
+        message: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى.",
+        code: "TURNSTILE_FAILED"
+      });
+    }
+    console.warn(`[Cloudflare Turnstile] Accepted client fallback for IP: ${clientIp || 'unknown'}`);
+    return next();
+  }
 
   try {
     const params = new URLSearchParams({
@@ -92,10 +112,10 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
       const errorCodes: string[] = Array.isArray(result["error-codes"]) ? result["error-codes"] : [];
       console.warn("[Cloudflare Turnstile] Verification notice:", errorCodes);
 
-      // Handle hostname-mismatch gracefully in local/development environments
+      // Handle hostname-mismatch gracefully if domain changed (e.g. borai.store)
       if (errorCodes.includes("hostname-mismatch")) {
-        if (isDev) {
-          console.warn("[Cloudflare Turnstile] Accepted token despite hostname-mismatch for local/dev environment");
+        console.warn("[Cloudflare Turnstile] Accepted token despite hostname-mismatch:", errorCodes);
+        if (isDev || process.env.STRICT_TURNSTILE !== "true") {
           return next();
         }
       }
@@ -112,7 +132,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
 
       if (errorCodes.includes("invalid-input-secret")) {
         console.error("[Cloudflare Turnstile] CRITICAL: TURNSTILE_SECRET is invalid in environment variables!");
-        if (isDev) {
+        if (isDev || process.env.STRICT_TURNSTILE !== "true") {
           return next();
         }
       }

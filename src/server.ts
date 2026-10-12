@@ -17,7 +17,13 @@ const allowedOrigins = [
   'http://127.0.0.1:3000',
   'https://arabtechproserver.tech',
   'https://www.arabtechproserver.tech',
+  'https://borai.store',
+  'https://www.borai.store',
   ...(process.env.FRONTEND_URL || '')
+    .split(',')
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+  ...(process.env.ADDITIONAL_ALLOWED_ORIGINS || '')
     .split(',')
     .map((origin) => origin.trim())
     .filter(Boolean),
@@ -44,12 +50,12 @@ app.use(cors({
       !origin ||
       allowedOrigins.includes(origin) ||
       /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
-      /^https?:\/\/(www\.)?arabtechproserver\.tech$/.test(origin)
+      /^https?:\/\/([a-zA-Z0-9-]+\.)*(arabtechproserver\.tech|borai\.store)(:\d+)?$/.test(origin)
     ) {
       return callback(null, true);
     }
     console.warn(`[CORS Blocked] Origin: ${origin}`);
-    return callback(new Error(`Origin ${origin} is not allowed by CORS`));
+    return callback(null, false);
   },
   credentials: true,
 }));
@@ -96,23 +102,25 @@ app.use((req, res, next) => {
   const originalSend = res.send.bind(res);
 
   res.json = function (body: any) {
+    const routeUrl = req.originalUrl || req.path;
     if (res.statusCode >= 500) {
       const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
-      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
+      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${routeUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
     } else if (res.statusCode >= 400 && res.statusCode !== 404) {
       const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
-      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Notice: ${errMsg}`);
+      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${routeUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Notice: ${errMsg}`);
     }
     return originalJson(body);
   };
 
   res.send = function (body: any) {
+    const routeUrl = req.originalUrl || req.path;
     if (res.statusCode >= 500) {
       const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
-      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+      console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${routeUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
     } else if (res.statusCode >= 400 && res.statusCode !== 404) {
       const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
-      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${req.path} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
+      console.warn(`[HTTP ${res.statusCode} CLIENT] ${req.method} ${routeUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
     }
     return originalSend(body);
   };

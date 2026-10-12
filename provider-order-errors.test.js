@@ -80,6 +80,27 @@ test('order validation accepts combined custom fields above 500 characters witho
   assert.equal(createOrderSchema.safeParse({ ...req.body, targetInput: 'X'.repeat(10001) }).success, false);
 });
 
+test('instant order validation succeeds when service requires no inputs and customFields is null', () => {
+  const { createOrderSchema } = require('./dist/schemas/order.schema');
+  const { validateBody } = require('./dist/middleware/validate');
+  const instantOrderBody = {
+    serviceId: '731',
+    serviceName: 'Google play Account (Gmail + Password)',
+    targetInput: 'طلب فوري',
+    rawImei: '',
+    quantity: 1,
+    notes: '',
+    couponCode: null,
+    customFields: null
+  };
+  let nextCalled = false;
+  const req = { body: instantOrderBody };
+  validateBody(createOrderSchema)(req, { status() { throw new Error('valid instant order was rejected'); } }, () => { nextCalled = true; });
+  assert.equal(nextCalled, true);
+  assert.equal(req.body.serviceId, '731');
+  assert.equal(req.body.customFields, null);
+});
+
 test('cron reports connection failures once and keeps failed checks and status 1 orders processing', async () => {
   const originalSchedule = cron.default.schedule;
   const originalFind = prisma.order.findMany;

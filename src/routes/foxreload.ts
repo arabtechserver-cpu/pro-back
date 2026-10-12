@@ -7,6 +7,9 @@ import {
   updateFoxreloadSettings,
   getFoxreloadLiveBalance,
   getFoxreloadFullCatalog,
+  syncFoxreloadCatalog,
+  clearFoxreloadCatalogFromDb,
+  isFoxreloadCatalogSynced,
   getFoxreloadCategoryProducts,
   searchFoxreloadProducts,
   clearCatalogCache,
@@ -20,8 +23,16 @@ const router = Router();
 // GET /api/foxreload/catalog - Public Catalog for Customer Storefront
 router.get('/catalog', async (req, res) => {
   try {
-    const forceRefresh = req.query.refresh === 'true';
-    const catalog = await getFoxreloadFullCatalog(forceRefresh);
+    const catalog = await getFoxreloadFullCatalog(false);
+    if (!catalog?.isSynced) {
+      return res.json({
+        success: true,
+        sections: {},
+        isEnabled: false,
+        totalBundlesCount: 0,
+        isSynced: false,
+      });
+    }
     return res.json({ success: true, ...catalog });
   } catch (error: any) {
     console.error('FoxReload catalog error:', error);
@@ -258,10 +269,52 @@ router.get('/admin/catalog', async (req, res) => {
   try {
     const forceRefresh = req.query.refresh === 'true';
     const catalog = await getFoxreloadFullCatalog(forceRefresh);
-    return res.json({ success: true, catalog });
+    const isSynced = Boolean(catalog?.isSynced);
+    return res.json({
+      success: true,
+      catalog,
+      isSynced,
+      totalBundlesCount: catalog?.totalBundlesCount || 0,
+      syncedAt: catalog?.syncedAt || null,
+    });
   } catch (error: any) {
     console.error('FoxReload admin catalog error:', error);
     return res.status(500).json({ error: 'فشل جلب كتالوج الإدارة' });
+  }
+});
+
+// POST /api/foxreload/admin/sync - Explicit Pull/Sync from FoxReload API and Save to DB
+router.post('/admin/sync', async (_req, res) => {
+  try {
+    const syncedCatalog = await syncFoxreloadCatalog();
+    return res.json({
+      success: true,
+      catalog: syncedCatalog,
+      isSynced: true,
+      totalBundlesCount: syncedCatalog.totalBundlesCount || 0,
+      syncedAt: syncedCatalog.syncedAt,
+      message: `تم سحب وحفظ بيانات مزود FoxReload في قاعدة البيانات بنجاح (${syncedCatalog.totalBundlesCount || 0} باقة وخدمة)`,
+    });
+  } catch (error: any) {
+    console.error('FoxReload sync error:', error);
+    return res.status(500).json({
+      error: error.message || 'فشل سحب وتحديث بيانات FoxReload من المزود',
+    });
+  }
+});
+
+// POST /api/foxreload/admin/clear-catalog - Remove synced catalog from database
+router.post('/admin/clear-catalog', async (_req, res) => {
+  try {
+    await clearFoxreloadCatalogFromDb();
+    return res.json({
+      success: true,
+      isSynced: false,
+      message: 'تم حذف بيانات FoxReload من قاعدة البيانات بنجاح',
+    });
+  } catch (error: any) {
+    console.error('FoxReload clear catalog error:', error);
+    return res.status(500).json({ error: 'فشل حذف بيانات الكتالوج من قاعدة البيانات' });
   }
 });
 

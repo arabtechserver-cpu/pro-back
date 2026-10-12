@@ -20,6 +20,8 @@ export interface FoxreloadSettings {
 }
 
 const SETTINGS_KEY = 'foxreload_settings';
+export const FOXRELOAD_CATALOG_DB_KEY = 'foxreload_catalog';
+export const FOXRELOAD_PROVIDER_ID = 'foxreload-provider';
 
 function getEnvApiKey(): string {
   return (process.env.FOXRELOAD_API_KEY || '').trim();
@@ -90,6 +92,101 @@ export async function updateFoxreloadSettings(updates: Partial<FoxreloadSettings
 
   clearCatalogCache();
   return updated;
+}
+
+export async function isFoxreloadCatalogSynced(): Promise<boolean> {
+  if (catalogCache?.data?.isSynced) return true;
+  try {
+    const record = await prisma.setting.findUnique({ where: { key: FOXRELOAD_CATALOG_DB_KEY } });
+    if (!record?.value) return false;
+    const parsed = JSON.parse(record.value);
+    return Boolean(parsed?.isSynced || (parsed?.sections && Object.keys(parsed.sections).length > 0));
+  } catch {
+    return false;
+  }
+}
+
+export async function getSavedFoxreloadCatalogFromDb(): Promise<any | null> {
+  try {
+    const record = await prisma.setting.findUnique({ where: { key: FOXRELOAD_CATALOG_DB_KEY } });
+    if (!record?.value) return null;
+    const parsed = JSON.parse(record.value);
+    if (!parsed || !parsed.sections || Object.keys(parsed.sections).length === 0) return null;
+
+    const settings = await getFoxreloadSettings();
+    parsed.isEnabled = settings.isEnabled;
+    parsed.defaultMargin = settings.defaultProfitMarginPercent;
+    const hiddenSet = new Set(settings.hiddenItems);
+
+    for (const secKey of Object.keys(parsed.sections)) {
+      const sec = parsed.sections[secKey];
+      if (Array.isArray(sec.bundles)) {
+        for (const b of sec.bundles) {
+          b.isHidden = hiddenSet.has(b.id) || hiddenSet.has(b.slug);
+        }
+      }
+    }
+    parsed.isSynced = true;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+export async function saveFoxreloadCatalogToDb(catalogData: any): Promise<void> {
+  const payload = {
+    ...catalogData,
+    isSynced: true,
+    syncedAt: catalogData.syncedAt || new Date().toISOString(),
+  };
+  await prisma.setting.upsert({
+    where: { key: FOXRELOAD_CATALOG_DB_KEY },
+    create: {
+      key: FOXRELOAD_CATALOG_DB_KEY,
+      value: JSON.stringify(payload),
+    },
+    update: {
+      value: JSON.stringify(payload),
+    },
+  });
+
+  try {
+    const settings = await getFoxreloadSettings();
+    await prisma.apiProvider.upsert({
+      where: { id: FOXRELOAD_PROVIDER_ID },
+      create: {
+        id: FOXRELOAD_PROVIDER_ID,
+        name: 'FoxReload',
+        apiUrl: 'https://public-api.foxreload.com',
+        apiKey: settings.apiKey || getEnvApiKey(),
+        type: 'foxreload',
+        isActive: settings.isEnabled,
+        servicesCount: catalogData.totalBundlesCount || 0,
+        currency: 'USD',
+      },
+      update: {
+        servicesCount: catalogData.totalBundlesCount || 0,
+        isActive: settings.isEnabled,
+        apiKey: settings.apiKey || getEnvApiKey(),
+        updatedAt: new Date(),
+      },
+    });
+  } catch (providerErr) {
+    console.warn('[FoxReload DB Sync] Non-blocking provider record update notice:', providerErr);
+  }
+}
+
+export async function clearFoxreloadCatalogFromDb(): Promise<void> {
+  await prisma.setting.deleteMany({
+    where: { key: FOXRELOAD_CATALOG_DB_KEY },
+  });
+  try {
+    await prisma.apiProvider.updateMany({
+      where: { id: FOXRELOAD_PROVIDER_ID },
+      data: { servicesCount: 0 },
+    });
+  } catch {}
+  clearCatalogCache();
 }
 
 export async function callFoxreloadApi(
@@ -653,8 +750,12 @@ export async function getAvailableFoxreloadCatalog(): Promise<AvailableFoxreload
 let catalogWarmupTimer: ReturnType<typeof setInterval> | undefined;
 export function startFoxreloadCatalogWarmup(): void {
   if (catalogWarmupTimer) return;
-  const warm = () => {
-    getAvailableFoxreloadCatalog().catch(() => {});
+  const warm = async () => {
+    try {
+      const isSynced = await isFoxreloadCatalogSynced();
+      if (!isSynced) return;
+      getAvailableFoxreloadCatalog().catch(() => {});
+    } catch {}
   };
   warm();
   catalogWarmupTimer = setInterval(warm, 10 * 60 * 1000);
@@ -797,30 +898,62 @@ export async function searchFoxreloadProducts(query: string): Promise<FoxreloadP
     .filter(isValidProduct);
 }
 
+let syncInFlight: Promise<any> | null = null;
+
 export async function getFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
-  if (!forceRefresh && catalogCache && Date.now() - catalogCache.timestamp < CACHE_TTL_MS) return catalogCache.data;
-  if (!catalogInFlight) {
-    const pending = loadFoxreloadFullCatalog(forceRefresh)
-      .finally(() => { if (catalogInFlight === pending) catalogInFlight = null; });
-    catalogInFlight = pending;
-  }
-  // Serve the last successful snapshot while one shared refresh runs.
-  if (!forceRefresh && catalogCache) {
-    catalogInFlight.catch(() => {});
+  if (!forceRefresh && catalogCache && Date.now() - catalogCache.timestamp < CACHE_TTL_MS) {
     return catalogCache.data;
   }
-  return withinDeadline(catalogInFlight, 12000);
+
+  const dbCatalog = await getSavedFoxreloadCatalogFromDb();
+  if (dbCatalog) {
+    catalogCache = { timestamp: Date.now(), data: dbCatalog };
+    return dbCatalog;
+  }
+
+  return {
+    sections: {},
+    isEnabled: false,
+    totalBundlesCount: 0,
+    isSynced: false,
+    updatedAt: null,
+  };
 }
 
-async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<any> {
-  const now = Date.now();
-  const revision = foxCatalogRevision;
-  if (!forceRefresh && catalogCache && now - catalogCache.timestamp < CACHE_TTL_MS) {
-    return catalogCache.data;
+export async function syncFoxreloadCatalog(): Promise<any> {
+  if (syncInFlight) {
+    return syncInFlight;
   }
 
+  const work = (async () => {
+    clearCatalogCache();
+    const rawCatalog = await fetchRemoteFoxreloadCatalog();
+    const syncedCatalog = {
+      ...rawCatalog,
+      isSynced: true,
+      syncedAt: new Date().toISOString(),
+    };
+    await saveFoxreloadCatalogToDb(syncedCatalog);
+    catalogCache = { timestamp: Date.now(), data: syncedCatalog };
+    invalidateCatalogRevision();
+    if (lastProductsSnapshot) await persistAvailableSnapshot();
+    return syncedCatalog;
+  })();
+
+  syncInFlight = work.finally(() => {
+    if (syncInFlight === work) syncInFlight = null;
+  });
+
+  return work;
+}
+
+async function fetchRemoteFoxreloadCatalog(): Promise<any> {
+  const revision = foxCatalogRevision;
+
   const settings = await getFoxreloadSettings();
-  if (!settings.isEnabled || !settings.apiKey) return { sections: {}, isEnabled: false, totalBundlesCount: 0 };
+  if (!settings.apiKey) {
+    throw new Error('يرجى حفظ مفتاح FoxReload API أولاً لإتمام عملية سحب وحفظ البيانات');
+  }
   const hiddenSet = new Set(settings.hiddenItems);
 
   const [
@@ -938,10 +1071,6 @@ async function loadFoxreloadFullCatalog(forceRefresh: boolean = false): Promise<
     updatedAt: new Date().toISOString(),
   };
 
-  if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
-  catalogCache = { timestamp: now, data: catalog };
-  invalidateCatalogRevision();
-  if (lastProductsSnapshot) await persistAvailableSnapshot();
   return catalog;
 }
 

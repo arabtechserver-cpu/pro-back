@@ -53,20 +53,35 @@ function testJwtSecretIsRequired() {
 }
 
 async function testTurnstileFailsClosedWhenConfigured() {
+  const originalDisable = process.env.DISABLE_TURNSTILE;
+  const originalDisableCf = process.env.DISABLE_CLOUDFLARE;
+  const originalSecret = process.env.TURNSTILE_SECRET;
+  delete process.env.DISABLE_TURNSTILE;
+  delete process.env.DISABLE_CLOUDFLARE;
   process.env.TURNSTILE_SECRET = "test-turnstile-secret";
   delete require.cache[require.resolve("./dist/middleware/turnstileMiddleware")];
   const { turnstileMiddleware } = require("./dist/middleware/turnstileMiddleware");
   const response = createResponse();
   let nextCalled = false;
 
-  await turnstileMiddleware(
-    { body: {}, headers: {}, socket: {} },
-    response,
-    () => { nextCalled = true; }
-  );
+  try {
+    await turnstileMiddleware(
+      { body: {}, headers: {}, socket: {} },
+      response,
+      () => { nextCalled = true; }
+    );
 
-  assert.equal(nextCalled, false, "missing Turnstile tokens must be rejected when protection is configured");
-  assert.equal(response.statusCode, 403);
+    assert.equal(nextCalled, false, "missing Turnstile tokens must be rejected when protection is configured");
+    assert.equal(response.statusCode, 403);
+  } finally {
+    if (originalDisable !== undefined) process.env.DISABLE_TURNSTILE = originalDisable;
+    else delete process.env.DISABLE_TURNSTILE;
+    if (originalDisableCf !== undefined) process.env.DISABLE_CLOUDFLARE = originalDisableCf;
+    else delete process.env.DISABLE_CLOUDFLARE;
+    if (originalSecret !== undefined) process.env.TURNSTILE_SECRET = originalSecret;
+    else delete process.env.TURNSTILE_SECRET;
+    delete require.cache[require.resolve("./dist/middleware/turnstileMiddleware")];
+  }
 }
 
 function testSsrfProtectionBlocksPrivateHosts() {

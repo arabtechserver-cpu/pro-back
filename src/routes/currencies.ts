@@ -110,30 +110,47 @@ const DEFAULT_CONFIG: CurrencyConfig = {
   }
 };
 
+function getWritableDataFile(): string | null {
+  try {
+    const dir = path.dirname(DATA_FILE);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    return DATA_FILE;
+  } catch {
+    try {
+      const tempDir = process.env.TEMP || process.env.TMPDIR || '/tmp';
+      return path.join(tempDir, 'currencies.json');
+    } catch {
+      return null;
+    }
+  }
+}
+
 function readConfigFile(): CurrencyConfig {
   try {
-    if (!fs.existsSync(path.dirname(DATA_FILE))) {
-      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
+    const target = getWritableDataFile();
+    if (target && fs.existsSync(target)) {
+      const data = fs.readFileSync(target, 'utf-8');
+      return { ...DEFAULT_CONFIG, ...JSON.parse(data) };
     }
     if (fs.existsSync(DATA_FILE)) {
       const data = fs.readFileSync(DATA_FILE, 'utf-8');
       return { ...DEFAULT_CONFIG, ...JSON.parse(data) };
     }
-  } catch (err) {
-    console.error('Failed to read currencies config file:', err);
+  } catch {
+    // Non-fatal fallback
   }
   return DEFAULT_CONFIG;
 }
 
 function writeConfigFile(config: CurrencyConfig): boolean {
   try {
-    if (!fs.existsSync(path.dirname(DATA_FILE))) {
-      fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true });
-    }
-    fs.writeFileSync(DATA_FILE, JSON.stringify(config, null, 2), 'utf-8');
+    const target = getWritableDataFile();
+    if (!target) return false;
+    fs.writeFileSync(target, JSON.stringify(config, null, 2), 'utf-8');
     return true;
-  } catch (err) {
-    console.error('Failed to write currencies config file:', err);
+  } catch {
     return false;
   }
 }

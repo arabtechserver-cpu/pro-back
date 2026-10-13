@@ -175,6 +175,13 @@ export function dhruApiRequest(
     const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
     const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
 
+    // Separate bracket-style keys (e.g. customfield[FIELD_NAME]) from plain keys.
+    // URLSearchParams percent-encodes '[' and ']' in key names, which breaks PHP
+    // providers that parse $_POST['customfield']['FIELD_NAME']. We append those as
+    // literal text directly to avoid the encoding problem.
+    const safePairs: Array<[string, string]> = [];
+    const bracketPairs: Array<[string, string]> = [];
+
     const data = new URLSearchParams();
     if (username) data.append("username", username.trim());
     data.append("key", apiKey);
@@ -183,12 +190,29 @@ export function dhruApiRequest(
     data.append("requestformat", "JSON");
 
     Object.entries(parameters).forEach(([key, value]) => {
-      data.append(`parameters[${key}]`, value);
-      data.append(key, value);
+      if (key.includes("[")) {
+        // Literal bracket key — must not go through URLSearchParams encoding.
+        bracketPairs.push([key, value]);
+      } else {
+        data.append(`parameters[${key}]`, value);
+        safePairs.push([key, value]);
+      }
     });
 
+    // Append plain keys after the parameters[KEY] pairs.
+    safePairs.forEach(([key, value]) => data.append(key, value));
+
     try {
-      const postData = data.toString();
+      // Build final body: URLSearchParams-encoded fields + literal bracket fields.
+      let postData = data.toString();
+      bracketPairs.forEach(([key, value]) => {
+        const encodedKey = key.split("[").map((segment, i) =>
+          i === 0
+            ? encodeURIComponent(segment)
+            : `[${encodeURIComponent(segment.replace(/]$/, ""))}]`
+        ).join("");
+        postData += (postData ? "&" : "") + encodedKey + "=" + encodeURIComponent(value);
+      });
       const urlObj = new URL(targetUrl);
 
       if (urlObj.protocol !== "https:") {
@@ -469,22 +493,24 @@ export async function placeServerOrder(
   let res = await dhruApiRequest("placeserverorder", params, provider);
 
   if (isActionUnsupported(res)) {
-    console.log('[Dhru API] placeserverorder unsupported by provider, attempting fallback placeimeiorder...');
-    const imeiParams = { ...params };
-    if (!imeiParams.IMEI && targetIdentifier) {
-      imeiParams.IMEI = targetIdentifier;
-      imeiParams.imei = targetIdentifier;
+    // Only fall back to placeimeiorder when we have an actual IMEI/identifier.
+    // An empty IMEI causes "Service Not Active" on server/quantity-type services.
+    if (targetIdentifier) {
+      console.log('[Dhru API] placeserverorder returned Command Not Found, attempting fallback placeimeiorder...');
+      const imeiParams = { ...params, IMEI: targetIdentifier, imei: targetIdentifier };
+      res = await dhruApiRequest("placeimeiorder", imeiParams, provider);
+    } else {
+      console.log('[Dhru API] placeserverorder returned Command Not Found (no IMEI), skipping placeimeiorder, trying placeorder...');
     }
-    res = await dhruApiRequest("placeimeiorder", imeiParams, provider);
   }
 
   if (isActionUnsupported(res)) {
-    console.log('[Dhru API] placeimeiorder unsupported by provider, attempting fallback placeorder...');
+    console.log('[Dhru API] attempting fallback placeorder...');
     res = await dhruApiRequest("placeorder", params, provider);
   }
 
   if (isActionUnsupported(res)) {
-    console.log('[Dhru API] placeorder unsupported by provider, attempting fallback placeremoteorder...');
+    console.log('[Dhru API] attempting fallback placeremoteorder...');
     res = await dhruApiRequest("placeremoteorder", params, provider);
   }
 

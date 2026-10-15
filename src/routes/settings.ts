@@ -140,6 +140,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     } : current.binance;
 
     const sanitizedCryptoBnb = payload.cryptoBnb ? {
+      nameAr: sanitizeStr(payload.cryptoBnb.nameAr, 100) || current.cryptoBnb?.nameAr || 'تحويل العملات الرقمية (BNB / BEP20 Smart Chain)',
+      nameEn: sanitizeStr(payload.cryptoBnb.nameEn, 100) || current.cryptoBnb?.nameEn || 'Crypto Transfer (BNB / BEP20 Smart Chain)',
       address: sanitizeStr(payload.cryptoBnb.address, 150),
       network: sanitizeStr(payload.cryptoBnb.network, 100) || 'BNB Smart Chain (BEP20)',
       transferName: sanitizeStr(payload.cryptoBnb.transferName, 50) || 'BNB',

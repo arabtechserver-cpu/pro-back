@@ -52,6 +52,8 @@ export interface CurrencyConfig {
     isActive: boolean;
   };
   cryptoBnb: {
+    nameAr?: string;
+    nameEn?: string;
     address: string;
     network: string;
     transferName?: string;
@@ -106,8 +108,11 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     isActive: true
   },
   cryptoBnb: {
+    nameAr: "تحويل العملات الرقمية (BNB / BEP20 Smart Chain)",
+    nameEn: "Crypto Transfer (BNB / BEP20 Smart Chain)",
     address: "0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f",
     network: "BNB Smart Chain (BEP20)",
+    transferName: "BNB",
     instructionsAr: "طريقة تحويل عبر BNB معتمدة لكافة الأقسام والخدمات (شحن الألعاب المباشر، متاجر التطبيقات، أكواد الألعاب، الاشتراكات والترفيه، شرائح eSIM، وقسائم Rewarble): اسم التحويل BNB، قم بالتحويل إلى رابط المحفظة (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
     instructionsEn: "Approved BNB transfer method for all sections (In-Game Top-Ups, App Stores, Game Codes, Subscriptions, eSIMs, and Rewarble Vouchers): Transfer Name BNB, transfer to wallet address (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) then upload transfer receipt.",
     isActive: true

@@ -110,6 +110,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     const current = await loadConfig();
 
     const sanitizedBankak = payload.bankak ? {
+      nameAr: sanitizeStr(payload.bankak.nameAr, 100) || current.bankak?.nameAr || DEFAULT_CONFIG.bankak.nameAr,
+      nameEn: sanitizeStr(payload.bankak.nameEn, 100) || current.bankak?.nameEn || DEFAULT_CONFIG.bankak.nameEn,
       accountNumber: sanitizeStr(payload.bankak.accountNumber, 100),
       accountName: sanitizeStr(payload.bankak.accountName, 150),
       instructionsAr: sanitizeStr(payload.bankak.instructionsAr, 1000),
@@ -118,6 +120,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     } : current.bankak;
 
     const sanitizedFawry = payload.fawry ? {
+      nameAr: sanitizeStr(payload.fawry.nameAr, 100) || current.fawry?.nameAr || DEFAULT_CONFIG.fawry?.nameAr,
+      nameEn: sanitizeStr(payload.fawry.nameEn, 100) || current.fawry?.nameEn || DEFAULT_CONFIG.fawry?.nameEn,
       accountNumber: sanitizeStr(payload.fawry.accountNumber, 100),
       accountName: sanitizeStr(payload.fawry.accountName, 150),
       instructionsAr: sanitizeStr(payload.fawry.instructionsAr, 1000),
@@ -126,6 +130,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     } : (current.fawry || DEFAULT_CONFIG.fawry);
 
     const sanitizedVodafone = payload.vodafone ? {
+      nameAr: sanitizeStr(payload.vodafone.nameAr, 100) || current.vodafone?.nameAr || DEFAULT_CONFIG.vodafone.nameAr,
+      nameEn: sanitizeStr(payload.vodafone.nameEn, 100) || current.vodafone?.nameEn || DEFAULT_CONFIG.vodafone.nameEn,
       walletNumber: sanitizeStr(payload.vodafone.walletNumber, 50),
       instructionsAr: sanitizeStr(payload.vodafone.instructionsAr, 1000),
       instructionsEn: sanitizeStr(payload.vodafone.instructionsEn, 1000),
@@ -133,6 +139,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     } : current.vodafone;
 
     const sanitizedBinance = payload.binance ? {
+      nameAr: sanitizeStr(payload.binance.nameAr, 100) || current.binance?.nameAr || DEFAULT_CONFIG.binance.nameAr,
+      nameEn: sanitizeStr(payload.binance.nameEn, 100) || current.binance?.nameEn || DEFAULT_CONFIG.binance.nameEn,
       payId: sanitizeStr(payload.binance.payId, 100),
       instructionsAr: sanitizeStr(payload.binance.instructionsAr, 1000),
       instructionsEn: sanitizeStr(payload.binance.instructionsEn, 1000),
@@ -140,8 +148,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     } : current.binance;
 
     const sanitizedCryptoBnb = payload.cryptoBnb ? {
-      nameAr: sanitizeStr(payload.cryptoBnb.nameAr, 100) || current.cryptoBnb?.nameAr || 'تحويل العملات الرقمية (BNB / BEP20 Smart Chain)',
-      nameEn: sanitizeStr(payload.cryptoBnb.nameEn, 100) || current.cryptoBnb?.nameEn || 'Crypto Transfer (BNB / BEP20 Smart Chain)',
+      nameAr: sanitizeStr(payload.cryptoBnb.nameAr, 100) || current.cryptoBnb?.nameAr || DEFAULT_CONFIG.cryptoBnb.nameAr,
+      nameEn: sanitizeStr(payload.cryptoBnb.nameEn, 100) || current.cryptoBnb?.nameEn || DEFAULT_CONFIG.cryptoBnb.nameEn,
       address: sanitizeStr(payload.cryptoBnb.address, 150),
       network: sanitizeStr(payload.cryptoBnb.network, 100) || 'BNB Smart Chain (BEP20)',
       transferName: sanitizeStr(payload.cryptoBnb.transferName, 50) || 'BNB',
@@ -151,6 +159,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
     } : current.cryptoBnb;
 
     const sanitizedRewarble = payload.rewarble ? {
+      nameAr: sanitizeStr(payload.rewarble.nameAr, 100) || current.rewarble?.nameAr || DEFAULT_CONFIG.rewarble?.nameAr,
+      nameEn: sanitizeStr(payload.rewarble.nameEn, 100) || current.rewarble?.nameEn || DEFAULT_CONFIG.rewarble?.nameEn,
       address: sanitizeStr(payload.rewarble.address, 150),
       transferName: sanitizeStr(payload.rewarble.transferName, 50) || 'BNB',
       instructionsAr: sanitizeStr(payload.rewarble.instructionsAr, 1000),
@@ -163,6 +173,8 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
       return res.status(400).json({ error: 'بريد PayPal الإلكتروني غير صالح' });
     }
     const sanitizedPaypal = payload.paypal ? {
+      nameAr: sanitizeStr(payload.paypal.nameAr, 100) || current.paypal?.nameAr || DEFAULT_CONFIG.paypal.nameAr,
+      nameEn: sanitizeStr(payload.paypal.nameEn, 100) || current.paypal?.nameEn || DEFAULT_CONFIG.paypal.nameEn,
       email: sanitizedPaypalEmail || current.paypal?.email || 'paypal@gsmteam.com',
       isActive: sanitizeBool(payload.paypal.isActive, current.paypal?.isActive ?? true)
     } : current.paypal;

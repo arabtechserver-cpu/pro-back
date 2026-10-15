@@ -144,7 +144,12 @@ test('Payment methods validation, sanitation and persistence', async (t) => {
   const postRes = await request('/api/settings/payment-methods', 'POST', {
     paymentMethods: {
       ...getRes.data.paymentMethods,
+      bankak: {
+        ...getRes.data.paymentMethods.bankak,
+        nameAr: 'بنك الخرطوم المميز VIP'
+      },
       vodafone: {
+        nameAr: 'فودافون كاش مصر الرسمي',
         walletNumber: '01000000000',
         instructionsAr: 'تعليمات جديدة',
         instructionsEn: 'New instructions',
@@ -156,6 +161,8 @@ test('Payment methods validation, sanitation and persistence', async (t) => {
   });
   assert.strictEqual(postRes.status, 200, 'Admin POST should return 200');
   assert.strictEqual(postRes.data.success, true);
+  assert.strictEqual(postRes.data.paymentMethods.bankak.nameAr, 'بنك الخرطوم المميز VIP');
+  assert.strictEqual(postRes.data.paymentMethods.vodafone.nameAr, 'فودافون كاش مصر الرسمي');
   assert.strictEqual(postRes.data.paymentMethods.vodafone.walletNumber, '01000000000');
 
   // 4. Invalid email in PayPal should return 400

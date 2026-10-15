@@ -26,6 +26,8 @@ export interface CurrencyConfig {
   usdToSar: number; // Saudi Riyal rate per 1 USD
   usdToAed: number; // UAE Dirham rate per 1 USD
   bankak: {
+    nameAr?: string;
+    nameEn?: string;
     accountNumber: string;
     accountName: string;
     instructionsAr: string;
@@ -33,6 +35,8 @@ export interface CurrencyConfig {
     isActive: boolean;
   };
   fawry?: {
+    nameAr?: string;
+    nameEn?: string;
     accountNumber: string;
     accountName: string;
     instructionsAr: string;
@@ -40,12 +44,16 @@ export interface CurrencyConfig {
     isActive: boolean;
   };
   vodafone: {
+    nameAr?: string;
+    nameEn?: string;
     walletNumber: string;
     instructionsAr: string;
     instructionsEn: string;
     isActive: boolean;
   };
   binance: {
+    nameAr?: string;
+    nameEn?: string;
     payId: string;
     instructionsAr: string;
     instructionsEn: string;
@@ -62,6 +70,8 @@ export interface CurrencyConfig {
     isActive: boolean;
   };
   rewarble?: {
+    nameAr?: string;
+    nameEn?: string;
     address: string;
     transferName: string;
     instructionsAr: string;
@@ -69,6 +79,8 @@ export interface CurrencyConfig {
     isActive: boolean;
   };
   paypal: {
+    nameAr?: string;
+    nameEn?: string;
     email: string;
     isActive: boolean;
   };
@@ -82,6 +94,8 @@ const DEFAULT_CONFIG: CurrencyConfig = {
   usdToSar: 3.75,
   usdToAed: 3.67,
   bankak: {
+    nameAr: "بنك الخرطوم (بنكك - Bankak)",
+    nameEn: "Bank of Khartoum (Bankak)",
     accountNumber: "6302273",
     accountName: "حسن",
     instructionsAr: "حول المبلغ بالجنيه السوداني عبر تطبيق بنكك إلى رقم الحساب ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
@@ -89,6 +103,8 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     isActive: true
   },
   fawry: {
+    nameAr: "فوري - بنك فيصل الإسلامي (Fawri)",
+    nameEn: "Fawri - Faisal Islamic Bank",
     accountNumber: "51589889",
     accountName: "الرقم البنكي الموحد",
     instructionsAr: "حول المبلغ بالجنيه السوداني عبر تطبيق فوري (بنك فيصل الإسلامي) إلى الرقم البنكي الموحد (51589889) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
@@ -96,12 +112,16 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     isActive: true
   },
   vodafone: {
+    nameAr: "فودافون كاش مصر (Vodafone Cash)",
+    nameEn: "Vodafone Cash Egypt",
     walletNumber: "01097160605",
     instructionsAr: "حول المبلغ إلى رقم المحفظة واكتب الرقم المحول منه وارفق صورة رسالة أو إيصال التحويل.",
     instructionsEn: "Transfer funds to wallet number then attach receipt screenshot.",
     isActive: true
   },
   binance: {
+    nameAr: "باينانس باي (Binance Pay)",
+    nameEn: "Binance Pay",
     payId: "894642115",
     instructionsAr: "افتح تطبيق باينانس واكتب معرف Binance Pay ID ثم ارفق لقطة الشاشة للتأكيد.",
     instructionsEn: "Open Binance App and send funds via Pay ID then attach payment screenshot.",
@@ -118,6 +138,8 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     isActive: true
   },
   rewarble: {
+    nameAr: "ريواربل (Rewarble)",
+    nameEn: "Rewarble",
     address: "0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f",
     transferName: "BNB",
     instructionsAr: "طريقة تحويل خاصة بقسم Rewarble: اسم التحويل BNB، قم بالتحويل إلى رابط المحفظة (0xaCc3ab6f0165B39Cf2F1286ED8A778735Ae8314f) ثم ارفع صورة إشعار التحويل للتأكيد الفوري.",
@@ -125,6 +147,8 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     isActive: true
   },
   paypal: {
+    nameAr: "باي بال (PayPal)",
+    nameEn: "PayPal",
     email: "paypal@gsmteam.com",
     isActive: true
   }

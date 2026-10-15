@@ -7,6 +7,19 @@ import { prisma } from '../utils/prisma';
 const router = Router();
 const DATA_FILE = path.join(__dirname, '../data/currencies.json');
 
+export interface CustomPaymentMethod {
+  id: string;
+  nameAr: string;
+  nameEn?: string;
+  type?: 'crypto' | 'bank' | 'wallet' | 'other' | string;
+  accountOrAddress: string;
+  network?: string;
+  transferName?: string;
+  instructionsAr?: string;
+  instructionsEn?: string;
+  isActive: boolean;
+}
+
 export interface CurrencyConfig {
   usdToSdg: number; // Sudanese Pound rate per 1 USD
   usdToEgp: number; // Egyptian Pound rate per 1 USD
@@ -41,6 +54,7 @@ export interface CurrencyConfig {
   cryptoBnb: {
     address: string;
     network: string;
+    transferName?: string;
     instructionsAr: string;
     instructionsEn: string;
     isActive: boolean;
@@ -56,6 +70,7 @@ export interface CurrencyConfig {
     email: string;
     isActive: boolean;
   };
+  customMethods?: CustomPaymentMethod[];
   updatedAt?: string;
 }
 
@@ -207,7 +222,9 @@ router.post('/', isAdmin, async (req, res) => {
       vodafone,
       binance,
       cryptoBnb,
-      paypal
+      rewarble,
+      paypal,
+      customMethods
     } = req.body;
 
     const updatedConfig: CurrencyConfig = {
@@ -220,7 +237,9 @@ router.post('/', isAdmin, async (req, res) => {
       vodafone: vodafone ? { ...current.vodafone, ...vodafone } : current.vodafone,
       binance: binance ? { ...current.binance, ...binance } : current.binance,
       cryptoBnb: cryptoBnb ? { ...current.cryptoBnb, ...cryptoBnb } : current.cryptoBnb,
+      rewarble: rewarble ? { ...(current.rewarble || DEFAULT_CONFIG.rewarble), ...rewarble } : current.rewarble,
       paypal: paypal ? { ...current.paypal, ...paypal } : current.paypal,
+      customMethods: customMethods !== undefined ? customMethods : current.customMethods,
       updatedAt: new Date().toISOString()
     };
 
@@ -237,4 +256,5 @@ router.post('/', isAdmin, async (req, res) => {
   }
 });
 
+export { loadConfig, saveConfig, DEFAULT_CONFIG };
 export default router;

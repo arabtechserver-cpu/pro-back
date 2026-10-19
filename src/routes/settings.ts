@@ -5,6 +5,12 @@ import { isAdmin } from '../middleware/auth';
 import { normalizeTelegramAdminChatIds } from '../utils/telegram-config';
 import { saveAdminChatIdsToDb } from '../utils/telegramService';
 import { loadConfig, saveConfig, DEFAULT_CONFIG, CurrencyConfig, CustomPaymentMethod } from './currencies';
+import {
+  getAutoDispatchConfig,
+  saveAutoDispatchConfig,
+  isAutoDispatchActive,
+  AutoDispatchConfig
+} from '../services/orderDispatchService';
 
 const router = Router();
 
@@ -237,6 +243,90 @@ router.post('/payment-methods', isAdmin, async (req: any, res) => {
   } catch (err: any) {
     console.error('Error saving payment methods:', err);
     return res.status(500).json({ error: 'حدث خطأ غير متوقع أثناء حفظ طرق الدفع' });
+  }
+});
+
+// GET /api/settings/auto-dispatch
+router.get('/auto-dispatch', isAdmin, async (_req, res) => {
+  try {
+    const config = await getAutoDispatchConfig();
+    const status = isAutoDispatchActive(config);
+    return res.json({
+      success: true,
+      config,
+      status: {
+        isActiveNow: status.active,
+        currentSudanTime: status.sudanTime,
+        currentSudanDate: status.sudanDate,
+        reason: status.reason
+      }
+    });
+  } catch (err: any) {
+    console.error('Error fetching auto-dispatch settings:', err);
+    return res.status(500).json({ error: 'خطأ في جلب إعدادات الإرسال التلقائي' });
+  }
+});
+
+// POST /api/settings/auto-dispatch
+router.post('/auto-dispatch', isAdmin, async (req: any, res) => {
+  try {
+    const {
+      enabled,
+      scheduleMode,
+      startTime,
+      endTime,
+      includeApiOrders,
+      includeWebOrders,
+      notifyOnFailure,
+      currentPassword
+    } = req.body;
+
+    if (currentPassword) {
+      const adminUser = await prisma.user.findUnique({ where: { id: req.user.id } });
+      if (!adminUser) {
+        return res.status(401).json({ error: 'المستخدم غير موجود' });
+      }
+      const isMatch = await bcrypt.compare(currentPassword, adminUser.password);
+      if (!isMatch) {
+        return res.status(400).json({ error: 'كلمة المرور الحالية غير صحيحة' });
+      }
+    }
+
+    const timeRegex = /^([01]\d|2[0-3]):[0-5]\d$/;
+    if (startTime !== undefined && !timeRegex.test(String(startTime).trim())) {
+      return res.status(400).json({ error: 'صيغة وقت البداية غير صالحة. يجب أن تكون بتنسيق HH:MM' });
+    }
+    if (endTime !== undefined && !timeRegex.test(String(endTime).trim())) {
+      return res.status(400).json({ error: 'صيغة وقت الانتهاء غير صالحة. يجب أن تكون بتنسيق HH:MM' });
+    }
+
+    const payload: Partial<AutoDispatchConfig> = {
+      enabled: enabled !== undefined ? sanitizeBool(enabled, false) : undefined,
+      scheduleMode: scheduleMode === 'scheduled' ? 'scheduled' : 'always',
+      startTime: startTime ? String(startTime).trim() : undefined,
+      endTime: endTime ? String(endTime).trim() : undefined,
+      includeApiOrders: includeApiOrders !== undefined ? sanitizeBool(includeApiOrders, true) : undefined,
+      includeWebOrders: includeWebOrders !== undefined ? sanitizeBool(includeWebOrders, true) : undefined,
+      notifyOnFailure: notifyOnFailure !== undefined ? sanitizeBool(notifyOnFailure, true) : undefined
+    };
+
+    const updated = await saveAutoDispatchConfig(payload, req.user?.username || req.user?.email || 'admin');
+    const status = isAutoDispatchActive(updated);
+
+    return res.json({
+      success: true,
+      message: 'تم حفظ وتحديث إعدادات الإرسال التلقائي للمزود بنجاح',
+      config: updated,
+      status: {
+        isActiveNow: status.active,
+        currentSudanTime: status.sudanTime,
+        currentSudanDate: status.sudanDate,
+        reason: status.reason
+      }
+    });
+  } catch (err: any) {
+    console.error('Error saving auto-dispatch settings:', err);
+    return res.status(500).json({ error: 'حدث خطأ غير متوقع أثناء حفظ إعدادات الإرسال التلقائي' });
   }
 });
 

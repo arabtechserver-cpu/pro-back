@@ -12,6 +12,7 @@ import { getServiceQuantityConfig } from '../utils/provider-quantity';
 import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
 import { validateBody } from '../middleware/validate';
 import { createOrderSchema } from '../schemas/order.schema';
+import { dispatchOrderToProvider, tryAutoDispatchOrder } from '../services/orderDispatchService';
 
 const router = Router();
 
@@ -71,11 +72,11 @@ export async function enrichOrdersWithProviderData(orders: any[], isAdmin = fals
       apiDetails: isAdmin ? (metadata.apiDetails || null) : null,
       provider: isAdmin && srv?.apiProvider
         ? {
-            id: srv.apiProvider.id,
-            name: srv.apiProvider.name,
-            apiUrl: srv.apiProvider.apiUrl,
-            type: srv.apiProvider.type
-          }
+          id: srv.apiProvider.id,
+          name: srv.apiProvider.name,
+          apiUrl: srv.apiProvider.apiUrl,
+          type: srv.apiProvider.type
+        }
         : null,
       serviceDhruId: srv?.dhruId || null,
       providerServiceId: srv?.dhruId ? getProviderRemoteServiceId(srv.dhruId) : null,
@@ -168,23 +169,23 @@ router.get('/', authenticateToken, async (req: any, res) => {
           OR: orClauses
         },
         orderBy: { createdAt: 'desc' },
-      include: {
-        user: {
-          select: {
-            id: true,
-            fullName: true,
-            email: true,
-            username: true,
-            phone: true,
-            balance: true,
-            apiEnabled: true,
-            apiSiteName: true,
-            apiSiteUrl: true,
-            apiMargin: true
+        include: {
+          user: {
+            select: {
+              id: true,
+              fullName: true,
+              email: true,
+              username: true,
+              phone: true,
+              balance: true,
+              apiEnabled: true,
+              apiSiteName: true,
+              apiSiteUrl: true,
+              apiMargin: true
+            }
           }
         }
-      }
-    });
+      });
 
       let enriched: any[] = userOrders;
       try {
@@ -295,7 +296,7 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
     // 1. Wrap all state changes and coupon validation in a single Prisma Transaction to prevent Race Conditions
     let newOrder: any;
     let updatedUser: any;
-    
+
     try {
       [newOrder, updatedUser] = await prisma.$transaction(async (tx) => {
         let appliedCoupon: any = null;
@@ -460,7 +461,7 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
       if (txError.message === 'COUPON_EXPIRED') return res.status(400).json({ error: 'لقد انتهت صلاحية كود الخصم هذا' });
       if (txError.message === 'COUPON_EXHAUSTED') return res.status(400).json({ error: 'تم استنفاد الحد الأقصى لاستخدام كود الخصم هذا' });
       if (txError.message === 'COUPON_ALREADY_USED') return res.status(400).json({ error: 'لقد استفدت من كود الخصم هذا مسبقاً' });
-      
+
       if (txError.message === 'INSUFFICIENT_BALANCE') {
         return res.status(400).json({
           error: `رصيد محفظتك غير كافٍ! يرجى شحن المحفظة أولاً.`
@@ -471,23 +472,42 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
           error: `رصيد محفظتك غير كافٍ لإتمام الطلب أو تغير الرصيد أثناء المعالجة.`
         });
       }
-      
+
       // If the error is a Prisma unique constraint violation on CouponUsage
       if (txError.code === 'P2002' && txError.meta?.target?.includes('couponId_userId')) {
         return res.status(400).json({
           error: 'تم استخدام هذا الكوبون مسبقاً بطريقة متزامنة، لا يمكن استخدامه مرة أخرى.'
         });
       }
-      
+
       throw txError; // re-throw to outer catch block
     }
 
-    console.log(`[Order Created (Pending Approval)] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${newOrder.price} - Remaining Balance: $${updatedUser.balance}`);
+    console.log(`[Order Created] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${newOrder.price} - Remaining Balance: $${updatedUser.balance}`);
 
-    // 4. Send Telegram Alert to Admin
+    // 4. Attempt Auto-Dispatch to Provider if enabled and within Sudan operating window
+    let autoDispatched = false;
+    let autoDispatchRef: string | null = null;
+    try {
+      const autoDispatchResult = await tryAutoDispatchOrder(newOrder.id, 'web');
+      if (autoDispatchResult.attempted && autoDispatchResult.success) {
+        autoDispatched = true;
+        autoDispatchRef = autoDispatchResult.apiOrderId || null;
+        newOrder.status = 'processing';
+        newOrder.apiOrderId = autoDispatchRef;
+      }
+    } catch (autoErr) {
+      console.error('[Auto-Dispatch Order Error]:', autoErr);
+    }
+
+    // 5. Send Telegram Alert to Admin
     const providerName = dhruService?.apiProvider?.name || 'سيرفر محلي / يدوي';
+    const statusText = autoDispatched
+      ? `تم الإرسال للمزود تلقائياً (رقم المرجع: #${autoDispatchRef || 'تم التسليم'})`
+      : 'في انتظار موافقة الإدارة أو التنفيذ اليدوي';
+
     const caption = `
-<b>طلب خدمة جديد في انتظار موافقة الإدارة (New Order Pending)</b>
+<b>${autoDispatched ? 'طلب خدمة جديد - تم الإرسال للمزود تلقائياً' : 'طلب خدمة جديد في انتظار موافقة الإدارة'}</b>
 
 - <b>رقم الطلب:</b> #${newOrder.id.slice(-6)}
 - <b>العميل:</b> ${dbUser.fullName} (@${dbUser.username})
@@ -500,14 +520,14 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
 - <b>رصيد العميل المتبقي:</b> <code>$${updatedUser.balance.toFixed(2)} USD</code>
 - <b>التاريخ:</b> ${new Date().toLocaleString('ar-EG')}
 
-<b>الحالة:</b> في انتظار الإرسال للمزود أو التنفيذ اليدوي
+<b>الحالة:</b> ${statusText}
     `.trim();
 
     sendTelegramPhotoNotification({ caption }).catch((telegramError: any) => {
       console.error('[Order Telegram Notification Error]:', telegramError?.message || telegramError);
     });
 
-    // 5. Send Order Confirmation Email to Customer
+    // 6. Send Order Confirmation Email to Customer
     if (dbUser.email) {
       sendOrderConfirmationEmail(dbUser.email, {
         orderId: newOrder.id.slice(-6),
@@ -519,13 +539,18 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
       }).catch((err) => console.error('[Order Email Error]:', err));
     }
 
+    const customerMessage = autoDispatched
+      ? `تم استلام طلبك وإرساله للمزود تلقائياً بنجاح! رقم الطلب #${newOrder.id.slice(-6)} وهو الآن قيد التنفيذ.`
+      : `تم استلام وتأكيد طلبك بنجاح! رقم الطلب #${newOrder.id.slice(-6)} وهو الآن قيد الانتظار والمراجعة.`;
+
     return res.json({
       success: true,
-      message: `تم استلام وتأكيد طلبك بنجاح! رقم الطلب #${newOrder.id.slice(-6)} وهو الآن قيد الانتظار والمراجعة.`,
+      message: customerMessage,
       order: {
         ...newOrder,
         provider: dhruService?.apiProvider ? { name: dhruService.apiProvider.name } : null
       },
+      autoDispatched,
       newBalance: updatedUser.balance
     });
   } catch (error: any) {
@@ -542,194 +567,20 @@ router.post('/dispatch-provider', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'معرف الطلب مطلوب' });
     }
 
-    const order = await prisma.order.findUnique({
-      where: { id: orderId },
-      include: { user: true }
+    const result = await dispatchOrderToProvider(orderId, {
+      isAuto: false,
+      requestedBy: (req as any).user?.username || (req as any).user?.email || 'admin'
     });
 
-    if (!order) {
-      return res.status(404).json({ error: 'الطلب غير موجود' });
+    if (!result.success) {
+      return res.status(result.statusCode || 400).json({ error: result.error });
     }
-
-    const reservation = await prisma.order.updateMany({
-      where: {
-        id: orderId,
-        status: 'pending',
-        apiOrderId: null,
-        refundedAt: null
-      },
-      data: {
-        status: 'dispatching'
-      }
-    });
-
-    if (reservation.count === 0) {
-      return res.status(400).json({
-        error: 'لا يمكن إرسال الطلب: الطلب قيد الإرسال، أو تم إرساله مسبقاً، أو مسترد، أو ليس في حالة انتظار.'
-      });
-    }
-
-    // Look up DhruService & Provider
-    const dhruService = await prisma.dhruService.findFirst({
-      where: {
-        OR: [{ id: String(order.serviceId) }, { dhruId: String(order.serviceId) }]
-      },
-      include: { dhruCategory: true, apiProvider: true }
-    });
-
-    if (!dhruService || !dhruService.dhruId) {
-      await prisma.order.update({
-        where: { id: orderId },
-        data: { status: 'pending' }
-      });
-      return res.status(400).json({
-        error: 'عذراً، هذه الخدمة غير مربوطة بكود خدمة صحيح لدى المزود (Missing Dhru ID)'
-      });
-    }
-
-    const providerConfig = dhruService.apiProvider
-      ? {
-          apiUrl: dhruService.apiProvider.apiUrl,
-          username: dhruService.apiProvider.username,
-          apiKey: dhruService.apiProvider.apiKey
-        }
-      : undefined;
-
-    // Parse custom fields if stored in notes
-    let customFields: Record<string, string> = {};
-    let rawImei = '';
-    let parsedNotes: any = {};
-    try {
-      if (order.notes) {
-        parsedNotes = JSON.parse(order.notes);
-        if (parsedNotes.customFields) customFields = parsedNotes.customFields;
-        if (parsedNotes.rawImei) rawImei = parsedNotes.rawImei;
-      }
-    } catch {}
-
-    let dhruResponse: any = null;
-    let apiOrderId: string | null = null;
-    const providerCustomFields = normalizeProviderCustomFields(customFields, dhruService.requiresCustom);
-    if (order.quantity > 0) {
-      providerCustomFields['QNT'] = String(order.quantity);
-    }
-
-    const serviceType = resolveOrderServiceType(
-      dhruService.apiServiceType,
-      dhruService.dhruCategory?.name,
-      dhruService.groupName
-    );
-    parsedNotes.dispatchProviderId = dhruService.providerId || null;
-    parsedNotes.dispatchServiceId = dhruService.id;
-    parsedNotes.dispatchServiceType = serviceType;
-    if (serviceType === 'imei') {
-      const imeiToSend = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
-      dhruResponse = await placeImeiOrder(getProviderRemoteServiceId(dhruService.dhruId), imeiToSend, providerCustomFields, providerConfig);
-    } else {
-      const inputToSend = String(order.targetInput).trim();
-      dhruResponse = await placeServerOrder(getProviderRemoteServiceId(dhruService.dhruId), order.quantity, providerCustomFields, inputToSend, providerConfig);
-    }
-
-    if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
-      console.error('[Dispatch Provider Error]:', dhruResponse);
-      const rawErrMsg =
-        dhruResponse?.Error ||
-        dhruResponse?.ERROR?.[0]?.MESSAGE ||
-        dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION ||
-        'رفض المزود الطلب';
-
-      const responseStr = JSON.stringify(dhruResponse || {}).toLowerCase();
-      const isCreditError =
-        responseStr.includes('creditprocesserror') ||
-        responseStr.includes('not enough credit') ||
-        responseStr.includes('insufficient credit') ||
-        responseStr.includes('low credit');
-
-      const isInvalidAction =
-        responseStr.includes('invalid action') ||
-        responseStr.includes('command not found') ||
-        responseStr.includes('action not found');
-
-      const userFacingMsg = isCreditError
-        ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
-        : isInvalidAction
-          ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`
-          : `رفض المزود الطلب: ${rawErrMsg}`;
-
-      // Record dispatch failure in order timeline
-      const now = new Date();
-      const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
-      events.push({
-        time: now.toISOString(),
-        action: 'DISPATCH_FAILED',
-        title: isCreditError
-          ? 'فشل الإرسال: رصيد المزود غير كاف'
-          : isInvalidAction
-            ? 'فشل الإرسال: نوع العملية غير مدعوم (Invalid Action)'
-            : 'فشل الإرسال للمزود',
-        desc: userFacingMsg
-      });
-      parsedNotes.events = events;
-
-      await prisma.order.update({
-        where: { id: orderId },
-        data: {
-          status: 'pending',
-          notes: JSON.stringify(parsedNotes)
-        }
-      });
-
-      // Send immediate Telegram alert to Admin if provider balance is exhausted
-      if (isCreditError) {
-        try {
-          const providerName = dhruService.apiProvider?.name || 'سيرفر المزود';
-          void sendTelegramPhotoNotification({
-            caption:
-              `<b>تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي</b>\n\n` +
-              `- <b>رقم الطلب:</b> #${order.id.slice(-6)}\n` +
-              `- <b>اسم الخدمة:</b> ${dhruService.name}\n` +
-              `- <b>المزود المربوط:</b> ${providerName}\n` +
-              `- <b>سبب الرفض:</b> <code>رصيد حسابك لدى المزود غير كاف (You have not enough credit)</code>\n\n` +
-              `<b>الإجراء المطلوب:</b> يرجى شحن رصيد حسابك في موقع المزود ثم فتح لوحة الإدارة وإعادة إرسال الطلب.`
-          });
-        } catch (tgErr) {
-          console.error('[Dispatch Provider Telegram Alert Error]:', tgErr);
-        }
-      }
-
-      return res.status(400).json({ error: `فشل الإرسال: ${userFacingMsg}` });
-    }
-
-    if (dhruResponse.SUCCESS && dhruResponse.SUCCESS[0] && dhruResponse.SUCCESS[0].REFERENCEID) {
-      apiOrderId = String(dhruResponse.SUCCESS[0].REFERENCEID);
-    }
-
-    // Add Timeline Event
-    const now = new Date();
-    const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
-    events.push({
-      time: now.toISOString(),
-      action: 'DISPATCHED_TO_PROVIDER',
-      title: 'تم الإرسال للمزود بنجاح',
-      desc: `تم إرسال الطلب آلياً إلى سيرفر (${dhruService.apiProvider?.name || 'المزود'}). رقم المرجع الخارجي: #${apiOrderId || 'N/A'}.`
-    });
-
-    parsedNotes.events = events;
-
-    const updatedOrder = await prisma.order.update({
-      where: { id: orderId },
-      data: {
-        status: 'processing',
-        apiOrderId: apiOrderId || order.apiOrderId,
-        notes: JSON.stringify(parsedNotes)
-      }
-    });
 
     return res.json({
       success: true,
-      message: `تم إرسال الطلب إلى المزود بنجاح! رقم المرجع: #${apiOrderId || 'تم التسليم'}`,
-      order: updatedOrder,
-      apiOrderId
+      message: result.message,
+      order: result.order,
+      apiOrderId: result.apiOrderId
     });
   } catch (error: any) {
     console.error('Error dispatching order to provider:', error);
@@ -755,7 +606,7 @@ router.post('/complete-manual', isAdmin, async (req, res) => {
     let parsedNotes: any = {};
     try {
       if (order.notes) parsedNotes = JSON.parse(order.notes);
-    } catch {}
+    } catch { }
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
@@ -828,10 +679,10 @@ router.post('/refund', isAdmin, async (req, res) => {
 
         const providerConfig = dhruService?.apiProvider
           ? {
-              apiUrl: dhruService.apiProvider.apiUrl,
-              username: dhruService.apiProvider.username,
-              apiKey: dhruService.apiProvider.apiKey
-            }
+            apiUrl: dhruService.apiProvider.apiUrl,
+            username: dhruService.apiProvider.username,
+            apiKey: dhruService.apiProvider.apiKey
+          }
           : undefined;
 
         const serviceType = dhruService
@@ -867,7 +718,7 @@ router.post('/refund', isAdmin, async (req, res) => {
     let parsedNotes: any = {};
     try {
       if (order.notes) parsedNotes = JSON.parse(order.notes);
-    } catch {}
+    } catch { }
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
@@ -918,7 +769,7 @@ router.post('/refund', isAdmin, async (req, res) => {
             }
           });
         }
-        
+
         return uOrder;
       });
     } catch (txError: any) {
@@ -968,7 +819,7 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
     let parsedNotes: any = {};
     try {
       if (order.notes) parsedNotes = JSON.parse(order.notes);
-    } catch {}
+    } catch { }
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
@@ -1019,7 +870,7 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
             }
           });
         }
-        
+
         return uOrder;
       });
     } catch (txError: any) {
@@ -1092,10 +943,10 @@ router.post('/check-status', isAdmin, async (req, res) => {
 
     const providerConfig = dhruService?.apiProvider
       ? {
-          apiUrl: dhruService.apiProvider.apiUrl,
-          username: dhruService.apiProvider.username,
-          apiKey: dhruService.apiProvider.apiKey
-        }
+        apiUrl: dhruService.apiProvider.apiUrl,
+        username: dhruService.apiProvider.username,
+        apiKey: dhruService.apiProvider.apiKey
+      }
       : undefined;
 
     let response: any = null;
@@ -1144,16 +995,16 @@ router.post('/check-status', isAdmin, async (req, res) => {
     let nextStatus = order.status;
     let reply = order.reply;
 
-    const isCompleted = rawStatus === "4" 
-      || statusLower.includes("complet") 
-      || statusLower.includes("success") 
-      || statusText.includes("complet") 
+    const isCompleted = rawStatus === "4"
+      || statusLower.includes("complet")
+      || statusLower.includes("success")
+      || statusText.includes("complet")
       || statusText.includes("success");
 
-    const isRejected = rawStatus === "3" 
-      || statusLower.includes("reject") 
-      || statusLower.includes("cancel") 
-      || statusText.includes("reject") 
+    const isRejected = rawStatus === "3"
+      || statusLower.includes("reject")
+      || statusLower.includes("cancel")
+      || statusText.includes("reject")
       || statusText.includes("cancel");
 
     if (isCompleted) {

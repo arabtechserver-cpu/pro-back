@@ -21,6 +21,8 @@ import {
   getFoxreloadOrderDetails
 } from '../services/foxreloadService';
 
+import { tryAutoDispatchOrder } from '../services/orderDispatchService';
+
 const router = Router();
 
 // IP-based global rate limit
@@ -628,6 +630,20 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
     throw err;
   }
 
+  let autoDispatched = false;
+  let autoDispatchRef: string | null = null;
+  try {
+    const autoResult = await tryAutoDispatchOrder(order.id, 'api');
+    if (autoResult.attempted && autoResult.success) {
+      autoDispatched = true;
+      autoDispatchRef = autoResult.apiOrderId || null;
+      order.status = 'processing';
+      order.apiOrderId = autoDispatchRef;
+    }
+  } catch (autoErr) {
+    console.error('[External API Auto-Dispatch Error]:', autoErr);
+  }
+
   const providerName = dhruService.apiProvider?.name || 'سيرفر محلي / يدوي';
   const caption = `
 [NEW API ORDER] <b>طلب API جديد في انتظار اعتماد الإدارة</b>
@@ -644,9 +660,11 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
 
   return res.json({
     SUCCESS: [{
-      MESSAGE: "Order placed successfully and is pending admin approval",
+      MESSAGE: autoDispatched
+        ? `Order placed and dispatched to provider successfully (Reference: #${autoDispatchRef || 'Dispatched'})`
+        : "Order placed successfully and is pending admin approval",
       REFERENCEID: order.id,
-      STATUS: "1"
+      STATUS: autoDispatched ? "2" : "1"
     }]
   });
 }

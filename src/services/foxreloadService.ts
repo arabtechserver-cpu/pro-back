@@ -197,7 +197,7 @@ export async function callFoxreloadApi(
   currency: string = 'usd',
   customApiKey?: string,
   readTimeoutMs?: number
-): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
+): Promise<{ ok: boolean; status: number; data: any; raw: string; retryAfterMs?: number }> {
   const readDeadline = readTimeoutMs === undefined ? Infinity : Date.now() + readTimeoutMs;
   return (method === 'GET' ? providerReads : providerWrites).run(() => {
     if (method === 'GET' && Date.now() >= readDeadline) throw new RequestDeadlineError();
@@ -213,7 +213,7 @@ async function requestFoxreloadApi(
   currency: string = 'usd',
   customApiKey?: string,
   readTimeoutMs = 5000
-): Promise<{ ok: boolean; status: number; data: any; raw: string }> {
+): Promise<{ ok: boolean; status: number; data: any; raw: string; retryAfterMs?: number }> {
   const apiKey = (customApiKey || (await getFoxreloadSettings()).apiKey || getEnvApiKey()).trim();
 
   if (!apiKey) {
@@ -270,11 +270,26 @@ async function requestFoxreloadApi(
           console.warn(`[FoxReload API Error] ${method} ${endpointPath} - Status: ${res.statusCode} - Response:`, data);
         }
 
+        // Parse Retry-After header on 429 so callers can back off properly
+        let retryAfterMs: number | undefined;
+        if (res.statusCode === 429) {
+          const retryHeader = res.headers['retry-after'];
+          if (retryHeader) {
+            const seconds = Number(retryHeader);
+            retryAfterMs = Number.isFinite(seconds) && seconds > 0
+              ? seconds * 1000
+              : 60_000;
+          } else {
+            retryAfterMs = 60_000;
+          }
+        }
+
         resolve({
           ok: isOk,
           status: res.statusCode || 500,
           data: parsed,
           raw: data,
+          retryAfterMs,
         });
       });
     });
@@ -535,7 +550,7 @@ export function clearCatalogCache() {
 
 // Follow the documented offset/cursor pagination; publish only complete snapshots.
 export async function readFoxreloadProductPages(
-  fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; data: any }>,
+  fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; data: any; retryAfterMs?: number }>,
   categoryId?: string,
   budgetMs = 22000,
   state: ProductWalkState = newProductWalk(),
@@ -551,6 +566,18 @@ export async function readFoxreloadProductPages(
     if (useCursor) { query.set('includeDescendants', 'true'); if (state.cursor) query.set('cursor', state.cursor); }
     else query.set('offset', String(state.offset));
     const response = await fetchPage(`/api/products/?${query}`, Math.min(10000, budgetMs - (Date.now() - started)));
+
+    // Respect Retry-After on rate limit — wait then retry the same page
+    if (!response.ok && response.retryAfterMs) {
+      const waitMs = Math.min(response.retryAfterMs, budgetMs - (Date.now() - started) - 1000);
+      if (waitMs > 0) {
+        console.warn(`[FoxReload] Rate limited (429). Backing off ${waitMs}ms before retrying.`);
+        await new Promise(r => setTimeout(r, waitMs));
+        continue;
+      }
+      throw new RequestDeadlineError();
+    }
+
     if (!response.ok || !Array.isArray(response.data?.items)) {
       throw new ProductPageUnavailable('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published');
     }
@@ -594,8 +621,8 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
       const items = await readFoxreloadProductPages(async (path, budget) => {
         if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
         let response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, budget);
-        // Retry only a failed read page. Never replay order writes.
-        if (!response.ok && (response.status >= 500 || response.status === 429)) {
+        // On 5xx, do a single immediate retry. On 429, let readFoxreloadProductPages handle the backoff.
+        if (!response.ok && response.status >= 500 && response.status !== 429) {
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw new RequestDeadlineError();
           response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
@@ -658,7 +685,8 @@ export async function getFoxreloadEsimProducts(forceRefresh = false, waitMs = 22
         readFoxreloadProductPages(async (endpoint, budget) => {
           if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
           let response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, budget);
-          if (!response.ok && (response.status >= 500 || response.status === 429)) {
+          // On 5xx, do a single immediate retry. On 429, let readFoxreloadProductPages handle the backoff.
+          if (!response.ok && response.status >= 500 && response.status !== 429) {
             const remaining = deadline - Date.now();
             if (remaining <= 0) throw new RequestDeadlineError();
             response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
@@ -868,6 +896,8 @@ async function loadFoxreloadCategoryProducts(
   } catch (error) {
     const cached = categoryProductsCache.get(categoryId);
     if (cached) return cached.data;
+    const snapshotProducts = lastProductsSnapshot?.data?.filter(p => p.categoryId === categoryId);
+    if (snapshotProducts && snapshotProducts.length > 0) return snapshotProducts;
     throw error;
   }
   const mapped = items

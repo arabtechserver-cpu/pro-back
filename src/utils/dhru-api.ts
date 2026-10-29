@@ -75,6 +75,10 @@ export interface ProviderConfig {
   apiKey?: string;
 }
 
+// Per-hostname TLS failure cooldown — prevents hammering a provider with a broken cert
+const tlsCooldowns = new Map<string, number>();
+const TLS_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+
 export function formatProviderConnectionError(error: { code?: string; message: string }, hostname: string): string {
   if (error.code === "ERR_TLS_CERT_ALTNAME_INVALID") {
     return `${error.message}. Correct the HTTPS certificate/DNS for ${hostname} or configure the provider's verified API URL.`;
@@ -224,6 +228,14 @@ export function dhruApiRequest(
         return resolve({ error: "SSRF Attempt Detected: Blocked local/private network address", SUCCESS: false });
       }
 
+      // Skip request immediately if this hostname recently had a TLS cert failure
+      const cooldownUntil = tlsCooldowns.get(urlObj.hostname);
+      if (cooldownUntil && Date.now() < cooldownUntil) {
+        const remainingSec = Math.ceil((cooldownUntil - Date.now()) / 1000);
+        console.warn(`[Dhru API] Skipping ${urlObj.hostname} — TLS cert failure cooldown active (${remainingSec}s remaining)`);
+        return resolve({ error: formatProviderConnectionError({ code: "ERR_TLS_CERT_ALTNAME_INVALID", message: "TLS certificate mismatch — provider skipped during cooldown" }, urlObj.hostname), SUCCESS: false, transportError: true });
+      }
+
       let safeAddress: string;
       try {
         const { address } = await withinDeadline(lookup(urlObj.hostname), 3000);
@@ -272,8 +284,14 @@ export function dhruApiRequest(
         });
       });
 
-      req.on("error", (err) => {
-        console.error(`[Dhru API Exception] URL: ${targetUrl} | Error:`, err.message);
+      req.on("error", (err: any) => {
+        if (err.code === "ERR_TLS_CERT_ALTNAME_INVALID") {
+          tlsCooldowns.set(urlObj.hostname, Date.now() + TLS_COOLDOWN_MS);
+          console.error(`[Dhru API Exception] URL: ${targetUrl} | Error:`, err.message);
+          console.error(`[Dhru API] TLS cert mismatch on ${urlObj.hostname} — suppressing retries for ${TLS_COOLDOWN_MS / 60000} minutes`);
+        } else {
+          console.error(`[Dhru API Exception] URL: ${targetUrl} | Error:`, err.message);
+        }
         resolve({ error: formatProviderConnectionError(err, urlObj.hostname), SUCCESS: false, transportError: true });
       });
 

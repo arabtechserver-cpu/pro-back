@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node provider-order-errors.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js && node binance-pay-integration.test.js && node paypal-config.test.js && node invalid-action-fallback.test.js && node auto-dispatch.test.js",
+    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node provider-order-errors.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js && node binance-pay-integration.test.js && node paypal-config.test.js && node paypal-server.test.js && node invalid-action-fallback.test.js && node auto-dispatch.test.js",
     "dev": "nodemon --watch src --exec tsx src/server.ts",
     "build": "npx prisma generate && tsc",
     "start": "node dist/server.js",

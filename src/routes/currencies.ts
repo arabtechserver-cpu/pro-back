@@ -82,6 +82,7 @@ export interface CurrencyConfig {
     nameAr?: string;
     nameEn?: string;
     email: string;
+    clientId?: string;
     isActive: boolean;
   };
   customMethods?: CustomPaymentMethod[];
@@ -234,7 +235,15 @@ async function saveConfig(config: CurrencyConfig): Promise<boolean> {
 // GET /api/currencies - Public & Authenticated endpoint to get current exchange rates & bank details
 router.get('/', async (req, res) => {
   const config = await loadConfig();
-  res.json({ success: true, config });
+  const runtimePaypalClientId = (process.env.PAYPAL_CLIENT_ID || '').trim();
+  const responseConfig = {
+    ...config,
+    paypal: {
+      ...config.paypal,
+      clientId: runtimePaypalClientId || config.paypal?.clientId || ''
+    }
+  };
+  res.json({ success: true, config: responseConfig });
 });
 
 // POST /api/currencies - Admin endpoint to update currency rates and payment settings

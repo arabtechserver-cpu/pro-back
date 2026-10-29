@@ -11,6 +11,12 @@ const router = Router();
 // Mutex (In-memory Lock) to prevent local double-capture race conditions
 const captureMutex = new Set<string>();
 
+// GET /api/wallet/paypal/client-id
+router.get('/client-id', (_req, res) => {
+  const clientId = (process.env.PAYPAL_CLIENT_ID || '').trim();
+  res.json({ success: true, clientId });
+});
+
 // POST /api/wallet/paypal/create-order
 router.post('/create-order', authenticateToken, async (req: any, res) => {
   try {

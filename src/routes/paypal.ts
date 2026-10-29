@@ -5,6 +5,7 @@ import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { authenticateToken } from '../middleware/auth';
 import { applyPayPalRefund, PayPalRefundError } from '../services/paypalRefunds';
+import { getPublicPayPalConfig } from '../utils/paypalConfig';
 
 const router = Router();
 
@@ -13,8 +14,8 @@ const captureMutex = new Set<string>();
 
 // GET /api/wallet/paypal/client-id
 router.get('/client-id', (_req, res) => {
-  const clientId = (process.env.PAYPAL_CLIENT_ID || '').trim();
-  res.json({ success: true, clientId });
+  res.setHeader('Cache-Control', 'no-store');
+  res.json({ success: true, ...getPublicPayPalConfig() });
 });
 
 // POST /api/wallet/paypal/create-order
@@ -23,6 +24,10 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
     const userId = req.user?.id;
     if (!userId) {
       return res.status(401).json({ error: 'يجب تسجيل الدخول لإنشاء طلب الدفع' });
+    }
+
+    if (!getPublicPayPalConfig().configured) {
+      return res.status(503).json({ error: 'خدمة PayPal غير متاحة حالياً. يرجى التواصل مع الدعم أو اختيار وسيلة دفع أخرى.' });
     }
 
     const { amount } = req.body;

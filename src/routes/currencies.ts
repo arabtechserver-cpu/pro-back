@@ -3,6 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { isAdmin } from '../middleware/auth';
 import { prisma } from '../utils/prisma';
+import { getPublicPayPalConfig } from '../utils/paypalConfig';
 
 const router = Router();
 const DATA_FILE = path.join(__dirname, '../data/currencies.json');
@@ -235,12 +236,11 @@ async function saveConfig(config: CurrencyConfig): Promise<boolean> {
 // GET /api/currencies - Public & Authenticated endpoint to get current exchange rates & bank details
 router.get('/', async (req, res) => {
   const config = await loadConfig();
-  const runtimePaypalClientId = (process.env.PAYPAL_CLIENT_ID || '').trim();
   const responseConfig = {
     ...config,
     paypal: {
       ...config.paypal,
-      clientId: runtimePaypalClientId || config.paypal?.clientId || ''
+      ...getPublicPayPalConfig()
     }
   };
   res.json({ success: true, config: responseConfig });

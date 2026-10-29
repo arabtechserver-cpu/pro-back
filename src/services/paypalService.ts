@@ -1,22 +1,16 @@
 import axios from 'axios';
-
-const DEFAULT_PAYPAL_CLIENT_ID = 'BAAbEQaWk1wH9kFIGVcnl3bBqttl4pQAzD_bnhnYtI25cmXaUTI-M78p7c7nS7gm7tkA9K8OJs-rViTBrw';
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID || DEFAULT_PAYPAL_CLIENT_ID;
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET;
-const PAYPAL_MODE = process.env.PAYPAL_MODE || 'live';
-
-const BASE_URL = PAYPAL_MODE === 'live' ? 'https://api-m.paypal.com' : 'https://api-m.sandbox.paypal.com';
+import { getPayPalConfig } from '../utils/paypalConfig';
 
 // 1. Generate OAuth2 Access Token from PayPal
 export async function getPayPalAccessToken(): Promise<string> {
+  const { clientId, clientSecret, configured, baseUrl } = getPayPalConfig();
+  if (!configured) {
+    throw new Error('بيانات PayPal غير مكتملة في إعدادات السيرفر (PAYPAL_CLIENT_ID و PAYPAL_CLIENT_SECRET).');
+  }
   try {
-    if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
-      throw new Error('بيانات الاعتماد الخاصة بـ PayPal غير متوفرة في إعدادات السيرفر.');
-    }
-
-    const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64');
+    const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
     const response = await axios({
-      url: `${BASE_URL}/v1/oauth2/token`,
+      url: `${baseUrl}/v1/oauth2/token`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -39,7 +33,7 @@ export async function createPayPalOrder(amountUSD: number, returnUrl: string, ca
     const formattedAmount = Number(amountUSD).toFixed(2);
 
     const response = await axios({
-      url: `${BASE_URL}/v2/checkout/orders`,
+      url: `${getPayPalConfig().baseUrl}/v2/checkout/orders`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -86,7 +80,7 @@ export async function getPayPalOrderDetails(orderId: string) {
   try {
     const accessToken = await getPayPalAccessToken();
     const response = await axios({
-      url: `${BASE_URL}/v2/checkout/orders/${orderId}`,
+      url: `${getPayPalConfig().baseUrl}/v2/checkout/orders/${orderId}`,
       method: 'GET',
       headers: {
         'Content-Type': 'application/json',
@@ -106,7 +100,7 @@ export async function capturePayPalOrder(orderId: string) {
     const accessToken = await getPayPalAccessToken();
 
     const response = await axios({
-      url: `${BASE_URL}/v2/checkout/orders/${orderId}/capture`,
+      url: `${getPayPalConfig().baseUrl}/v2/checkout/orders/${orderId}/capture`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -176,7 +170,7 @@ export async function verifyPayPalWebhookSignature(
   try {
     const accessToken = await getPayPalAccessToken();
     const response = await axios({
-      url: `${BASE_URL}/v1/notifications/verify-webhook-signature`,
+      url: `${getPayPalConfig().baseUrl}/v1/notifications/verify-webhook-signature`,
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

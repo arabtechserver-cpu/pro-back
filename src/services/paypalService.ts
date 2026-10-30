@@ -1,17 +1,22 @@
 import axios from 'axios';
 import { getPayPalConfig } from '../utils/paypalConfig';
+import { PayPalGatewayError } from '../utils/paypalError';
 
 // 1. Generate OAuth2 Access Token from PayPal
 export async function getPayPalAccessToken(): Promise<string> {
-  const { clientId, clientSecret, configured, baseUrl } = getPayPalConfig();
+  const { clientId, clientSecret, configured, baseUrl, validMode, mode } = getPayPalConfig();
+  if (!validMode) {
+    throw new PayPalGatewayError('PAYPAL_INVALID_MODE', 503, 'إعداد بيئة PayPal غير صحيح. يجب ضبط PAYPAL_MODE على live أو sandbox.');
+  }
   if (!configured) {
-    throw new Error('بيانات PayPal غير مكتملة في إعدادات السيرفر (PAYPAL_CLIENT_ID و PAYPAL_CLIENT_SECRET).');
+    throw new PayPalGatewayError('PAYPAL_NOT_CONFIGURED', 503, 'بيانات PayPal غير مكتملة في إعدادات السيرفر (PAYPAL_CLIENT_ID و PAYPAL_CLIENT_SECRET).');
   }
   try {
     const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64');
     const response = await axios({
       url: `${baseUrl}/v1/oauth2/token`,
       method: 'POST',
+      timeout: 10000,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
         Authorization: `Basic ${auth}`
@@ -19,10 +24,22 @@ export async function getPayPalAccessToken(): Promise<string> {
       data: 'grant_type=client_credentials'
     });
 
+    if (typeof response.data?.access_token !== 'string' || !response.data.access_token) {
+      throw new PayPalGatewayError('PAYPAL_INVALID_RESPONSE', 502, 'تعذر تأكيد استجابة خدمة PayPal. يرجى المحاولة لاحقاً.');
+    }
     return response.data.access_token;
   } catch (error: any) {
-    console.error('[PayPal Token Error]:', error?.response?.data || error?.message);
-    throw new Error('فشل الحصول على رمز الدخول من سيرفر PayPal. يرجى التحقق من صحة مفاتيح الـ API.');
+    if (error instanceof PayPalGatewayError) throw error;
+    const status = error?.response?.status;
+    const invalidClient = error?.response?.data?.error === 'invalid_client' || status === 401;
+    const timeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT';
+    const code = invalidClient ? 'PAYPAL_AUTH_FAILED' : timeout ? 'PAYPAL_TIMEOUT' : 'PAYPAL_UNAVAILABLE';
+    // Do not log the Axios error/config: its Authorization header contains credentials.
+    console.error('[PayPal Token Error]:', { code, upstreamStatus: status, mode });
+    if (invalidClient) {
+      throw new PayPalGatewayError(code, 503, 'رفض PayPal بيانات الدخول الخاصة ببوابة الدفع على الخادم. يرجى التواصل مع الدعم لمراجعة إعدادات PayPal.');
+    }
+    throw new PayPalGatewayError(code, timeout ? 504 : 502, 'تعذر الاتصال بخدمة PayPal حالياً. يرجى المحاولة لاحقاً.');
   }
 }
 
@@ -35,6 +52,7 @@ export async function createPayPalOrder(amountUSD: number, returnUrl: string, ca
     const response = await axios({
       url: `${getPayPalConfig().baseUrl}/v2/checkout/orders`,
       method: 'POST',
+      timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`
@@ -69,6 +87,7 @@ export async function createPayPalOrder(amountUSD: number, returnUrl: string, ca
       raw: orderData
     };
   } catch (error: any) {
+    if (error instanceof PayPalGatewayError) throw error;
     console.error('[PayPal Create Order Error]:', error?.response?.data || error?.message);
     const errorDetail = error?.response?.data?.details?.[0]?.description || error?.response?.data?.message || error?.message;
     throw new Error(`فشل إنشاء طلب الدفع عبر PayPal: ${errorDetail}`);
@@ -89,6 +108,7 @@ export async function getPayPalOrderDetails(orderId: string) {
     });
     return response.data;
   } catch (error: any) {
+    if (error instanceof PayPalGatewayError) throw error;
     console.error('[PayPal Get Order Details Error]:', error?.response?.data || error?.message);
     throw new Error('فشل التحقق من تفاصيل الطلب من PayPal');
   }
@@ -110,6 +130,7 @@ export async function capturePayPalOrder(orderId: string) {
 
     return response.data;
   } catch (error: any) {
+    if (error instanceof PayPalGatewayError) throw error;
     console.error('[PayPal Capture Order Error]:', error?.response?.data || error?.message);
     const errorName = error?.response?.data?.name;
     const errorIssue = error?.response?.data?.details?.[0]?.issue;

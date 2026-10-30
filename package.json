@@ -8,6 +8,7 @@
     "dev": "nodemon --watch src --exec tsx src/server.ts",
     "build": "npx prisma generate && tsc",
     "start": "node dist/server.js",
+    "paypal:check": "node --env-file-if-exists=.env dist/scripts/checkPayPal.js",
     "db:migrate": "npx prisma migrate deploy",
     "db:push": "npx prisma db push --skip-generate",
     "ip:status": "tsx src/scripts/resetIpRestriction.ts --status",

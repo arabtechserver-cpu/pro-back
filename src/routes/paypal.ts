@@ -6,6 +6,7 @@ import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { authenticateToken } from '../middleware/auth';
 import { applyPayPalRefund, PayPalRefundError } from '../services/paypalRefunds';
 import { getPublicPayPalConfig } from '../utils/paypalConfig';
+import { PayPalGatewayError } from '../utils/paypalError';
 
 const router = Router();
 
@@ -65,6 +66,9 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
       amount: numAmount
     });
   } catch (error: any) {
+    if (error instanceof PayPalGatewayError) {
+      return res.status(error.status).json({ success: false, code: error.code, error: error.message });
+    }
     console.error('Error creating PayPal order:', error);
     return res.status(500).json({ error: error.message || 'حدث خطأ أثناء التواصل مع سيرفر PayPal' });
   }
@@ -245,6 +249,9 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
       captureMutex.delete(cleanOrderId);
     }
   } catch (error: any) {
+    if (error instanceof PayPalGatewayError) {
+      return res.status(error.status).json({ success: false, code: error.code, error: error.message });
+    }
     console.error('Error capturing PayPal order:', error);
     return res.status(400).json({ error: error.message || 'فشل التحقق من صحة الدفع عبر PayPal' });
   }

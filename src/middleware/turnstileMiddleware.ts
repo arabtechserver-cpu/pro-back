@@ -65,7 +65,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
   }
 
   if (token === "cf-turnstile-client-fallback" || token === "turnstile-disabled") {
-    if (process.env.STRICT_TURNSTILE === "true") {
+    if (!isDev || process.env.STRICT_TURNSTILE === "true") {
       return res.status(403).json({
         success: false,
         error: "فشل التحقق الأمني من Cloudflare Turnstile. يرجى المحاولة مرة أخرى.",
@@ -73,7 +73,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
         code: "TURNSTILE_FAILED"
       });
     }
-    console.warn(`[Cloudflare Turnstile] Accepted client fallback for IP: ${clientIp || 'unknown'}`);
+    console.warn(`[Cloudflare Turnstile] Accepted client fallback in development for IP: ${clientIp || 'unknown'}`);
     return next();
   }
 

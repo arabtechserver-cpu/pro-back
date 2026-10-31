@@ -1,7 +1,12 @@
 import { Request, Response, NextFunction } from 'express';
 import { RequestScheduler } from '../utils/request-scheduler';
 
-export function createResourceGuard(maxActive = 16, maxHeavy = 2, queueCapacity = 128, waitMs = 22000) {
+export function createResourceGuard(
+  maxActive = Number(process.env.RESOURCE_GUARD_MAX_ACTIVE || 48),
+  maxHeavy = Number(process.env.RESOURCE_GUARD_MAX_HEAVY || 6),
+  queueCapacity = Number(process.env.RESOURCE_GUARD_QUEUE_CAPACITY || 256),
+  waitMs = Number(process.env.RESOURCE_GUARD_WAIT_MS || 25000)
+) {
   const scheduler = new RequestScheduler(maxActive, maxHeavy, queueCapacity, waitMs);
   return async (req: Request, res: Response, next: NextFunction) => {
     if (req.path === '/api/health') return next();

@@ -13,7 +13,8 @@ import {
   getUnifiedServices,
   getUnifiedPackages,
   getUnifiedCatalogTree,
-  getDhruCompatibleMergedCatalog
+  getDhruCompatibleMergedCatalog,
+  getUnifiedCatalogWithFields
 } from '../services/unifiedCatalogService';
 import {
   callFoxreloadApi,
@@ -248,10 +249,41 @@ router.get('/service/:serviceId/packages', async (req: any, res) => {
 router.get('/tree', async (req: any, res) => {
   try {
     const margin = getUserMargin(req.apiUser);
+    if (req.query.full === 'true' || req.query.includePackages === 'true' || req.query.includeFields === 'true') {
+      const section = (req.query.section || req.query.sectionId || '').toString();
+      const fieldsOnly = req.query.fieldsOnly === 'true' || req.query.summary === 'true';
+      const treeWithFields = await withinDeadline(getUnifiedCatalogWithFields(margin, { sectionFilter: section, fieldsOnly }));
+      return res.json(treeWithFields);
+    }
     const tree = await withinDeadline(getUnifiedCatalogTree(margin));
     return res.json(tree);
   } catch (error: any) {
     return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({ success: false, error: "Failed to load catalog tree" });
+  }
+});
+
+// 5. GET /catalog - Complete Sections -> Services -> Fields & Packages
+router.get('/catalog', async (req: any, res) => {
+  try {
+    const margin = getUserMargin(req.apiUser);
+    const section = (req.query.section || req.query.sectionId || '').toString();
+    const service = (req.query.service || req.query.q || '').toString();
+    const fieldsOnly = req.query.fieldsOnly === 'true' || req.query.summary === 'true';
+
+    const catalog = await withinDeadline(getUnifiedCatalogWithFields(margin, {
+      sectionFilter: section,
+      serviceFilter: service,
+      fieldsOnly
+    }));
+
+    return res.json(catalog);
+  } catch (error: any) {
+    console.error('[API catalog error]:', error?.message || error);
+    return res.status(error instanceof RequestDeadlineError ? 504 : 500).json({
+      success: false,
+      error: "Failed to load catalog",
+      details: error?.message
+    });
   }
 });
 
@@ -784,6 +816,31 @@ router.all(['/', '/index.php', '/provider', '/api'], async (req: any, res: any) 
           SUCCESS: [{
             TREE: tree,
             total_sections: tree.totalSections
+          }]
+        });
+      }
+
+      case 'catalog':
+      case 'getcatalog':
+      case 'fullcatalog':
+      case 'catalogwithfields':
+      case 'serviceswithfields': {
+        const targetSection = (parsedParams.section || parsedParams.sectionId || req.query?.section || '').toString();
+        const service = (parsedParams.service || parsedParams.q || req.query?.service || '').toString();
+        const fieldsOnly = parsedParams.fieldsOnly === 'true' || parsedParams.summary === 'true' || req.query?.fieldsOnly === 'true';
+
+        const catalog = await withinDeadline(getUnifiedCatalogWithFields(margin, {
+          sectionFilter: targetSection,
+          serviceFilter: service,
+          fieldsOnly
+        }));
+
+        return res.json({
+          SUCCESS: [{
+            CATALOG: catalog,
+            total_sections: catalog.totalSections,
+            total_services: catalog.totalServices,
+            total_packages: catalog.totalPackages
           }]
         });
       }

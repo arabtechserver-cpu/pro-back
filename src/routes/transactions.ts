@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
+import crypto from 'crypto';
 import { prisma } from "../utils/prisma";
 import {
   sendTelegramPhotoNotification,
@@ -289,12 +290,27 @@ router.post('/', authenticateToken, validateBody(createDepositTransactionSchema)
             return res.status(400).json({ error: 'حجم صورة الإيصال يجب ألا يتجاوز 10 ميجابايت.' });
           }
 
+          // Verify magic bytes — the MIME type in the data URI is attacker-controlled,
+          // so we must confirm the actual binary content matches the declared format.
+          const isValidSignature =
+            (mimeType === 'image/jpeg' || mimeType === 'image/jpg')
+              ? (buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff)
+            : mimeType === 'image/png'
+              ? (buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47)
+            : mimeType === 'image/webp'
+              ? (buffer.length >= 12 && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 && buffer[8] === 0x57)
+            : false;
+
+          if (!isValidSignature) {
+            return res.status(400).json({ error: 'محتوى الملف لا يطابق صيغة الصورة المصرح بها. تأكد من أن الملف صورة حقيقية.' });
+          }
+
           const receiptsDir = path.join(getUploadDir(), 'receipts');
           if (!fs.existsSync(receiptsDir)) {
             fs.mkdirSync(receiptsDir, { recursive: true });
           }
 
-          const filename = `receipt_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
+          const filename = `receipt_${crypto.randomBytes(16).toString('hex')}.${ext}`;
           const filePath = path.join(receiptsDir, filename);
           fs.writeFileSync(filePath, buffer);
           savedReceiptPath = `/api/transactions/receipts/${filename}`;
@@ -336,6 +352,17 @@ router.post('/', authenticateToken, validateBody(createDepositTransactionSchema)
           throw new Error('SPAM_COOLDOWN');
         }
 
+        const pendingCountToday = await tx.transaction.count({
+          where: {
+            userId: targetUserId,
+            status: 'pending',
+            createdAt: { gte: new Date(Date.now() - 24 * 60 * 60 * 1000) }
+          }
+        });
+        if (pendingCountToday >= 5) {
+          throw new Error('TOO_MANY_PENDING');
+        }
+
         return tx.transaction.create({
           data: {
             userId: targetUserId,
@@ -359,6 +386,20 @@ router.post('/', authenticateToken, validateBody(createDepositTransactionSchema)
           error: `تم اعتماد هذا الإشعار/الرقم المرجعي (${cleanRefNo}) مسبقا وشحن الرصيد به. لا يمكن إعادة استخدامه.`
         });
       }
+      if (savedReceiptPath) {
+        try {
+          const receiptsDir = path.join(getUploadDir(), 'receipts');
+          const fileBasename = path.basename(savedReceiptPath);
+          const fullPath = path.join(receiptsDir, fileBasename);
+          if (fs.existsSync(fullPath)) fs.unlinkSync(fullPath);
+        } catch {}
+      }
+
+      if (txErr.message === 'TOO_MANY_PENDING') {
+        return res.status(429).json({
+          error: 'لديك عدة طلبات إيداع قيد المراجعة حالياً (الحد الأقصى 5). يرجى انتظار معالجة طلباتك السابقة قبل تقديم طلب جديد.'
+        });
+      }
       if (txErr.message === 'SPAM_COOLDOWN') {
         return res.status(429).json({
           error: 'تم إرسال طلب إيداع من حسابك قبل قليل وهو قيد المراجعة. يرجى الانتظار بضع لحظات قبل إرسال طلب جديد.'
@@ -378,7 +419,7 @@ router.post('/', authenticateToken, validateBody(createDepositTransactionSchema)
     const safeRefNo = escapeHtml(refNo);
 
     const receiptLink = savedReceiptPath
-      ? `\nصورة الإيصال: <a href="https://arabtechproserver.tech${savedReceiptPath}">عرض الصورة كاملة</a>`
+      ? `\nصورة الإيصال: <a href="${process.env.FRONTEND_URL || ''}${savedReceiptPath}">عرض الصورة كاملة</a>`
       : '';
 
     const caption = `
@@ -398,7 +439,7 @@ ${receiptLink}
     const inlineKeyboard: any[][] = [];
     if (savedReceiptPath) {
       inlineKeyboard.push([
-        { text: "فتح الإيصال بالدقة الكاملة", url: `https://arabtechproserver.tech${savedReceiptPath}` }
+        { text: "فتح الإيصال بالدقة الكاملة", url: `${process.env.FRONTEND_URL || ''}${savedReceiptPath}` }
       ]);
     }
     inlineKeyboard.push([

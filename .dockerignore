@@ -5,3 +5,9 @@ dist
 .git
 .gitignore
 *.log
+*.test.js
+query*.js
+test*.js
+test_*.js
+*.bat
+dev.db

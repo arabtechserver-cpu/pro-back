@@ -24,7 +24,7 @@ const setAuthCookies = (res: any, token: string, role: string) => {
   res.cookie?.(isAdminRole ? 'admin_token' : 'user_token', token, {
     httpOnly: true,
     secure: isProduction,
-    sameSite: 'lax',
+    sameSite: isAdminRole ? 'strict' : 'lax',
     maxAge: (isAdminRole ? 12 : 7 * 24) * 60 * 60 * 1000,
     path: '/'
   });
@@ -147,7 +147,7 @@ router.post('/register', turnstileMiddleware, validateBody(registerSchema), asyn
 });
 
 // POST /api/auth/send-otp - Send OTP via Loops Email
-router.post('/send-otp', async (req, res) => {
+router.post('/send-otp', turnstileMiddleware, async (req, res) => {
   try {
     const { email, username, type } = req.body;
     if (typeof email !== 'string' || email.length > 254 || !email.includes('@')) {

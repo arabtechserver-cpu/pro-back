@@ -392,7 +392,8 @@ export async function getUnifiedPackages(
         }) };
     }
   }
-  const foxCatalog = (isDhruGroup || dhruServices.length > 0) ? null : await getFoxreloadFullCatalog(false);
+  const available = (isDhruGroup || dhruServices.length > 0) ? null : await getAvailableFoxreloadCatalog();
+  const foxCatalog = available?.catalog || ((isDhruGroup || dhruServices.length > 0) ? null : await getFoxreloadFullCatalog(false));
   let foundBundle: any = null;
   let sectionKey = 'topups';
 
@@ -421,9 +422,35 @@ export async function getUnifiedPackages(
     categoryIdsToFetch.push(targetId);
   }
 
-  const productBatches = await mapWithinDeadline(categoryIdsToFetch, catId => getFoxreloadCategoryProducts(catId, false), 12, 12000);
+  // 1. Check in-memory/persisted available products snapshot first (instant response, zero external API calls)
+  let rawProducts: any[] = [];
+  const targetCategorySet = new Set(categoryIdsToFetch);
+  if (available?.products && available.products.length > 0) {
+    rawProducts = available.products.filter((p: any) =>
+      targetCategorySet.has(p.categoryId) ||
+      p.categoryId === targetId ||
+      (foundBundle && (p.bundle_id === foundBundle.id || p.categorySlug === foundBundle.slug))
+    );
+  }
 
-  const rawProducts = productBatches.flat();
+  // 2. If no products in snapshot, fetch from provider with low concurrency (2) and individual error handling
+  if (rawProducts.length === 0 && categoryIdsToFetch.length > 0) {
+    try {
+      const productBatches = await mapWithinDeadline(
+        categoryIdsToFetch,
+        catId => getFoxreloadCategoryProducts(catId, false).catch((err) => {
+          console.warn(`[getUnifiedPackages] Upstream category fetch failed for ${catId}:`, err?.message || err);
+          return [];
+        }),
+        2,
+        8000
+      );
+      rawProducts = productBatches.flat();
+    } catch (err: any) {
+      console.warn(`[getUnifiedPackages] Upstream batch fetch failed for ${targetId}:`, err?.message || err);
+    }
+  }
+
   const seenIds = new Set<string>();
   const uniqueProducts = rawProducts.filter((p) => {
     if (!p?.id || seenIds.has(p.id)) return false;
@@ -913,3 +940,219 @@ async function buildDhruCompatibleMergedCatalog(
 
   return finalPayload;
 }
+
+export interface UnifiedCatalogField {
+  name: string;
+  label: string;
+  type: string;
+  required: boolean;
+  options?: string[];
+  placeholder?: string;
+  description?: string;
+}
+
+export interface UnifiedCatalogPackageItem {
+  id: string;
+  name: string;
+  price: number;
+  currency: string;
+  stock: number;
+  minQty: number;
+  maxQty?: number | null;
+  deliveryType: string;
+  requiredFields: string[];
+  customFields?: UnifiedCatalogField[];
+}
+
+export interface UnifiedCatalogServiceItem {
+  id: string;
+  name: string;
+  slug?: string;
+  sectionId: string;
+  sectionNameAr?: string;
+  region?: string | null;
+  requiredFields: string[];
+  customFields: UnifiedCatalogField[];
+  packagesCount: number;
+  packages?: UnifiedCatalogPackageItem[];
+}
+
+export interface UnifiedCatalogSectionItem {
+  id: string;
+  nameAr: string;
+  nameEn: string;
+  icon: string;
+  type: 'foxreload' | 'dhru';
+  totalServices: number;
+  services: UnifiedCatalogServiceItem[];
+}
+
+const fullCatalogCache = new BoundedCache<string, { timestamp: number; data: any }>(8, 16 * 1024 * 1024, 5 * 60 * 1000);
+
+export async function getUnifiedCatalogWithFields(
+  userMarginPercent: number = 8.0,
+  options?: {
+    sectionFilter?: string;
+    fieldsOnly?: boolean;
+    serviceFilter?: string;
+  }
+): Promise<{
+  success: boolean;
+  totalSections: number;
+  totalServices: number;
+  totalPackages: number;
+  sections: UnifiedCatalogSectionItem[];
+  catalogComplete: boolean;
+}> {
+  const margin = Math.max(0, userMarginPercent);
+  const filterSec = (options?.sectionFilter || '').trim().toLowerCase();
+  const fieldsOnly = Boolean(options?.fieldsOnly);
+  const serviceFilter = (options?.serviceFilter || '').trim().toLowerCase();
+
+  const revision = getCatalogRevision();
+  const cacheKey = `${revision}_${margin}_${filterSec}_${fieldsOnly}_${serviceFilter}`;
+  const cached = fullCatalogCache.get(cacheKey);
+  if (cached && Date.now() - cached.timestamp < CACHE_TTL_MS) {
+    return cached.data;
+  }
+
+  const [allSections, merged] = await Promise.all([
+    getUnifiedSections(),
+    getDhruCompatibleMergedCatalog(margin, 'all', filterSec || undefined)
+  ]);
+
+  const sectionMap = new Map<string, UnifiedCatalogServiceItem[]>();
+  let grandTotalPackages = 0;
+  let grandTotalServices = 0;
+
+  for (const group of merged.groupsList) {
+    const secId = group.section_id || 'dhru-server';
+    if (filterSec && filterSec !== 'all' && secId !== filterSec) continue;
+
+    const groupName = group.bundle_name || group.name || group.GROUPNAME || 'خدمة';
+    if (serviceFilter && !groupName.toLowerCase().includes(serviceFilter)) continue;
+
+    const rawServices: any[] = Array.isArray(group.SERVICES) ? group.SERVICES : Object.values(group.SERVICES || {});
+
+    const fieldsMap = new Map<string, UnifiedCatalogField>();
+    const requiredSet = new Set<string>();
+    const packagesList: UnifiedCatalogPackageItem[] = [];
+
+    for (const srv of rawServices) {
+      grandTotalPackages++;
+      const srvCustom: any[] = srv.RequiresCustom || srv.CUSTOM || srv['Requires.Custom'] || [];
+      const srvRequired: string[] = Array.isArray(srv.requiredNoteFields)
+        ? srv.requiredNoteFields
+        : (srv.Requires ? String(srv.Requires).split(',').map((x: string) => x.trim()).filter(Boolean) : []);
+
+      for (const reqName of srvRequired) {
+        requiredSet.add(reqName);
+      }
+
+      const packageCustomFields: UnifiedCatalogField[] = [];
+      for (const cf of srvCustom) {
+        const fname = cf.name || cf.field_id || cf.fieldname || cf.label;
+        if (!fname) continue;
+        const isReq = cf.required ?? requiredSet.has(fname);
+        if (isReq) requiredSet.add(fname);
+
+        const fieldObj: UnifiedCatalogField = {
+          name: fname,
+          label: cf.label || fname,
+          type: cf.type || cf.fieldtype || 'text',
+          required: Boolean(isReq),
+          options: Array.isArray(cf.options) && cf.options.length ? cf.options : (Array.isArray(cf.fieldoptions) && cf.fieldoptions.length ? cf.fieldoptions : undefined),
+          placeholder: cf.placeholder || undefined,
+          description: cf.description || undefined
+        };
+
+        packageCustomFields.push(fieldObj);
+
+        if (!fieldsMap.has(fname)) {
+          fieldsMap.set(fname, fieldObj);
+        } else if (isReq) {
+          fieldsMap.get(fname)!.required = true;
+        }
+      }
+
+      for (const r of srvRequired) {
+        if (!fieldsMap.has(r)) {
+          const fieldObj: UnifiedCatalogField = {
+            name: r,
+            label: r,
+            type: r.toLowerCase() === 'quantity' || r.toLowerCase() === 'qnt' ? 'number' : 'text',
+            required: true
+          };
+          fieldsMap.set(r, fieldObj);
+          packageCustomFields.push(fieldObj);
+        }
+      }
+
+      if (!fieldsOnly) {
+        packagesList.push({
+          id: srv.SERVICEID || srv.id,
+          name: srv.product_name || srv.SERVICENAME || srv.name,
+          price: Number(srv.price || srv.CREDIT || 0),
+          currency: srv.currency || 'USD',
+          stock: srv.stock ?? srv.quantity ?? 999999,
+          minQty: srv.MIN_QNT || srv.orderMinQuantity || 1,
+          maxQty: srv.MAX_QNT ?? srv.orderMaxQuantity ?? null,
+          deliveryType: srv.deliveryType || (srv.SERVICETYPE === 'IMEI' ? 'imei' : 'server'),
+          requiredFields: srvRequired,
+          customFields: packageCustomFields.length ? packageCustomFields : undefined
+        });
+      }
+    }
+
+    const serviceItem: UnifiedCatalogServiceItem = {
+      id: group.bundle_id || group.GROUPID,
+      name: groupName,
+      slug: group.slug || undefined,
+      sectionId: secId,
+      sectionNameAr: SECTION_METADATA[secId]?.nameAr || secId,
+      region: group.region_name || null,
+      requiredFields: Array.from(requiredSet),
+      customFields: Array.from(fieldsMap.values()),
+      packagesCount: rawServices.length,
+      ...(!fieldsOnly ? { packages: packagesList } : {})
+    };
+
+    if (!sectionMap.has(secId)) {
+      sectionMap.set(secId, []);
+    }
+    sectionMap.get(secId)!.push(serviceItem);
+    grandTotalServices++;
+  }
+
+  const sectionsOutput: UnifiedCatalogSectionItem[] = [];
+
+  for (const sec of allSections) {
+    if (filterSec && filterSec !== 'all' && sec.id !== filterSec) continue;
+
+    const services = sectionMap.get(sec.id) || [];
+    if (services.length > 0 || !filterSec) {
+      sectionsOutput.push({
+        id: sec.id,
+        nameAr: sec.nameAr,
+        nameEn: sec.nameEn,
+        icon: sec.icon,
+        type: sec.type,
+        totalServices: services.length,
+        services
+      });
+    }
+  }
+
+  const resultPayload = {
+    success: true,
+    totalSections: sectionsOutput.length,
+    totalServices: grandTotalServices,
+    totalPackages: grandTotalPackages,
+    sections: sectionsOutput,
+    catalogComplete: merged.catalogComplete
+  };
+
+  fullCatalogCache.set(cacheKey, { timestamp: Date.now(), data: resultPayload });
+  return resultPayload;
+}
+

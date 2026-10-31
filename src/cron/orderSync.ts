@@ -11,6 +11,12 @@ import { BoundedCache } from '../utils/bounded-cache';
 let syncRunning = false;
 const missingProviderWarnings = new BoundedCache<string, boolean>(1000, 128 * 1024, 24 * 60 * 60 * 1000);
 
+// Hard ceiling: a single CRON run must not hold the event loop longer than 4 minutes.
+// Each provider call already carries a 25-second timeout in dhru-api.ts, but 25 orders
+// x 25 seconds = 625 seconds worst-case with no guard.  This AbortSignal kills the whole
+// batch before the next CRON tick fires, preventing connection-pool exhaustion.
+const CRON_RUN_TIMEOUT_MS = 4 * 60 * 1000;
+
 // Run every 3 minutes to avoid flooding provider APIs and triggering rate-limits
 export function initOrderSyncCron() {
   console.log('[CRON] Initializing Order Sync Cron Job (runs every 3 minutes)');
@@ -18,6 +24,12 @@ export function initOrderSyncCron() {
   cron.schedule('*/3 * * * *', async () => {
     if (syncRunning) return;
     syncRunning = true;
+
+    const cronAbort = AbortSignal.timeout(CRON_RUN_TIMEOUT_MS);
+    const cronDeadline = new Promise<never>((_, reject) =>
+      cronAbort.addEventListener('abort', () => reject(new Error('CRON_TIMEOUT')), { once: true })
+    );
+
     try {
       // Find orders that are processing and have an API Order ID
       const pendingOrders = pagedRows(prisma.order, {
@@ -29,6 +41,10 @@ export function initOrderSyncCron() {
 
       for await (const order of pendingOrders) {
         if (!order.apiOrderId) continue;
+        if (cronAbort.aborted) {
+          console.warn('[CRON] Hard deadline reached — deferring remaining orders to next tick.');
+          break;
+        }
 
         try {
           // 1. Check if it's a FoxReload digital/gaming order
@@ -38,7 +54,7 @@ export function initOrderSyncCron() {
             String(order.notes || '').toLowerCase().includes('foxreload') ||
             String(order.serviceName || '').toLowerCase().includes('foxreload');
           if (isFoxreload) {
-            const foxResult = await getFoxreloadOrderDetails(order.apiOrderId);
+            const foxResult = await Promise.race([getFoxreloadOrderDetails(order.apiOrderId), cronDeadline]);
             if (!foxResult.success) {
               console.warn(`[CRON] FoxReload Order #${order.id.slice(-6)} (Provider Ref: #${order.apiOrderId}) status check returned: "${foxResult.error}". Keeping in processing status.`);
               continue;
@@ -167,21 +183,21 @@ export function initOrderSyncCron() {
 
           let response: any = null;
 
-          // Try primary method based on service type
+          // Race each provider call against the CRON hard deadline.
+          // Without this, 25 orders x 25-second provider timeout = 625s worst-case,
+          // exhausting the Node.js connection pool and causing cascading 504s.
           if (isImei) {
-            response = await getImeiOrder(order.apiOrderId, providerConfig);
-            // Fallback: If IMEI check failed or returned error, try server check
+            response = await Promise.race([getImeiOrder(order.apiOrderId, providerConfig), cronDeadline]);
             if (!response?.transportError && (!response || response.SUCCESS === false || getDhruApiErrorMessage(response))) {
-              const fallback = await getServerOrder(order.apiOrderId, providerConfig);
+              const fallback = await Promise.race([getServerOrder(order.apiOrderId, providerConfig), cronDeadline]);
               if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
                 response = fallback;
               }
             }
           } else {
-            response = await getServerOrder(order.apiOrderId, providerConfig);
-            // Fallback: If server check failed or returned error, try IMEI check
+            response = await Promise.race([getServerOrder(order.apiOrderId, providerConfig), cronDeadline]);
             if (!response?.transportError && (!response || response.SUCCESS === false || getDhruApiErrorMessage(response))) {
-              const fallback = await getImeiOrder(order.apiOrderId, providerConfig);
+              const fallback = await Promise.race([getImeiOrder(order.apiOrderId, providerConfig), cronDeadline]);
               if (fallback && (fallback.SUCCESS || fallback.RESULT)) {
                 response = fallback;
               }
@@ -312,8 +328,12 @@ export function initOrderSyncCron() {
         }
       }
 
-    } catch (error) {
-      console.error('[CRON] General error in order sync:', error);
+    } catch (error: any) {
+      if (error?.message === 'CRON_TIMEOUT') {
+        console.warn('[CRON] Order sync batch exceeded the 4-minute hard deadline. Some orders deferred to next tick.');
+      } else {
+        console.error('[CRON] General error in order sync:', error);
+      }
     } finally {
       syncRunning = false;
     }

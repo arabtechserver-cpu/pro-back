@@ -7,8 +7,11 @@ import { publicFileGuard } from './middleware/publicFileGuard';
 import { getTrustedProxies } from './utils/trustedProxy';
 import { startTelegramBotPolling } from './utils/telegramService';
 import { createResourceGuard } from './middleware/resourceGuard';
+import { EventEmitter } from 'events';
 import rateLimit from 'express-rate-limit';
 import { BoundedRateLimitStore } from './utils/bounded-rate-limit-store';
+
+EventEmitter.defaultMaxListeners = 50;
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;

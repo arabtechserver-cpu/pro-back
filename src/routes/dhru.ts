@@ -27,7 +27,7 @@ type PricingSnapshot = { body: string; timestamp: number; etag: string };
 let pricingCache: PricingSnapshot | null = null;
 let pricingPending: Promise<PricingSnapshot> | null = null;
 let pricingRevision = 0;
-const PRICING_CACHE_TTL = 60 * 1000; // 60 seconds TTL
+const PRICING_CACHE_TTL = 10 * 60 * 1000; // 10 minutes TTL (instantly invalidated upon admin edits)
 
 export function invalidateDhruServicesCache() {
   invalidateCatalogRevision();

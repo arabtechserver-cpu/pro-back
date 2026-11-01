@@ -217,9 +217,59 @@ export function verifyBinanceWebhookHeader(
   const signature = getHeader('binancepay-signature');
   const certSn = getHeader('binancepay-certificate-sn');
 
-  if (!timestamp || !nonce || !signature) {
+  if (!timestamp || !nonce || !signature || !certSn) {
     return null;
   }
 
   return { timestamp, nonce, signature, certSn };
+}
+
+let certificateCache: { expiresAt: number; fetchedAt: number; keys: Map<string, string> } | null = null;
+let certificatePending: Promise<Map<string, string>> | null = null;
+
+async function getBinanceWebhookKeys(certSn: string): Promise<Map<string, string>> {
+  if (certificateCache && Date.now() < certificateCache.expiresAt &&
+      (certificateCache.keys.has(certSn) || Date.now() - certificateCache.fetchedAt < 60 * 1000)) return certificateCache.keys;
+  if (certificatePending) return certificatePending;
+  certificatePending = (async () => {
+    const body = '{}';
+    const response = await axios.post(`${BINANCE_PAY_BASE_URL}/binancepay/openapi/certificates`, body, {
+      headers: buildHeaders(body), timeout: 8000, maxRedirects: 0,
+      maxContentLength: 128 * 1024, maxBodyLength: 128 * 1024
+    });
+    if (response.data?.status !== 'SUCCESS' || !Array.isArray(response.data.data)) throw new Error('Binance certificates unavailable');
+    const keys = new Map<string, string>();
+    for (const certificate of response.data.data.slice(0, 10)) {
+      if (typeof certificate.certSerial === 'string' && typeof certificate.certPublic === 'string') {
+        keys.set(certificate.certSerial, certificate.certPublic);
+      }
+    }
+    certificateCache = { keys, fetchedAt: Date.now(), expiresAt: Date.now() + 15 * 60 * 1000 };
+    return keys;
+  })();
+  try { return await certificatePending; }
+  finally { certificatePending = null; }
+}
+
+export async function verifyBinanceWebhookSignature(
+  headers: Record<string, string | string[] | undefined>, rawBody: unknown
+): Promise<boolean> {
+  const info = verifyBinanceWebhookHeader(headers);
+  if (!info || !Buffer.isBuffer(rawBody) || rawBody.length > 256 * 1024 ||
+      !/^\d{13}$/.test(info.timestamp) || Math.abs(Date.now() - Number(info.timestamp)) > 5 * 60 * 1000 ||
+      !/^[a-zA-Z0-9]{32}$/.test(info.nonce) || !/^[A-Za-z0-9+/]+={0,2}$/.test(info.signature)) return false;
+  const keys = await getBinanceWebhookKeys(info.certSn);
+  const key = keys.get(info.certSn);
+  if (!key) return false;
+  try {
+    const payload = Buffer.concat([Buffer.from(`${info.timestamp}\n${info.nonce}\n`), rawBody, Buffer.from('\n')]);
+    return crypto.verify('RSA-SHA256', payload, key, Buffer.from(info.signature, 'base64'));
+  } catch { return false; }
+}
+
+export function matchesBinancePayment(result: BinanceOrderQueryResult, intent: { orderId: string; amount: number; currency: string }) {
+  return result.status === 'PAID' && result.merchantTradeNo === intent.orderId &&
+    result.currency === intent.currency && Number.isFinite(result.orderAmount) &&
+    result.orderAmount > 0 && Number.isFinite(intent.amount) &&
+    Math.abs(result.orderAmount - intent.amount) < 0.000001 && !!result.transactionId;
 }

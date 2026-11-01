@@ -2,7 +2,7 @@ import net from 'net';
 
 // Never trust a hop count or all private networks: the frontend and API can
 // have different ingress paths. An empty setting safely disables forwarding.
-export function getTrustedProxies(value = process.env.TRUSTED_PROXY_CIDRS || '127.0.0.1,::1,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16'): false | string[] {
+export function getTrustedProxies(value = process.env.TRUSTED_PROXY_CIDRS ?? ''): false | string[] {
   const entries = value.split(',').map(item => item.trim()).filter(Boolean);
   for (const entry of entries) {
     const [address, prefix, extra] = entry.split('/');

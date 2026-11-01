@@ -1,45 +1,26 @@
-import fs from 'fs';
-import path from 'path';
-import { getUploadDir, ensureUploadDir } from './uploads';
+import crypto from 'crypto';
+import { saveBufferToUploads } from './uploads';
+import { sanitizeImageDataUri, InvalidImageError } from './safe-image';
 
-const ALLOWED_IMAGE_EXTENSIONS: Record<string, string> = {
-  'jpeg': 'jpg',
-  'jpg': 'jpg',
-  'png': 'png',
-  'webp': 'webp',
-  'gif': 'gif'
-};
+export async function saveArticleImage(input: unknown, baseUrl: string): Promise<string> {
+  const image = await sanitizeImageDataUri(input, true);
+  const filename = `article_${crypto.randomUUID()}.${image.extension}`;
+  saveBufferToUploads(filename, image.buffer);
+  return `${baseUrl}/uploads/${filename}`;
+}
 
-export const processBase64Images = (htmlContent: string | undefined | null, baseUrl: string): string => {
+export async function processBase64Images(htmlContent: string | undefined | null, baseUrl: string): Promise<string> {
   if (!htmlContent) return '';
-
-  return htmlContent.replace(/src="data:image\/([a-zA-Z0-9+.-]+);base64,([^"]+)"/g, (match, rawExt, data) => {
-    try {
-      const normalizedExt = String(rawExt).toLowerCase().trim();
-      const safeExt = ALLOWED_IMAGE_EXTENSIONS[normalizedExt];
-      if (!safeExt) {
-        return match;
-      }
-
-      const buffer = Buffer.from(data, 'base64');
-      if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
-        return match;
-      }
-
-      const safeFilename = `article_${Date.now()}_${Math.random().toString(36).substring(2, 10)}.${safeExt}`;
-      const uploadDir = ensureUploadDir();
-      const resolvedTarget = path.resolve(uploadDir, safeFilename);
-      const resolvedRoot = path.resolve(uploadDir);
-
-      if (!resolvedTarget.startsWith(resolvedRoot)) {
-        return match;
-      }
-
-      fs.writeFileSync(resolvedTarget, buffer);
-      return `src="${baseUrl}/uploads/${safeFilename}"`;
-    } catch (error) {
-      console.error("Failed to process base64 image", error);
-      return match;
-    }
-  });
-};
+  if (typeof htmlContent !== 'string' || htmlContent.length > 5 * 1024 * 1024) throw new InvalidImageError('Invalid article content');
+  const pattern = /src=(["'])(data:image\/[^"']+)\1/gi;
+  let result = '';
+  let offset = 0;
+  let count = 0;
+  for (const match of htmlContent.matchAll(pattern)) {
+    if (++count > 10) throw new InvalidImageError('Maximum 10 embedded images per article');
+    const url = await saveArticleImage(match[2], baseUrl);
+    result += htmlContent.slice(offset, match.index) + `src="${url}"`;
+    offset = match.index! + match[0].length;
+  }
+  return result + htmlContent.slice(offset);
+}

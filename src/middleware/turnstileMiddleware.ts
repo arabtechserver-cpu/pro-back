@@ -25,17 +25,18 @@ function getPublicClientIp(req: Request): string | null {
 }
 
 export async function turnstileMiddleware(req: Request, res: Response, next: NextFunction) {
+  const isDev = process.env.NODE_ENV === "development";
   if (
     process.env.DISABLE_TURNSTILE === "true" ||
     process.env.DISABLE_CLOUDFLARE === "true" ||
     process.env.NEXT_PUBLIC_DISABLE_TURNSTILE === "true" ||
     process.env.TURNSTILE_SECRET === "disabled"
   ) {
-    return next();
+    if (isDev) return next();
+    return res.status(503).json({ success: false, error: "Security verification must be enabled in production" });
   }
 
   const secret = process.env.TURNSTILE_SECRET;
-  const isDev = process.env.NODE_ENV === "development";
 
   // Local development can opt out, but production never silently disables bot protection.
   if (!secret || secret.trim() === "" || secret === "dummy") {
@@ -108,17 +109,9 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
 
     const result: any = await response.json();
 
-    if (!result.success) {
+    if (result.success !== true) {
       const errorCodes: string[] = Array.isArray(result["error-codes"]) ? result["error-codes"] : [];
       console.warn("[Cloudflare Turnstile] Verification notice:", errorCodes);
-
-      // Handle hostname-mismatch gracefully if domain changed (e.g. borai.store)
-      if (errorCodes.includes("hostname-mismatch")) {
-        console.warn("[Cloudflare Turnstile] Accepted token despite hostname-mismatch:", errorCodes);
-        if (isDev || process.env.STRICT_TURNSTILE !== "true") {
-          return next();
-        }
-      }
 
       // Specific message for expired or already-used tokens so client can trigger a clean refresh
       if (errorCodes.includes("timeout-or-duplicate")) {
@@ -132,9 +125,6 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
 
       if (errorCodes.includes("invalid-input-secret")) {
         console.error("[Cloudflare Turnstile] CRITICAL: TURNSTILE_SECRET is invalid in environment variables!");
-        if (isDev || process.env.STRICT_TURNSTILE !== "true") {
-          return next();
-        }
       }
 
       return res.status(403).json({
@@ -145,6 +135,11 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
       });
     }
 
+    const hostnames = (process.env.TURNSTILE_ALLOWED_HOSTNAMES || 'arabtechproserver.tech,www.arabtechproserver.tech,borai.store,www.borai.store')
+      .split(',').map(host => host.trim().toLowerCase()).filter(Boolean);
+    if (!isDev && (typeof result.hostname !== 'string' || !hostnames.includes(result.hostname.toLowerCase()))) {
+      return res.status(403).json({ success: false, error: 'Security verification hostname mismatch', code: 'TURNSTILE_FAILED' });
+    }
     next();
   } catch (err: any) {
     console.warn("[Cloudflare Turnstile] Verification network error:", err?.message);

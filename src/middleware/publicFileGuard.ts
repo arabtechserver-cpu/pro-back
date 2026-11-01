@@ -20,3 +20,15 @@ export function publicFileGuard(req: Request, res: Response, next: NextFunction)
   }
   return next();
 }
+
+/** Upload volumes contain media only; never serve scripts or document payloads. */
+export function publicImageGuard(req: Request, res: Response, next: NextFunction) {
+  return publicFileGuard(req, res, () => {
+    if (!/\.(?:jpe?g|png|webp|gif)$/i.test(req.path)) {
+      return res.status(404).json({ error: 'Image not found' });
+    }
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    return next();
+  });
+}

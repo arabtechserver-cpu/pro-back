@@ -1,11 +1,63 @@
 import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
 import rateLimit from 'express-rate-limit';
+import { z } from 'zod';
 import { prisma } from "../utils/prisma";
 import { isAdmin } from '../middleware/auth';
 import { enrichOrdersWithProviderData } from './orders';
 
 const router = Router();
+
+const EVENT_BODY_BYTES = 8192;
+const EVENT_METADATA_BYTES = 4096;
+const SUMMARY_GROUP_LIMIT = 10000;
+const SUMMARY_DETAIL_LIMIT = 100;
+
+function summaryCount(value: bigint | number): number {
+  const count = Number(value);
+  if (!Number.isSafeInteger(count) || count < 0) throw new Error('Analytics count exceeds safe numeric range.');
+  return count;
+}
+
+function analyticsText(maxBytes: number) {
+  return z.string().superRefine((value, ctx) => {
+    if (Buffer.byteLength(value, 'utf8') > maxBytes) {
+      ctx.addIssue({ code: 'too_big', origin: 'string', maximum: maxBytes, inclusive: true, message: 'Analytics field exceeds byte limit.' });
+    } else if (value.includes('\0') || Buffer.from(value, 'utf8').toString('utf8') !== value) {
+      ctx.addIssue({ code: 'custom', message: 'Invalid analytics text.' });
+    }
+  });
+}
+
+const eventFields = {
+  sessionId: analyticsText(400).max(100).nullish(),
+  path: analyticsText(2000).max(500).nullish(),
+};
+const visitorFields = {
+  userAgent: analyticsText(2048).nullish(),
+  userName: analyticsText(400).nullish(),
+  userEmail: analyticsText(1024).nullish(),
+};
+// These are the payloads sent by AnalyticsTracker and PurchaseClient.
+const eventSchema = z.discriminatedUnion('eventName', [
+  z.strictObject({
+    eventName: z.literal('page_view'),
+    ...eventFields,
+    metadata: z.strictObject({
+      ...visitorFields,
+      timestamp: analyticsText(32).pipe(z.iso.datetime()).optional(),
+    }).nullish(),
+  }),
+  z.strictObject({
+    eventName: z.literal('service_view'),
+    ...eventFields,
+    metadata: z.strictObject({
+      ...visitorFields,
+      serviceId: analyticsText(200).trim().min(1),
+      serviceName: analyticsText(1024).optional(),
+    }),
+  }),
+]);
 
 const analyticsLimiter = rateLimit({
   store: new BoundedRateLimitStore(),
@@ -18,18 +70,25 @@ const analyticsLimiter = rateLimit({
 // POST /api/analytics/events - Log an anonymous or authenticated conversion event
 router.post('/events', analyticsLimiter, async (req, res) => {
   try {
-    const { eventName, sessionId, path, metadata } = req.body;
-    
-    if (!eventName) {
-      return res.status(400).json({ error: 'حدث غير صالح.' });
+    const parsed = eventSchema.safeParse(req.body);
+    if (!parsed.success) {
+      const oversized = parsed.error.issues.some(issue => issue.code === 'too_big');
+      return res.status(oversized ? 413 : 400).json({ error: oversized ? 'Analytics event is too large.' : 'حدث غير صالح.' });
+    }
+    const { eventName, sessionId, path, metadata } = parsed.data;
+    const serializedMetadata = metadata == null ? null : JSON.stringify(metadata);
+    // Validate the flat shape before serializing, including when called without the route parser.
+    if ((serializedMetadata && Buffer.byteLength(serializedMetadata, 'utf8') > EVENT_METADATA_BYTES) ||
+        Buffer.byteLength(JSON.stringify(parsed.data), 'utf8') > EVENT_BODY_BYTES) {
+      return res.status(413).json({ error: 'Analytics event is too large.' });
     }
 
     await prisma.analyticsEvent.create({
       data: {
-        eventName: String(eventName).trim().slice(0, 80),
-        sessionId: sessionId ? String(sessionId).trim().slice(0, 100) : null,
-        path: path ? String(path).trim().slice(0, 500) : null,
-        metadata: metadata ? JSON.stringify(metadata) : null,
+        eventName,
+        sessionId: sessionId?.trim() || null,
+        path: path?.trim() || null,
+        metadata: serializedMetadata,
       }
     });
 
@@ -48,121 +107,147 @@ router.get('/summary', isAdmin, async (req, res) => {
     const cutoffDate = new Date();
     cutoffDate.setDate(cutoffDate.getDate() - days);
 
-    // 1. Basic Counts
-    const totalUsers = await prisma.user.count({ where: { role: 'user' } });
-    const totalOrders = await prisma.order.count();
-    
-    // 2. Events Summary (from last 'days' days)
-    const recentEvents = await prisma.analyticsEvent.findMany({
-      where: { createdAt: { gte: cutoffDate } }
-    });
+    const data = await prisma.$transaction(async tx => {
+      // Fail an expensive report explicitly, rather than returning sampled totals.
+      // These settings are transaction-local and do not change the database configuration.
+      await tx.$executeRaw`SET TRANSACTION READ ONLY`;
+      await tx.$executeRaw`SET LOCAL statement_timeout = '5s'`;
+      await tx.$executeRaw`SET LOCAL work_mem = '4MB'`;
+      await tx.$executeRaw`SET LOCAL TIME ZONE 'UTC'`;
 
-    const counts: Record<string, number> = {};
-    const sessions = new Set<string>();
-    const dailyMap = new Map<string, any>();
+      const [totals] = await tx.$queryRaw<{ totalUsers: bigint; totalOrders: bigint; uniqueSessions: bigint }[]>`
+        SELECT
+          (SELECT COUNT(*) FROM "User" WHERE "role" = 'user') AS "totalUsers",
+          (SELECT COUNT(*) FROM "Order") AS "totalOrders",
+          COUNT(DISTINCT NULLIF("sessionId", '')) AS "uniqueSessions"
+        FROM "AnalyticsEvent" WHERE "createdAt" >= ${cutoffDate}`;
 
-    recentEvents.forEach((row) => {
-      // Aggregate event counts
-      counts[row.eventName] = (counts[row.eventName] || 0) + 1;
-      
-      // Unique sessions
-      if (row.sessionId) sessions.add(row.sessionId);
-      
-      // Daily breakdown
-      const day = new Date(row.createdAt).toISOString().slice(0, 10);
-      const current = dailyMap.get(day) || { day };
-      current[row.eventName] = (current[row.eventName] || 0) + 1;
-      dailyMap.set(day, current);
-    });
+      const groups = await tx.$queryRaw<{ day: string; eventName: string | null; count: bigint }[]>`
+        SELECT to_char("createdAt", 'YYYY-MM-DD') AS "day",
+          CASE WHEN octet_length("eventName") <= 320 THEN "eventName" END AS "eventName",
+          COUNT(*) AS "count"
+        FROM "AnalyticsEvent" WHERE "createdAt" >= ${cutoffDate}
+        GROUP BY "eventName", to_char("createdAt", 'YYYY-MM-DD')
+        LIMIT ${SUMMARY_GROUP_LIMIT + 1}`;
+      if (groups.length > SUMMARY_GROUP_LIMIT) throw new Error('Analytics report exceeds safe grouping limit.');
 
-    // 3. Most Viewed Services and detailed audit logs
-    const serviceViews: Record<string, number> = {};
-    const serviceViewLogs: any[] = [];
-    const visitorLogs: any[] = [];
-    const seenVisitorSessions = new Set<string>();
-
-    const allDbServices = await prisma.dhruService.findMany({
-      select: { id: true, dhruId: true, name: true }
-    });
-    const serviceNameMap = new Map<string, string>();
-    for (const s of allDbServices) {
-      serviceNameMap.set(s.id, s.name);
-      if (s.dhruId) serviceNameMap.set(s.dhruId, s.name);
-    }
-
-    for (const row of recentEvents) {
-      let meta: any = null;
-      if (row.metadata) {
-        try {
-          meta = JSON.parse(row.metadata);
-        } catch {}
+      const counts: Record<string, number> = Object.create(null);
+      const dailyMap = new Map<string, Record<string, string | number>>();
+      for (const row of groups) {
+        if (row.eventName === null || row.eventName === 'day') throw new Error('Unsupported historical analytics event name.');
+        counts[row.eventName] = summaryCount((counts[row.eventName] || 0) + summaryCount(row.count));
+        const current = dailyMap.get(row.day) || Object.assign(Object.create(null), { day: row.day });
+        current[row.eventName] = summaryCount(row.count);
+        dailyMap.set(row.day, current);
       }
 
-      if (row.eventName === 'service_view') {
-        const srvId = meta?.serviceId || '';
-        const srvName = serviceNameMap.get(srvId) || meta?.serviceName || (srvId ? `خدمة #${srvId}` : 'خدمة غير محددة');
+      // All matching service views contribute, not just the 100 displayed detail rows.
+      // Historical metadata was JSON.stringify output; malformed imported JSON fails the report.
+      const topRows = await tx.$queryRaw<{ id: string | null; views: bigint; invalidIds: boolean }[]>`
+        SELECT CASE WHEN octet_length("serviceId") <= ${EVENT_METADATA_BYTES} THEN "serviceId" END AS "id",
+          COUNT(*) AS "views", BOOL_OR(BOOL_OR("idType" <> 'string')) OVER () AS "invalidIds"
+        FROM (
+          SELECT "metadata"::json ->> 'serviceId' AS "serviceId",
+            json_typeof("metadata"::json -> 'serviceId') AS "idType"
+          FROM "AnalyticsEvent"
+          WHERE "createdAt" >= ${cutoffDate} AND "eventName" = 'service_view'
+        ) views
+        WHERE "serviceId" IS NOT NULL AND "serviceId" <> ''
+        GROUP BY "serviceId"
+        ORDER BY COUNT(*) DESC, "serviceId" ASC
+        LIMIT 10`;
+      if (topRows.some(row => row.id === null || row.invalidIds)) throw new Error('Unsupported historical analytics service ID.');
 
-        if (srvId) {
-          serviceViews[srvId] = (serviceViews[srvId] || 0) + 1;
+      const logRows = await tx.$queryRaw<{
+        kind: 'service' | 'visitor'; id: string; sessionId: string | null;
+        path: string | null; createdAt: Date; metadata: string | null; oversized: boolean;
+      }[]>`
+        WITH selected AS (
+          (SELECT 'service' AS "kind", "id", "createdAt"
+            FROM "AnalyticsEvent" WHERE "createdAt" >= ${cutoffDate} AND "eventName" = 'service_view'
+            ORDER BY "createdAt" DESC, "id" DESC LIMIT ${SUMMARY_DETAIL_LIMIT})
+          UNION ALL
+          (SELECT 'visitor' AS "kind", "id", "createdAt" FROM (
+            SELECT DISTINCT ON ("sessionId") "id", "createdAt"
+            FROM "AnalyticsEvent" WHERE "createdAt" >= ${cutoffDate} AND "sessionId" <> ''
+            ORDER BY "sessionId", "createdAt" ASC, "id" ASC
+          ) sessions ORDER BY "createdAt" DESC, "id" DESC LIMIT ${SUMMARY_DETAIL_LIMIT})
+        )
+        SELECT selected."kind", event."id", event."sessionId", event."path", event."createdAt",
+          CASE WHEN octet_length(event."metadata") <= ${EVENT_METADATA_BYTES} THEN event."metadata" END AS "metadata",
+          COALESCE(octet_length(event."metadata") > ${EVENT_METADATA_BYTES}, false) AS "oversized"
+        FROM selected JOIN "AnalyticsEvent" event ON event."id" = selected."id"
+        ORDER BY event."createdAt" DESC, event."id" DESC, selected."kind"`;
+
+      const logs = logRows.map(row => {
+        if (row.oversized) throw new Error('Historical analytics detail exceeds safe byte limit.');
+        const meta = row.metadata ? JSON.parse(row.metadata) : null;
+        for (const key of ['serviceId', 'serviceName', 'userAgent', 'userName', 'userEmail']) {
+          if (meta?.[key] != null && typeof meta[key] !== 'string') throw new Error('Unsupported historical analytics detail.');
         }
+        return { ...row, meta };
+      });
+      const serviceIds = [...new Set([
+        ...topRows.map(row => row.id!),
+        ...logs.filter(row => row.kind === 'service').map(row => String(row.meta?.serviceId || '')),
+      ])].filter(Boolean);
+      const serviceNameMap = new Map<string, string>();
+      if (serviceIds.length) {
+        const services = await tx.$queryRaw<{ id: string; name: string | null; oversized: boolean }[]>`
+          SELECT requested.id,
+            CASE WHEN octet_length(service.name) <= ${EVENT_METADATA_BYTES} THEN service.name END AS name,
+            COALESCE(octet_length(service.name) > ${EVENT_METADATA_BYTES}, false) AS oversized
+          FROM unnest(${serviceIds}::text[]) requested(id)
+          LEFT JOIN LATERAL (
+            SELECT "name" FROM "DhruService" WHERE "id" = requested.id OR "dhruId" = requested.id
+            ORDER BY ("id" = requested.id) DESC LIMIT 1
+          ) service ON true`;
+        for (const service of services) {
+          if (service.oversized) throw new Error('Analytics service name exceeds safe byte limit.');
+          if (service.name !== null) serviceNameMap.set(service.id, service.name);
+        }
+      }
 
-        serviceViewLogs.push({
+      const serviceViewLogs: any[] = [];
+      const visitorLogs: any[] = [];
+      for (const { meta, ...row } of logs) {
+        const log = {
           id: row.id,
-          serviceId: srvId,
-          serviceName: srvName,
           sessionId: row.sessionId || 'زائر مجهول',
-          path: row.path || '/purchase',
+          path: row.path || (row.kind === 'service' ? '/purchase' : '/'),
           createdAt: row.createdAt,
           userAgent: meta?.userAgent || null,
           userName: meta?.userName || null,
-          userEmail: meta?.userEmail || null
-        });
+          userEmail: meta?.userEmail || null,
+        };
+        if (row.kind === 'service') {
+          const serviceId = meta?.serviceId || '';
+          serviceViewLogs.push({
+            ...log, serviceId,
+            serviceName: serviceNameMap.get(serviceId) || meta?.serviceName || (serviceId ? `خدمة #${serviceId}` : 'خدمة غير محددة'),
+          });
+        } else {
+          visitorLogs.push(log);
+        }
       }
 
-      if (row.sessionId && !seenVisitorSessions.has(row.sessionId)) {
-        seenVisitorSessions.add(row.sessionId);
-        visitorLogs.push({
-          id: row.id,
-          sessionId: row.sessionId,
-          path: row.path || '/',
-          createdAt: row.createdAt,
-          userAgent: meta?.userAgent || null,
-          userName: meta?.userName || null,
-          userEmail: meta?.userEmail || null
-        });
-      }
-    }
-
-    // Top 10 most viewed services
-    const topServices = Object.entries(serviceViews)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 10)
-      .map(([id, count]) => ({
-        id,
-        name: serviceNameMap.get(id) || `خدمة #${id}`,
-        views: count
-      }));
-
-    serviceViewLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    visitorLogs.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-    return res.json({
-      success: true,
-      data: {
+      return {
         days,
-        totalUsers,
-        totalOrders,
-        uniqueSessions: sessions.size,
+        totalUsers: summaryCount(totals.totalUsers),
+        totalOrders: summaryCount(totals.totalOrders),
+        uniqueSessions: summaryCount(totals.uniqueSessions),
         counts,
-        topServices,
-        serviceViewLogs: serviceViewLogs.slice(0, 100),
-        visitorLogs: visitorLogs.slice(0, 100),
-        daily: [...dailyMap.values()].sort((a, b) => a.day.localeCompare(b.day)),
-      }
-    });
+        topServices: topRows.map(row => ({ id: row.id!, name: serviceNameMap.get(row.id!) || `خدمة #${row.id}`, views: summaryCount(row.views) })),
+        serviceViewLogs,
+        visitorLogs,
+        daily: [...dailyMap.values()].sort((a, b) => String(a.day).localeCompare(String(b.day))),
+      };
+    }, { isolationLevel: 'RepeatableRead', maxWait: 1000, timeout: 10000 });
+
+    return res.json({ success: true, data });
   } catch (error: any) {
-    console.error('Conversion summary error:', error);
-    return res.status(500).json({ error: 'تعذر تحميل تقرير الإحصائيات.' });
+    console.error('Conversion summary error:', error?.code || error?.message);
+    return res.status(503).json({ error: 'تعذر تحميل تقرير الإحصائيات.', code: 'ANALYTICS_REPORT_UNAVAILABLE' });
   }
 });
 

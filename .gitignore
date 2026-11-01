@@ -6,5 +6,7 @@ backups/
 telegram_admins.json
 *.db
 *.sqlite
+security*.log
+audit*.json
 
 

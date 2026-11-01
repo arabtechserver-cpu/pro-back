@@ -3,7 +3,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs/promises');
 const os = require('node:os');
 const path = require('node:path');
-const { EventEmitter } = require('node:events');
+const { EventEmitter, once } = require('node:events');
+const http = require('node:http');
+const { Readable, pipeline } = require('node:stream');
+const express = require('express');
 process.env.JWT_SECRET = 'isolated-memory-test-secret-at-least-32-characters';
 process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:1/unused';
 process.env.NODE_ENV = 'test';
@@ -101,6 +104,82 @@ test('disconnected heavy mutations keep their slot; queued work resumes only aft
   await queued; assert.equal(admitted, 2); waiting.emit('finish');
 });
 
+test('cancelled finite streaming reads release admission while health remains available', async (t) => {
+  const app = express();
+  app.use(createResourceGuard(1, 1, 4, 100));
+  let completeStream;
+  const streamCompleted = new Promise(resolve => { completeStream = resolve; });
+  app.get('/stream', (req, res) => {
+    res.type('application/octet-stream');
+    const source = Readable.from((async function* () {
+      for (let i = 0; i < 32; i++) {
+        yield Buffer.alloc(16384, 65);
+        await new Promise(resolve => setImmediate(resolve));
+      }
+    })());
+    pipeline(source, res, error => completeStream({
+      requestComplete: req.complete, responseFinished: res.writableFinished,
+      sourceDestroyed: source.destroyed, code: error?.code
+    }));
+  });
+  app.get('/api/health', (_req, res) => res.json({ status: 'ok' }));
+  app.get('/read', (_req, res) => res.json({ ok: true }));
+  const server = app.listen(0, '127.0.0.1');
+  t.after(async () => {
+    server.closeAllConnections();
+    await new Promise(resolve => server.close(resolve));
+  });
+  await once(server, 'listening');
+  const base = `http://127.0.0.1:${server.address().port}`;
+  await new Promise((resolve, reject) => {
+    const request = http.get(`${base}/stream`, { signal: AbortSignal.timeout(3000) }, response => {
+      response.once('data', () => { response.destroy(); resolve(); });
+    });
+    request.on('error', reject);
+  });
+  assert.deepEqual(await streamCompleted, {
+    requestComplete: true, responseFinished: false,
+    sourceDestroyed: true, code: 'ERR_STREAM_PREMATURE_CLOSE'
+  });
+  assert.equal((await fetch(`${base}/api/health`, { signal: AbortSignal.timeout(3000) })).status, 200);
+  const nextRead = await fetch(`${base}/read`, { signal: AbortSignal.timeout(3000) });
+  assert.equal(nextRead.status, 200);
+  assert.deepEqual(await nextRead.json(), { ok: true });
+});
+
+test('disconnected reads still awaiting their handler stay bounded until it ends', async () => {
+  const guard = createResourceGuard(1, 1, 4, 1000);
+  const req = Object.assign(new EventEmitter(), { path: '/api/read', method: 'GET', complete: true });
+  const response = () => Object.assign(new EventEmitter(), { headersSent: false, end() {} });
+  const first = response(), second = response();
+  let admitted = 0;
+  await guard(req, first, () => admitted++);
+  first.destroyed = true; first.emit('close');
+  const queued = guard(req, second, () => admitted++);
+  await Promise.resolve(); assert.equal(admitted, 1);
+  first.end();
+  await queued; assert.equal(admitted, 2);
+  second.emit('finish');
+});
+
+test('completed mutation responses release on disconnect before all bytes are flushed', async () => {
+  const guard = createResourceGuard(1, 1, 4, 1000);
+  const req = Object.assign(new EventEmitter(), { path: '/api/transactions', method: 'POST', complete: true });
+  const response = () => Object.assign(new EventEmitter(), { end() { this.writableEnded = true; } });
+  const first = response(), second = response();
+  let admitted = 0;
+  await guard(req, first, () => admitted++);
+  first.end(); first.destroyed = true; first.emit('close');
+  await guard(req, second, () => admitted++);
+  assert.equal(admitted, 2);
+  first.emit('finish'); first.emit('close');
+  const third = response();
+  const queued = guard(req, third, () => admitted++);
+  await Promise.resolve(); assert.equal(admitted, 2);
+  second.emit('finish'); await queued;
+  assert.equal(admitted, 3); third.emit('finish');
+});
+
 test('scheduler allows small reads past a busy large job and removes cancelled waiters', async () => {
   const { RequestScheduler } = require('./dist/utils/request-scheduler');
   const scheduler = new RequestScheduler(2, 1, 2, 1000);
@@ -171,7 +250,7 @@ test('concurrent user OTP sends reserve once and valid reset code permits only o
 
 test('application connection pool preserves explicit settings', () => {
   const { databaseClientUrl } = require('./dist/utils/database-client-url');
-  assert.equal(new URL(databaseClientUrl('postgresql://a:b@localhost/db')).searchParams.get('connection_limit'), '2');
+  assert.equal(new URL(databaseClientUrl('postgresql://a:b@localhost/db')).searchParams.get('connection_limit'), process.env.DATABASE_CONNECTION_LIMIT || '15');
   assert.equal(new URL(databaseClientUrl('postgresql://a:b@localhost/db?connection_limit=7')).searchParams.get('connection_limit'), '7');
 });
 

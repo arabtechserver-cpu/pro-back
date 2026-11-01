@@ -64,6 +64,9 @@ export function ensureUploadDir(): string {
  * Saves a binary buffer to the persistent upload volume on the server.
  */
 export function saveBufferToUploads(filename: string, buffer: Buffer): string {
+  if (!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,199}$/.test(filename) || filename.includes('..')) {
+    throw new Error('Invalid upload filename');
+  }
   const uploadDir = ensureUploadDir();
   const filePath = path.join(uploadDir, filename);
   try {
@@ -88,6 +91,7 @@ export function saveBufferToUploads(filename: string, buffer: Buffer): string {
  * Checks if a file exists in the uploads volume.
  */
 export function getUploadFilePath(filename: string): string | null {
+  if (!/^[a-zA-Z0-9_-][a-zA-Z0-9_.-]{0,199}$/.test(filename) || filename.includes('..')) return null;
   const safeFilename = path.basename(filename);
   const uploadDir = getUploadDir();
   const primaryPath = path.join(uploadDir, safeFilename);

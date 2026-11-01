@@ -3,7 +3,8 @@ import cors from 'cors';
 import helmet from 'helmet';
 import compression from 'compression';
 import { prisma } from './utils/prisma';
-import { publicFileGuard } from './middleware/publicFileGuard';
+import { browserWriteGuard, getAllowedOrigins } from './middleware/browserWriteGuard';
+import { publicFileGuard, publicImageGuard } from './middleware/publicFileGuard';
 import { getTrustedProxies } from './utils/trustedProxy';
 import { startTelegramBotPolling } from './utils/telegramService';
 import { createResourceGuard } from './middleware/resourceGuard';
@@ -15,22 +16,7 @@ EventEmitter.defaultMaxListeners = 50;
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
-const allowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'https://arabtechproserver.tech',
-  'https://www.arabtechproserver.tech',
-  'https://borai.store',
-  'https://www.borai.store',
-  ...(process.env.FRONTEND_URL || '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean),
-  ...(process.env.ADDITIONAL_ALLOWED_ORIGINS || '')
-    .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean),
-];
+const allowedOrigins = getAllowedOrigins();
 
 app.set('trust proxy', getTrustedProxies());
 
@@ -51,9 +37,7 @@ app.use(cors({
   origin(origin, callback) {
     if (
       !origin ||
-      allowedOrigins.includes(origin) ||
-      /^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin) ||
-      /^https?:\/\/([a-zA-Z0-9-]+\.)*(arabtechproserver\.tech|borai\.store)(:\d+)?$/.test(origin)
+      allowedOrigins.includes(origin)
     ) {
       return callback(null, true);
     }
@@ -62,9 +46,12 @@ app.use(cors({
   },
   credentials: true,
 }));
-const generalJsonParser = express.json({ limit: '5mb' });
-const imageJsonParser = express.json({ limit: '15mb' });
-app.use(createResourceGuard());
+app.use('/api', browserWriteGuard);
+const generalJsonParser = express.json({ limit: '5mb', inflate: false, verify(req, _res, buffer) {
+  if ((req.url || '').split('?')[0] === '/api/wallet/binance/webhook') (req as any).rawBody = Buffer.from(buffer);
+} });
+const imageJsonParser = express.json({ limit: '15mb', inflate: false });
+const analyticsJsonParser = express.json({ limit: 8192, inflate: false });
 
 const globalApiLimiter = rateLimit({
   store: new BoundedRateLimitStore(),
@@ -72,12 +59,17 @@ const globalApiLimiter = rateLimit({
   max: 300,
   message: { error: 'Too many requests. Please slow down.' },
   validate: { xForwardedForHeader: false },
-  skip: (req) => req.path === '/api/health' || req.path.startsWith('/api/wallet/paypal/webhook') || req.path.startsWith('/api/wallet/binance/webhook')
+  // This limiter is mounted at /api, so req.path has no /api prefix.
+  skip: (req) => /^\/(?:health|wallet\/(?:paypal|binance)\/webhook)\/?$/i.test(req.path)
 });
 
 app.use('/api', globalApiLimiter);
+app.use(createResourceGuard());
 
 app.use((req, res, next) => {
+  if (/^\/api\/(?:analytics|telemetry)\/events\/?$/i.test(req.path)) {
+    return analyticsJsonParser(req, res, next);
+  }
   if (req.path.startsWith('/api/upload') || req.path.startsWith('/api/transactions')) {
     return imageJsonParser(req, res, next);
   }
@@ -98,14 +90,15 @@ process.on('uncaughtException', (error: Error) => {
   process.exit(1);
 });
 
-app.use(express.urlencoded({ limit: '5mb', extended: true }));
+const formParserOptions = { limit: '256kb', extended: true, depth: 8, inflate: false, parameterLimit: 100 };
+app.use(express.urlencoded(formParserOptions));
 
 app.use((req, res, next) => {
   const originalJson = res.json.bind(res);
   const originalSend = res.send.bind(res);
 
   res.json = function (body: any) {
-    const routeUrl = req.originalUrl || req.path;
+    const routeUrl = (req.originalUrl || req.path).split('?')[0];
     if (res.statusCode >= 500) {
       const errMsg = body?.error || body?.message || (typeof body === 'string' ? body : JSON.stringify(body));
       console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${routeUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - Error: ${errMsg}`);
@@ -117,7 +110,7 @@ app.use((req, res, next) => {
   };
 
   res.send = function (body: any) {
-    const routeUrl = req.originalUrl || req.path;
+    const routeUrl = (req.originalUrl || req.path).split('?')[0];
     if (res.statusCode >= 500) {
       const errMsg = typeof body === 'string' ? body.slice(0, 300) : '';
       console.error(`[HTTP ${res.statusCode} SERVER ERROR] ${req.method} ${routeUrl} - IP: ${req.ip} - User: ${(req as any).user?.username || 'Guest'} - ${errMsg}`);
@@ -141,7 +134,7 @@ import { startFoxreloadCatalogWarmup } from './services/foxreloadService';
 ensureUploadDir();
 // Guard each static mount, after Express has stripped the mount prefix.
 // Authenticated transaction routes below are deliberately outside these mounts.
-app.use('/uploads', publicFileGuard, express.static(getUploadDir(), { maxAge: '30d', immutable: true }));
+app.use('/uploads', publicImageGuard, express.static(getUploadDir(), { maxAge: '30d', immutable: true, dotfiles: 'deny', index: false }));
 app.use((req, res, next) => {
   if (req.path.toLowerCase().startsWith('/api/')) return next();
   return publicFileGuard(req, res, next);

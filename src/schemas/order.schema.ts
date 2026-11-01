@@ -15,7 +15,7 @@ export const createOrderSchema = z.object({
     }),
   notes: z.string().max(2000).nullable().optional(),
   couponCode: z.string().max(50).nullable().optional(),
-  customFields: z.union([z.record(z.any()), z.string()])
+  customFields: z.union([z.record(z.string(), z.any()), z.string().max(10000)])
     .nullable()
     .optional()
     .transform(val => {

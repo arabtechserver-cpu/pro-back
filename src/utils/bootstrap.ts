@@ -28,6 +28,10 @@ export async function bootstrapDatabase() {
     });
 
     if (!adminUser) {
+      if (process.env.NODE_ENV === 'production' && (!process.env.DEFAULT_ADMIN_EMAIL ||
+          !process.env.DEFAULT_ADMIN_PASSWORD || process.env.DEFAULT_ADMIN_PASSWORD.length < 16)) {
+        throw new Error('Initial production administrator requires DEFAULT_ADMIN_EMAIL and a DEFAULT_ADMIN_PASSWORD of at least 16 characters');
+      }
       console.log('[Bootstrap] No admin user found. Creating initial admin user...');
       const defaultPassword = process.env.DEFAULT_ADMIN_PASSWORD || crypto.randomBytes(12).toString('hex');
       const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@admin.com';

@@ -1,11 +1,10 @@
 import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { Router } from 'express';
-import jwt from 'jsonwebtoken';
+import { optionalAuth } from '../middleware/auth';
 import rateLimit from 'express-rate-limit';
 import { prisma } from "../utils/prisma";
 import { sendTelegramPhotoNotification, sendTelegramAlert } from '../utils/telegramService';
 
-const JWT_SECRET = process.env.JWT_SECRET;
 
 const router = Router();
 
@@ -16,34 +15,6 @@ const aiChatLimiter = rateLimit({
   message: { error: 'Too many requests. Please slow down.' },
   validate: { xForwardedForHeader: false }
 });
-
-// Optional Customer Auth Middleware for AI chat
-const optionalAuth = async (req: any, res: any, next: any) => {
-  try {
-    const authHeader = req.headers['authorization'];
-    if (authHeader && JWT_SECRET) {
-      const token = authHeader.split(' ')[1];
-      if (token) {
-        const decoded: any = jwt.verify(token, JWT_SECRET);
-        if (decoded && decoded.id) {
-          const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-          if (user) {
-            if (user.status === 'suspended') {
-              return res.status(403).json({ error: 'عذراً، هذا الحساب موقوف حالياً' });
-            }
-            if (decoded.tokenVersion !== undefined && user.tokenVersion !== undefined && decoded.tokenVersion !== user.tokenVersion) {
-              return res.status(401).json({ error: 'انتهت صلاحية الجلسة' });
-            }
-            req.user = user;
-          }
-        }
-      }
-    }
-  } catch (e) {
-    // Guest user
-  }
-  next();
-};
 
 const SYSTEM_PROMPT = `
 أنت "المساعد الذكي للدعم الفني وخدمة العملاء والتفاوض" لمنصة "عرب تك برو سيرفر - Arab Tech Pro Server" (arabtechproserver.tech).
@@ -228,7 +199,8 @@ async function executeToolCall(toolCall: any, userId?: string, guestInfo: any = 
       const orders = await prisma.order.findMany({
         where: { userId },
         orderBy: { createdAt: 'desc' },
-        take: 5
+        take: 5,
+        select: { id: true, serviceName: true, quantity: true, price: true, status: true, createdAt: true }
       });
       return { customer: user, orders };
     }
@@ -247,7 +219,8 @@ async function executeToolCall(toolCall: any, userId?: string, guestInfo: any = 
       const orders = await prisma.order.findMany({
         where: { userId },
         orderBy: { createdAt: 'desc' },
-        take: 5
+        take: 5,
+        select: { id: true, serviceName: true, quantity: true, price: true, status: true, createdAt: true }
       });
       return { orders };
     }
@@ -394,7 +367,7 @@ router.post('/chat', aiChatLimiter, optionalAuth, async (req: any, res: any) => 
     const userId = req.user?.id;
     const guestInfo = { name: guest_name, email: guest_email, phone: guest_phone };
 
-    if (!message) {
+    if (typeof message !== 'string' || !message.trim() || message.length > 4000) {
       return res.status(400).json({ error: 'Message is required' });
     }
 

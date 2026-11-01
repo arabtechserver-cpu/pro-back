@@ -38,25 +38,26 @@ test('both provider clients verify TLS even when STRICT_PROVIDER_SSL is false or
   console.error = () => {};
   try {
     for (const strict of [undefined, 'false', 'true']) {
+      const hostname = `provider-${strict || 'default'}.example`;
       if (strict === undefined) delete process.env.STRICT_PROVIDER_SSL;
       else process.env.STRICT_PROVIDER_SSL = strict;
       const response = await dhru.getImeiOrder('479408', {
-        apiUrl: 'https://provider.example/api/v1', username: 'test', apiKey: 'test'
+        apiUrl: `https://${hostname}/api/v1`, username: 'test', apiKey: 'test'
       });
       assert.equal(response.SUCCESS, false);
       assert.equal(response.transportError, true);
-      assert.match(response.error, /Correct the HTTPS certificate\/DNS for provider.example/);
+      assert.ok(response.error.includes(`Correct the HTTPS certificate/DNS for ${hostname}`));
       const adminResponse = await providers.makeProviderApiCall(
-        'https://provider.example/api/v1', 'test', 'test', 'accountinfo'
+        `https://${hostname}/api/v1`, 'test', 'test', 'accountinfo'
       );
       assert.equal(adminResponse.ok, false);
-      assert.match(adminResponse.data.error, /Correct the HTTPS certificate\/DNS for provider.example/);
+      assert.ok(adminResponse.data.error.includes(`Correct the HTTPS certificate/DNS for ${hostname}`));
     }
     assert.equal(requests.length, 6);
     for (const options of requests) {
       assert.equal(options.rejectUnauthorized, true);
-      assert.equal(options.servername, 'provider.example');
-      assert.equal(options.headers.Host, 'provider.example');
+      assert.match(options.servername, /^provider-(default|false|true)\.example$/);
+      assert.equal(options.headers.Host, options.servername);
       assert.equal(options.hostname, '8.8.8.8');
     }
   } finally {

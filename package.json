@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node provider-order-errors.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js && node binance-pay-integration.test.js && node paypal-config.test.js && node paypal-server.test.js && node invalid-action-fallback.test.js && node auto-dispatch.test.js",
+    "test": "node security-audit.test.js && node security-regression.test.js && node security-hardening.test.js && node ip-access-control.test.js && node api-reliability.test.js && node provider-order-errors.test.js && node telegram-order-notification.test.js && node low-memory-security.test.js && node binance-pay-integration.test.js && node paypal-config.test.js && node paypal-server.test.js && node invalid-action-fallback.test.js && node auto-dispatch.test.js && node analytics-resource.test.js",
     "dev": "nodemon --watch src --exec tsx src/server.ts",
     "build": "npx prisma generate && tsc",
     "start": "node dist/server.js",
@@ -35,13 +35,15 @@
     "jsonwebtoken": "^9.0.3",
     "node-cron": "^4.6.0",
     "prisma": "^5.22.0",
-    "zod": "^3.24.2"
+    "sharp": "^0.35.5",
+    "zod": "^4.6.7"
   },
   "overrides": {
-    "qs": "6.16.0",
+    "qs": "^6.16.1",
     "proxy-addr": "^2.0.8",
     "ip-address": "^10.7.1",
-    "brace-expansion": "^5.0.12"
+    "brace-expansion": "^5.0.12",
+    "minimatch": "^11.0.1"
   },
   "devDependencies": {
     "@electric-sql/pglite": "^0.5.8",

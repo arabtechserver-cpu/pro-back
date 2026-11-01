@@ -11,3 +11,10 @@ test*.js
 test_*.js
 *.bat
 dev.db
+**/*.db
+**/*.sqlite
+backups/
+uploads/
+validation/
+audit*.json
+security*.log

@@ -95,13 +95,19 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
 
   for (const token of candidateTokens) {
     try {
-      const decoded: any = jwt.verify(token, JWT_SECRET);
+      const decoded: any = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
       if (decoded && (decoded.id || decoded.email)) {
         let user = null;
-        if (decoded.id) {
-          user = await prisma.user.findUnique({ where: { id: decoded.id } });
-        } else if (decoded.email) {
-          user = await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
+        try {
+          if (decoded.id) {
+            user = await prisma.user.findUnique({ where: { id: decoded.id } });
+          } else if (decoded.email) {
+            user = await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
+          }
+        } catch (error: any) {
+          console.error('[Authentication] User lookup failed', { code: error?.code || 'UNKNOWN' });
+          res.setHeader?.('Retry-After', '2');
+          return res.status(503).json({ error: 'Authentication temporarily unavailable', code: 'AUTH_UNAVAILABLE' });
         }
 
         if (user) {
@@ -113,6 +119,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
             continue;
           }
           req.user = user;
+          res.setHeader?.('Cache-Control', 'private, no-store');
           return next();
         }
       }
@@ -121,7 +128,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
   }
 
-  return res.status(401).json({ error: 'Access denied: Authentication token required or session expired' });
+  return res.status(401).json({ error: 'Access denied: Authentication token required or session expired', code: 'INVALID_SESSION' });
 };
 
 export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -129,7 +136,7 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
 
   for (const token of candidateTokens) {
     try {
-      const decoded: any = jwt.verify(token, JWT_SECRET);
+      const decoded: any = jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] });
       if (decoded && (decoded.id || decoded.email)) {
         let user = null;
         if (decoded.id) {
@@ -147,6 +154,7 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
             continue;
           }
           req.user = user;
+          res.setHeader?.('Cache-Control', 'private, no-store');
           return next();
         }
       }

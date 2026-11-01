@@ -12,6 +12,7 @@ process.on('exit', () => {
 });
 
 process.env.JWT_SECRET = 'reliability-test-secret-at-least-32-chars';
+process.env.DATABASE_URL = 'postgresql://test:test@127.0.0.1:1/unused';
 process.env.TELEGRAM_BOT_TOKEN = 'test-token';
 const { prisma } = require('./dist/utils/prisma');
 const fox = require('./dist/services/foxreloadService');
@@ -596,6 +597,9 @@ test('deadlines terminate hung reads and stop scheduling new provider requests',
 });
 
 test('a saved and charged order returns immediately while Telegram delivery is stalled', async () => {
+  const dispatch = require('./dist/services/orderDispatchService');
+  const originalDispatch = dispatch.tryAutoDispatchOrder;
+  dispatch.tryAutoDispatchOrder = async () => ({ attempted: false });
   const telegram = require('./dist/utils/telegramService');
   const originals = {
     userFind: prisma.user.findUnique, orderFind: prisma.order.findFirst,
@@ -631,6 +635,7 @@ test('a saved and charged order returns immediately while Telegram delivery is s
     prisma.user.findUnique = originals.userFind; prisma.order.findFirst = originals.orderFind;
     prisma.dhruService.findFirst = originals.serviceFind; prisma.$transaction = originals.transaction;
     telegram.sendTelegramPhotoNotification = originals.notification;
+    dispatch.tryAutoDispatchOrder = originalDispatch;
   }
 });
 

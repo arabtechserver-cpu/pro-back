@@ -1,11 +1,11 @@
 import { Request, Response, NextFunction } from 'express';
 import { ZodType } from 'zod';
 
-export function validateBody<TOutput = any, TInput = any>(schema: ZodType<TOutput, any, TInput>) {
+export function validateBody(schema: ZodType) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.body);
     if (!result.success) {
-      const errors = result.error.errors.map(err => ({
+      const errors = result.error.issues.slice(0, 20).map(err => ({
         field: err.path.join('.'),
         message: err.message
       }));
@@ -21,11 +21,11 @@ export function validateBody<TOutput = any, TInput = any>(schema: ZodType<TOutpu
   };
 }
 
-export function validateQuery<TOutput = any, TInput = any>(schema: ZodType<TOutput, any, TInput>) {
+export function validateQuery(schema: ZodType) {
   return (req: Request, res: Response, next: NextFunction) => {
     const result = schema.safeParse(req.query);
     if (!result.success) {
-      const errors = result.error.errors.map(err => ({
+      const errors = result.error.issues.slice(0, 20).map(err => ({
         field: err.path.join('.'),
         message: err.message
       }));

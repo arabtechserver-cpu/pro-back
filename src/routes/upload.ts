@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+import { sanitizeImageDataUri, InvalidImageError } from '../utils/safe-image';
 import { Router } from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -10,51 +12,16 @@ const router = Router();
 // POST /api/upload - Upload Image to Volume & PostgreSQL DB
 router.post('/', isAdmin, async (req, res) => {
   try {
-    const { image, filename } = req.body;
+    const { image } = req.body;
     if (!image) {
       return res.status(400).json({ success: false, error: 'لم يتم توفير صورة للرفع' });
     }
 
     ensureUploadDir();
 
-    // Extract mime type and clean Base64 data
-    const matches = image.match(/^data:([A-Za-z-+\/]+);base64,(.+)$/);
-    if (!matches || matches.length !== 3) {
-      return res.status(400).json({ success: false, error: 'يجب رفع صورة بصيغة Base64 صالحة' });
-    }
-
-    const mimeType = matches[1].toLowerCase();
-    const allowedMimeTypes = new Set(['image/jpeg', 'image/png', 'image/webp', 'image/gif']);
-    if (!allowedMimeTypes.has(mimeType)) {
-      return res.status(400).json({ success: false, error: 'نوع الصورة غير مسموح' });
-    }
-
-    const base64Data = matches[2];
-    const buffer = Buffer.from(base64Data, 'base64');
-    if (buffer.length === 0 || buffer.length > 10 * 1024 * 1024) {
-      return res.status(413).json({ success: false, error: 'حجم الصورة يجب ألا يتجاوز 10 ميجابايت' });
-    }
-
-    // Verify image magic bytes signature
-    const isValidSignature = (
-      (mimeType === 'image/jpeg' && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff) ||
-      (mimeType === 'image/png' && buffer[0] === 0x89 && buffer[1] === 0x50 && buffer[2] === 0x4e && buffer[3] === 0x47) ||
-      (mimeType === 'image/gif' && buffer[0] === 0x47 && buffer[1] === 0x49 && buffer[2] === 0x46) ||
-      (mimeType === 'image/webp' && buffer.length >= 12 && buffer[0] === 0x52 && buffer[1] === 0x49 && buffer[2] === 0x46 && buffer[3] === 0x46 && buffer[8] === 0x57 && buffer[9] === 0x45 && buffer[10] === 0x42 && buffer[11] === 0x50)
-    );
-
-    if (!isValidSignature) {
-      return res.status(400).json({ success: false, error: 'محتوى الملف لا يطابق صيغة الصورة المصرح بها' });
-    }
-
-    const mimeToExt: Record<string, string> = {
-      'image/jpeg': '.jpg',
-      'image/png': '.png',
-      'image/webp': '.webp',
-      'image/gif': '.gif'
-    };
-    const cleanBasename = (filename || 'uploaded_image').replace(/\.[^/.]+$/, '').replace(/[^a-zA-Z0-9_-]/g, '_');
-    const uniqueFilename = `${Date.now()}_${cleanBasename}${mimeToExt[mimeType] || '.jpg'}`;
+    const clean = await sanitizeImageDataUri(image, true);
+    const { buffer, mimeType, base64: base64Data } = clean;
+    const uniqueFilename = `${crypto.randomUUID()}.${clean.extension}`;
 
     // 1. Save directly into persistent volume /app/uploads on disk
     try {
@@ -83,6 +50,7 @@ router.post('/', isAdmin, async (req, res) => {
       filename: uniqueFilename 
     });
   } catch (error: any) {
+    if (error instanceof InvalidImageError) return res.status(400).json({ success: false, error: error.message });
     console.error('Error uploading image:', error);
     return res.status(500).json({ success: false, error: 'فشل رفع وحفظ الصورة' });
   }
@@ -92,6 +60,7 @@ router.post('/', isAdmin, async (req, res) => {
 router.get('/:id', async (req, res) => {
   try {
     const id = String(req.params.id);
+    if (!/^[a-zA-Z0-9_.-]{1,200}$/.test(id) || id === '.' || id === '..') return res.status(400).json({ error: 'Invalid image identifier' });
 
     // S12: Block any receipt access from the public upload endpoint
     if (id.toLowerCase().includes('receipt')) {
@@ -103,6 +72,7 @@ router.get('/:id', async (req, res) => {
     // 1. Check persistent volume on disk first
     const diskPath = getUploadFilePath(id);
     if (diskPath && fs.existsSync(diskPath)) {
+      if (!/\.(jpe?g|png|webp|gif)$/i.test(diskPath)) return res.status(404).json({ error: 'Image not found' });
       const ext = path.extname(diskPath).replace('.', '').toLowerCase() || 'jpeg';
       const mime = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : ext === 'gif' ? 'image/gif' : 'image/jpeg';
       res.setHeader('Content-Type', mime);
@@ -126,6 +96,9 @@ router.get('/:id', async (req, res) => {
       if (stored.filename.toLowerCase().includes('receipt')) {
         res.setHeader('Cache-Control', 'private, no-store');
         return res.status(403).json({ error: 'Receipts require authenticated transaction access' });
+      }
+      if (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(stored.mimeType)) {
+        return res.status(404).json({ error: 'Image not found' });
       }
       const imgBuffer = Buffer.from(stored.data, 'base64');
       res.setHeader('Content-Type', stored.mimeType || 'image/jpeg');
@@ -167,6 +140,7 @@ router.get('/', isAdmin, async (req, res) => {
 router.delete('/:id', isAdmin, async (req, res) => {
   try {
     const id = String(req.params.id);
+    if (!/^[a-zA-Z0-9_.-]{1,200}$/.test(id) || id === '.' || id === '..') return res.status(400).json({ error: 'Invalid image identifier' });
     const existing = await prisma.storedImage.findFirst({
       where: {
         OR: [{ id }, { filename: id }]

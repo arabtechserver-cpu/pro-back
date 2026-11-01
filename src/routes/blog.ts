@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import { prisma } from "../utils/prisma";
 import { isAdmin, optionalAuth } from '../middleware/auth';
-import { processBase64Images } from '../utils/imageHandler';
+import { InvalidImageError } from '../utils/safe-image';
+import { processBase64Images, saveArticleImage } from '../utils/imageHandler';
 import { sanitizeTutorialAccess } from './video';
 
 const router = Router();
@@ -132,25 +133,13 @@ router.post('/post', isAdmin, async (req, res) => {
     // Assuming backend runs on port 3001
     const baseUrl = 'https://api.arabtechproserver.tech';
     
-    const processedContentEn = processBase64Images(data.contentEn, baseUrl);
-    const processedContentAr = processBase64Images(data.contentAr, baseUrl);
+    const processedContentEn = await processBase64Images(data.contentEn, baseUrl);
+    const processedContentAr = await processBase64Images(data.contentAr, baseUrl);
     
     // The main thumbnail could be a direct base64 string
-    let processedImageUrl = data.imageUrl;
-    if (processedImageUrl && processedImageUrl.startsWith('data:image/')) {
-      const imgMatch = processedImageUrl.match(/^data:image\/(.*?);base64,(.+)$/);
-      if (imgMatch) {
-        const ext = imgMatch[1];
-        const base64Data = imgMatch[2];
-        const fs = require('fs');
-        const path = require('path');
-        const filename = `thumb_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
-        const { ensureUploadDir } = require('../utils/uploads');
-        const uploadDir = ensureUploadDir();
-        fs.writeFileSync(path.join(uploadDir, filename), Buffer.from(base64Data, 'base64'));
-        processedImageUrl = `${baseUrl}/uploads/${filename}`;
-      }
-    }
+    const processedImageUrl = typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:')
+      ? await saveArticleImage(data.imageUrl, baseUrl)
+      : data.imageUrl;
 
     const post = await prisma.blogPost.create({
       data: {
@@ -176,6 +165,7 @@ router.post('/post', isAdmin, async (req, res) => {
 
     res.status(201).json(post);
   } catch (error) {
+    if (error instanceof InvalidImageError) return res.status(400).json({ error: error.message });
     console.error("Error creating blog post:", error);
     res.status(500).json({ error: 'Failed to create blog post' });
   }
@@ -216,24 +206,12 @@ router.put('/posts/:id', isAdmin, async (req, res) => {
     const data = req.body;
     const baseUrl = 'https://api.arabtechproserver.tech';
     
-    const processedContentEn = processBase64Images(data.contentEn, baseUrl);
-    const processedContentAr = processBase64Images(data.contentAr, baseUrl);
+    const processedContentEn = await processBase64Images(data.contentEn, baseUrl);
+    const processedContentAr = await processBase64Images(data.contentAr, baseUrl);
 
-    let processedImageUrl = data.imageUrl;
-    if (processedImageUrl && processedImageUrl.startsWith('data:image/')) {
-      const imgMatch = processedImageUrl.match(/^data:image\/(.*?);base64,(.+)$/);
-      if (imgMatch) {
-        const ext = imgMatch[1];
-        const base64Data = imgMatch[2];
-        const fs = require('fs');
-        const path = require('path');
-        const filename = `thumb_${Date.now()}_${Math.floor(Math.random() * 10000)}.${ext}`;
-        const { ensureUploadDir } = require('../utils/uploads');
-        const uploadDir = ensureUploadDir();
-        fs.writeFileSync(path.join(uploadDir, filename), Buffer.from(base64Data, 'base64'));
-        processedImageUrl = `${baseUrl}/uploads/${filename}`;
-      }
-    }
+    const processedImageUrl = typeof data.imageUrl === 'string' && data.imageUrl.startsWith('data:')
+      ? await saveArticleImage(data.imageUrl, baseUrl)
+      : data.imageUrl;
 
     const post = await prisma.blogPost.update({
       where: { id: String(id) },
@@ -251,6 +229,7 @@ router.put('/posts/:id', isAdmin, async (req, res) => {
 
     res.json(post);
   } catch (error) {
+    if (error instanceof InvalidImageError) return res.status(400).json({ error: error.message });
     console.error("Error updating blog post:", error);
     res.status(500).json({ error: 'Failed to update blog post' });
   }

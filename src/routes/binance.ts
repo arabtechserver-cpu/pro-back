@@ -3,7 +3,8 @@ import { prisma } from '../utils/prisma';
 import {
   createBinanceOrder,
   queryBinanceOrder,
-  verifyBinanceWebhookHeader
+  verifyBinanceWebhookSignature,
+  matchesBinancePayment
 } from '../services/binanceService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
@@ -21,7 +22,7 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
 
     const { amount } = req.body;
     const numAmount = parseFloat(amount);
-    if (isNaN(numAmount) || numAmount < 1.0) {
+    if (!Number.isFinite(numAmount) || numAmount < 1.0 || numAmount > 50000 || Math.abs(numAmount * 100 - Math.round(numAmount * 100)) > 0.000001) {
       return res.status(400).json({ error: 'الحد الأدنى لمبلغ الإيداع عبر Binance Pay هو $1.00 USD' });
     }
 
@@ -121,16 +122,13 @@ router.post('/check-order', authenticateToken, async (req: any, res) => {
         });
       }
 
-      if (
-        queryResult.orderAmount > 0 &&
-        Math.abs(queryResult.orderAmount - paymentIntent.amount) > 0.05
-      ) {
+      if (!matchesBinancePayment(queryResult, paymentIntent)) {
         return res.status(400).json({
           error: 'المبلغ المدفوع في باينانس لا يتطابق مع المبلغ المحدد للطلب'
         });
       }
 
-      const captureId = queryResult.transactionId || `TX_${Date.now()}`;
+      const captureId = queryResult.transactionId!;
       const refNo = `BINANCE_${paymentIntent.id}_${captureId}`;
 
       const txResult = await prisma.$transaction(async (tx) => {
@@ -228,10 +226,8 @@ router.post('/check-order', authenticateToken, async (req: any, res) => {
 
 router.post('/webhook', async (req: any, res) => {
   try {
-    const rawHeaders = req.headers;
-    const headerInfo = verifyBinanceWebhookHeader(rawHeaders);
-    if (!headerInfo) {
-      console.warn('[Binance Webhook] Missing required Binance Pay signature headers');
+    if (!await verifyBinanceWebhookSignature(req.headers, req.rawBody)) {
+      return res.status(401).json({ returnCode: 'FAIL', returnMessage: 'Invalid webhook signature' });
     }
 
     const payload = req.body;
@@ -239,10 +235,6 @@ router.post('/webhook', async (req: any, res) => {
     const dataObj = typeof payload?.data === 'string' ? JSON.parse(payload.data) : payload?.data;
 
     const merchantTradeNo = dataObj?.merchantTradeNo;
-    const transactionId = dataObj?.transactionId;
-    const rawTotalFee = dataObj?.totalFee || dataObj?.orderAmount;
-    const paidAmount = parseFloat(rawTotalFee || '0');
-
     if (!merchantTradeNo || bizStatus !== 'PAY_SUCCESS') {
       return res.status(200).json({ returnCode: 'SUCCESS', returnMessage: null });
     }
@@ -260,7 +252,11 @@ router.post('/webhook', async (req: any, res) => {
       return res.status(200).json({ returnCode: 'SUCCESS', returnMessage: null });
     }
 
-    const captureId = transactionId || `TX_${Date.now()}`;
+    const verifiedPayment = await queryBinanceOrder(merchantTradeNo);
+    if (!matchesBinancePayment(verifiedPayment, paymentIntent)) {
+      return res.status(409).json({ returnCode: 'FAIL', returnMessage: 'Payment verification mismatch' });
+    }
+    const captureId = verifiedPayment.transactionId!;
     const refNo = `BINANCE_${paymentIntent.id}_${captureId}`;
     const userId = paymentIntent.userId;
     const creditedAmount = paymentIntent.amount;
@@ -297,8 +293,6 @@ router.post('/webhook', async (req: any, res) => {
         data: { balance: { increment: creditedAmount } }
       });
 
-      await checkAndAutoUpgradeMembership(userId, creditedAmount);
-
       const caption = [
         '[BINANCE WEBHOOK] تم استلام وتأكيد دفعة باينانس عبر Webhook',
         '',
@@ -313,10 +307,12 @@ router.post('/webhook', async (req: any, res) => {
       sendTelegramPhotoNotification({ caption }).catch(() => {});
     });
 
+    await checkAndAutoUpgradeMembership(userId, creditedAmount).catch(() => {});
+
     return res.status(200).json({ returnCode: 'SUCCESS', returnMessage: null });
   } catch (error: any) {
-    console.error('[Binance Webhook Error]:', error);
-    return res.status(200).json({ returnCode: 'SUCCESS', returnMessage: null });
+    console.error('[Binance Webhook Error]:', { name: error?.name || 'Error' });
+    return res.status(503).json({ returnCode: 'FAIL', returnMessage: 'Payment verification temporarily unavailable' });
   }
 });
 

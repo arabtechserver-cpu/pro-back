@@ -269,7 +269,15 @@ export function dhruApiRequest(
 
       const req = https.request({ ...options, signal: AbortSignal.timeout(25000) }, (res) => {
         let rawText = "";
-        res.on("data", (chunk) => { rawText += chunk; });
+        let responseBytes = 0;
+        res.on("data", (chunk) => {
+          responseBytes += Buffer.byteLength(chunk);
+          if (responseBytes > 16 * 1024 * 1024) {
+            req.destroy(new Error('Provider response exceeds 16 MiB limit'));
+            return;
+          }
+          rawText += chunk;
+        });
         res.on("end", () => {
           let result: any;
           try {

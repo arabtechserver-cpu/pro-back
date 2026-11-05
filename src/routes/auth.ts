@@ -33,12 +33,66 @@ const setAuthCookies = (res: any, token: string, role: string) => {
 const authLimiter = rateLimit({
   store: new BoundedRateLimitStore(),
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 40,
   message: { success: false, error: 'تجاوزت الحد المسموح به، يرجى المحاولة بعد قليل.' },
   validate: { xForwardedForHeader: false }
 });
 
 router.use(authLimiter);
+
+const VISITOR_COOKIE_NAME = 'cf_visitor_verified';
+const VISITOR_COOKIE_TTL_MS = 12 * 60 * 60 * 1000;
+
+function signVisitorClearance(ip: string, timestamp: number): string {
+  const secret = process.env.JWT_SECRET || process.env.TURNSTILE_SECRET_KEY || 'turnstile-visitor-secret';
+  const payload = `${ip}|${timestamp}`;
+  const sig = crypto.createHmac('sha256', secret).update(payload).digest('hex');
+  return `${timestamp}.${sig}`;
+}
+
+function verifyVisitorClearance(token: string | undefined, ip: string): boolean {
+  if (!token || typeof token !== 'string') return false;
+  const parts = token.split('.');
+  if (parts.length !== 2) return false;
+  const timestamp = Number(parts[0]);
+  if (!Number.isFinite(timestamp) || Date.now() - timestamp > VISITOR_COOKIE_TTL_MS || timestamp > Date.now() + 60000) {
+    return false;
+  }
+  const expected = signVisitorClearance(ip, timestamp);
+  if (expected.length !== token.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(expected), Buffer.from(token));
+}
+
+router.get('/verify-turnstile', (req, res) => {
+  const clientIp = extractClientIp(req);
+  const rawCookieHeader = req.headers.cookie || '';
+  const match = rawCookieHeader
+    .split(';')
+    .map((part) => part.trim())
+    .find((part) => part.startsWith(`${VISITOR_COOKIE_NAME}=`));
+  const cookieValue = match ? decodeURIComponent(match.slice(VISITOR_COOKIE_NAME.length + 1)) : undefined;
+  const verified = verifyVisitorClearance(cookieValue, clientIp);
+  return res.json({ success: true, verified });
+});
+
+router.post('/verify-turnstile', turnstileMiddleware, (req, res) => {
+  const clientIp = extractClientIp(req);
+  const now = Date.now();
+  const signedToken = signVisitorClearance(clientIp, now);
+  res.cookie?.(VISITOR_COOKIE_NAME, signedToken, {
+    httpOnly: true,
+    secure: isProduction,
+    sameSite: 'lax',
+    maxAge: VISITOR_COOKIE_TTL_MS,
+    path: '/'
+  });
+  return res.json({
+    success: true,
+    verified: true,
+    verifiedAt: now,
+    expiresAt: now + VISITOR_COOKIE_TTL_MS
+  });
+});
 
 // In-memory OTP Store for forgot password flow with brute force attempt tracking
 interface UserOtpRecord {

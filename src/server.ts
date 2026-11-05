@@ -229,7 +229,7 @@ app.use((err: any, req: express.Request, res: express.Response, next: express.Ne
   });
 });
 
-async function startServer() {
+async function runStartupTasks() {
   try {
     if (process.env.STARTUP_MAINTENANCE !== 'false') {
       await bootstrapDatabase();
@@ -241,9 +241,20 @@ async function startServer() {
       initBackupCron();
       startFoxreloadCatalogWarmup();
     }
+  } catch (error) {
+    console.error('[Startup Maintenance] Background initialization error:', error);
+  }
+}
 
+async function startServer() {
+  try {
     app.listen(PORT, '0.0.0.0', () => {
       console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
+      if (process.env.STARTUP_MAINTENANCE !== 'false' || process.env.BACKGROUND_JOBS_ENABLED !== 'false') {
+        setImmediate(() => {
+          void runStartupTasks();
+        });
+      }
     });
   } catch (error) {
     console.error('Failed to initialize and start server:', error);

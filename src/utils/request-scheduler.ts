@@ -7,7 +7,7 @@ export class RequestScheduler {
   private active = 0;
   private heavyActive = 0;
   private pending: Array<{ heavy: boolean; start: () => void }> = [];
-  constructor(private concurrency = 16, private heavyConcurrency = 2, private capacity = 128, private waitMs = 22000) {}
+  constructor(private concurrency = 16, private heavyConcurrency = 2, private capacity = 128, private waitMs = 5000) {}
   acquire(heavy: boolean, signal?: AbortSignal): Promise<() => void> {
     if (signal?.aborted) return Promise.reject(new RequestQueueError('REQUEST_ABORTED'));
     if (!this.pending.length && this.available(heavy)) return Promise.resolve(this.reserve(heavy));

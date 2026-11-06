@@ -3,9 +3,9 @@ import { RequestScheduler } from '../utils/request-scheduler';
 
 export function createResourceGuard(
   maxActive = Number(process.env.RESOURCE_GUARD_MAX_ACTIVE || 48),
-  maxHeavy = Number(process.env.RESOURCE_GUARD_MAX_HEAVY || 6),
+  maxHeavy = Number(process.env.RESOURCE_GUARD_MAX_HEAVY || 8),
   queueCapacity = Number(process.env.RESOURCE_GUARD_QUEUE_CAPACITY || 256),
-  waitMs = Number(process.env.RESOURCE_GUARD_WAIT_MS || 25000)
+  waitMs = Number(process.env.RESOURCE_GUARD_WAIT_MS || 5000)
 ) {
   const scheduler = new RequestScheduler(maxActive, maxHeavy, queueCapacity, waitMs);
   return async (req: Request, res: Response, next: NextFunction) => {
@@ -30,6 +30,21 @@ export function createResourceGuard(
     }
     req.removeListener('aborted', abort); res.removeListener('close', abort);
     if (res.destroyed) { release(); return; }
+
+    const originalRelease = release;
+    let safetyTimer: NodeJS.Timeout | undefined = setTimeout(() => {
+      originalRelease();
+    }, Math.max(waitMs * 3, 20000));
+    if (safetyTimer.unref) safetyTimer.unref();
+
+    release = () => {
+      if (safetyTimer) {
+        clearTimeout(safetyTimer);
+        safetyTimer = undefined;
+      }
+      originalRelease();
+    };
+
     res.once('finish', release);
     res.once('close', () => {
       // An aborted stream never emits finish. Keep unfinished handlers and writes

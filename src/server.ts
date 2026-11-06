@@ -54,7 +54,7 @@ const imageJsonParser = express.json({ limit: '15mb', inflate: false });
 const analyticsJsonParser = express.json({ limit: 8192, inflate: false });
 
 const globalApiLimiter = rateLimit({
-  store: new BoundedRateLimitStore(),
+  store: new BoundedRateLimitStore(Number(process.env.RATE_LIMIT_STORE_CAPACITY) || 20000),
   windowMs: 60 * 1000,
   max: 300,
   message: { error: 'Too many requests. Please slow down.' },

@@ -13,6 +13,16 @@ import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
 import { validateBody } from '../middleware/validate';
 import { createOrderSchema } from '../schemas/order.schema';
 import { dispatchOrderToProvider, tryAutoDispatchOrder } from '../services/orderDispatchService';
+import rateLimit from 'express-rate-limit';
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
+
+const dispatchProviderLimiter = rateLimit({
+  store: new BoundedRateLimitStore(2000),
+  windowMs: 60 * 1000,
+  max: 20,
+  message: { error: 'Too many dispatch attempts. Please slow down.' },
+  validate: { xForwardedForHeader: false },
+});
 
 const router = Router();
 
@@ -560,7 +570,7 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
 });
 
 // POST /api/orders/dispatch-provider - Admin Dispatch Order to Provider API
-router.post('/dispatch-provider', isAdmin, async (req, res) => {
+router.post('/dispatch-provider', dispatchProviderLimiter, isAdmin, async (req, res) => {
   try {
     const { orderId } = req.body;
     if (!orderId) {

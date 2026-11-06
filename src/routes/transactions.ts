@@ -18,6 +18,16 @@ import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emai
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
 import { getUploadDir, ensureUploadDir } from '../utils/uploads';
 import { validateBody } from '../middleware/validate';
+import rateLimit from 'express-rate-limit';
+import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
+
+const depositLimiter = rateLimit({
+  store: new BoundedRateLimitStore(2000),
+  windowMs: 60 * 1000,
+  max: 10,
+  message: { error: 'تم تجاوز الحد المسموح من المحاولات، يرجى الانتظار دقيقة' },
+  validate: { xForwardedForHeader: false },
+});
 import { createDepositTransactionSchema, approveTransactionSchema } from '../schemas/transaction.schema';
 
 const router = Router();
@@ -239,7 +249,7 @@ router.get('/receipts/:filename', authenticateToken, async (req: any, res) => {
 });
 
 // POST /api/transactions - Submit New Deposit Transaction
-router.post('/', authenticateToken, validateBody(createDepositTransactionSchema), async (req: any, res) => {
+router.post('/', depositLimiter, authenticateToken, validateBody(createDepositTransactionSchema), async (req: any, res) => {
   try {
     const { amount, method, refNo, receiptImage, type } = req.body;
 

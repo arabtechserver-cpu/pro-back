@@ -5,7 +5,7 @@ export class BoundedRateLimitStore implements Store {
   localKeys = true;
   private entries = new Map<string, { totalHits: number; resetTime: Date }>();
   private windowMs = 60000;
-  constructor(private capacity = 2000) {}
+  constructor(private capacity = Number(process.env.RATE_LIMIT_STORE_CAPACITY || 10000)) {}
   init(options: Options) { this.windowMs = options.windowMs; }
   async increment(key: string): Promise<ClientRateLimitInfo> {
     const now = Date.now();

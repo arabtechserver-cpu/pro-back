@@ -90,8 +90,11 @@ export function cleanDhruErrorMessage(raw: unknown): string {
   if (!raw) return "";
   let text = String(raw).trim();
   text = text.replace(/^ValidationError\d*/i, "").trim();
-  text = text.replace(/<[^>]+>/g, " ").trim();
-  const parts = text.split(/[,;\n\r]+/).map(p => p.trim()).filter(Boolean);
+  text = text.replace(/<\/?[^>]+>/g, "\n").trim();
+  const parts = text
+    .split(/[\n,;]+/)
+    .map(p => p.trim().replace(/^[-:•\s]+|[-:•\s]+$/g, ""))
+    .filter(Boolean);
   const uniqueParts = Array.from(new Set(parts));
   return uniqueParts.join(" - ") || text;
 }
@@ -433,14 +436,17 @@ export async function placeImeiOrder(
   customFields: Record<string, string> = {},
   provider?: ProviderConfig
 ) {
+  const isNumericImei = /^\d{14,16}$/.test((imei || "").replace(/[\s-]/g, ''));
   const params: Record<string, string> = {
     SERVICEID: serviceId,
     ID: serviceId,
     serviceid: serviceId,
-    id: serviceId,
-    IMEI: imei,
-    imei: imei
+    id: serviceId
   };
+  if (isNumericImei) {
+    params["IMEI"] = imei;
+    params["imei"] = imei;
+  }
 
   const cleanFields: Record<string, string> = {};
   if (customFields && typeof customFields === "object") {
@@ -453,6 +459,14 @@ export async function placeImeiOrder(
     });
   }
 
+  if (!isNumericImei && imei) {
+    const hasKey = Object.keys(cleanFields).some(k => /^(sn|serial|imei[\/_]sn)$/i.test(k));
+    if (!hasKey) {
+      cleanFields["SN"] = imei;
+      cleanFields["IMEI/SN"] = imei;
+    }
+  }
+
   if (Object.keys(cleanFields).length > 0) {
     const base64Custom = Buffer.from(JSON.stringify(cleanFields)).toString("base64");
     params["CUSTOMFIELD"] = base64Custom;
@@ -463,11 +477,19 @@ export async function placeImeiOrder(
     });
   }
 
-  let res = await dhruApiRequest("placeimeiorder", params, provider);
+  let res: any;
+  if (isNumericImei) {
+    res = await dhruApiRequest("placeimeiorder", params, provider);
+  } else {
+    const serverParams: Record<string, string> = { ...params, QNT: "1", qnt: "1" };
+    res = await dhruApiRequest("placeserverorder", serverParams, provider);
+  }
 
   if (isActionUnsupported(res) || isInvalidImeiError(res)) {
-    console.log('[Dhru API] placeimeiorder failed (unsupported action or non-numeric/invalid IMEI format), attempting fallback placeserverorder...');
-    const serverParams = { ...params, QNT: "1", qnt: "1" };
+    console.log('[Dhru API] Attempting fallback placeserverorder...');
+    const serverParams: Record<string, string> = { ...params, QNT: "1", qnt: "1" };
+    delete serverParams.IMEI;
+    delete serverParams.imei;
     const serverRes = await dhruApiRequest("placeserverorder", serverParams, provider);
     if (serverRes && (serverRes.SUCCESS || serverRes.REFERENCEID || serverRes.ID || !serverRes.ERROR)) {
       res = serverRes;
@@ -477,13 +499,23 @@ export async function placeImeiOrder(
   }
 
   if (isActionUnsupported(res)) {
-    console.log('[Dhru API] placeserverorder unsupported by provider, attempting fallback placeorder...');
-    res = await dhruApiRequest("placeorder", params, provider);
+    console.log('[Dhru API] attempting fallback placeorder...');
+    const fallbackParams: Record<string, string> = { ...params };
+    if (!isNumericImei) {
+      delete fallbackParams.IMEI;
+      delete fallbackParams.imei;
+    }
+    res = await dhruApiRequest("placeorder", fallbackParams, provider);
   }
 
   if (isActionUnsupported(res)) {
-    console.log('[Dhru API] placeorder unsupported by provider, attempting fallback placeremoteorder...');
-    res = await dhruApiRequest("placeremoteorder", params, provider);
+    console.log('[Dhru API] attempting fallback placeremoteorder...');
+    const fallbackParams: Record<string, string> = { ...params };
+    if (!isNumericImei) {
+      delete fallbackParams.IMEI;
+      delete fallbackParams.imei;
+    }
+    res = await dhruApiRequest("placeremoteorder", fallbackParams, provider);
   }
 
   return res;
@@ -524,7 +556,8 @@ export async function placeServerOrder(
         ""
       );
 
-  if (targetIdentifier) {
+  const isNumericImei = /^\d{14,16}$/.test((targetIdentifier || "").replace(/[\s-]/g, ''));
+  if (targetIdentifier && isNumericImei) {
     params["IMEI"] = targetIdentifier;
     params["imei"] = targetIdentifier;
   }
@@ -540,6 +573,16 @@ export async function placeServerOrder(
     });
   }
 
+  if (targetIdentifier && !isNumericImei) {
+    const hasIdentifierInCustom = Object.keys(cleanFields).some(k =>
+      /^(sn|serial|imei[\/_]sn|account|username|identifier)$/i.test(k)
+    );
+    if (!hasIdentifierInCustom) {
+      cleanFields["SN"] = targetIdentifier;
+      cleanFields["IMEI/SN"] = targetIdentifier;
+    }
+  }
+
   if (Object.keys(cleanFields).length > 0) {
     const base64Custom = Buffer.from(JSON.stringify(cleanFields)).toString("base64");
     params["CUSTOMFIELD"] = base64Custom;
@@ -553,14 +596,12 @@ export async function placeServerOrder(
   let res = await dhruApiRequest("placeserverorder", params, provider);
 
   if (isActionUnsupported(res)) {
-    // Only fall back to placeimeiorder when we have an actual IMEI/identifier.
-    // An empty IMEI causes "Service Not Active" on server/quantity-type services.
-    if (targetIdentifier) {
+    if (targetIdentifier && isNumericImei) {
       console.log('[Dhru API] placeserverorder returned Command Not Found, attempting fallback placeimeiorder...');
       const imeiParams = { ...params, IMEI: targetIdentifier, imei: targetIdentifier };
       res = await dhruApiRequest("placeimeiorder", imeiParams, provider);
     } else {
-      console.log('[Dhru API] placeserverorder returned Command Not Found (no IMEI), skipping placeimeiorder, trying placeorder...');
+      console.log('[Dhru API] placeserverorder returned Command Not Found (non-numeric identifier), skipping placeimeiorder, trying placeorder...');
     }
   }
 

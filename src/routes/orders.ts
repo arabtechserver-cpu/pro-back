@@ -1156,10 +1156,30 @@ router.post('/update-fields', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'معرف الطلب والبيانات مطلوبة' });
     }
 
+    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    if (!order) return res.status(404).json({ error: 'الطلب غير موجود' });
+
+    let parsedNotes: any = {};
+    try {
+      if (order.notes) parsedNotes = JSON.parse(order.notes);
+    } catch {}
+
+    const trimmedInput = String(targetInput).trim();
+    parsedNotes.rawImei = trimmedInput;
+    if (parsedNotes.customFields && typeof parsedNotes.customFields === 'object') {
+      for (const key of Object.keys(parsedNotes.customFields)) {
+        const lowerKey = key.toLowerCase();
+        if (lowerKey.includes('imei') || lowerKey.includes('sn') || lowerKey.includes('serial')) {
+          parsedNotes.customFields[key] = trimmedInput;
+        }
+      }
+    }
+
     const updatedOrder = await prisma.order.update({
       where: { id: orderId },
       data: {
-        targetInput: String(targetInput).trim()
+        targetInput: trimmedInput,
+        notes: JSON.stringify(parsedNotes)
       }
     });
 

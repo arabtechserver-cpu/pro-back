@@ -325,7 +325,7 @@ export async function dispatchOrderToProvider(
         );
 
         if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
-          if (isActionUnsupported(dhruResponse)) {
+          if (isActionUnsupported(dhruResponse) && isNumericImei) {
             actualDispatchType = 'imei';
             dhruResponse = await placeImeiOrder(
               getProviderRemoteServiceId(dhruService.dhruId),
@@ -384,7 +384,7 @@ export async function dispatchOrderToProvider(
       : isInvalidAction
         ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`
         : isImeiValidationError
-          ? `رفض المزود الطلب: رقم IMEI غير صالح أو غير مطابق للشروط لدى المزود (${rawErrMsg}). إذا كانت الخدمة تقبل السيريال (SN) يرجى التأكد من تصنيف الخدمة كـ Server Service لدى المزود.`
+          ? `رفض المزود الطلب: رقم IMEI غير صالح أو غير مطابق للشروط لدى المزود (${rawErrMsg}). إذا كانت الخدمة تتطلب رقم IMEI حصراً، يرجى الضغط على زر التعديل وإدخال رقم IMEI صحيح للجهاز (15 رقماً) ثم إعادة الإرسال.`
           : `رفض المزود الطلب: ${rawErrMsg}`;
 
     const now = new Date();

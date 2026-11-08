@@ -86,13 +86,42 @@ export function formatProviderConnectionError(error: { code?: string; message: s
   return error.message;
 }
 
+export function cleanDhruErrorMessage(raw: unknown): string {
+  if (!raw) return "";
+  let text = String(raw).trim();
+  text = text.replace(/^ValidationError\d*/i, "").trim();
+  text = text.replace(/<[^>]+>/g, " ").trim();
+  const parts = text.split(/[,;\n\r]+/).map(p => p.trim()).filter(Boolean);
+  const uniqueParts = Array.from(new Set(parts));
+  return uniqueParts.join(" - ") || text;
+}
+
+export function isInvalidImeiError(response: any): boolean {
+  if (!response) return false;
+  const raw = (
+    response?.ERROR?.[0]?.MESSAGE ||
+    response?.ERROR?.[0]?.message ||
+    response?.ERROR?.[0]?.FULL_DESCRIPTION ||
+    response?.Error ||
+    response?.error ||
+    ""
+  ).toLowerCase();
+  return (
+    raw.includes("invalid imei") ||
+    raw.includes("required imei") ||
+    raw.includes("imei invalid") ||
+    raw.includes("imei is required") ||
+    raw.includes("invalid-imei")
+  );
+}
+
 export function getDhruApiErrorMessage(response: any): string | null {
   const error = response?.error || response?.Error || response?.ERROR;
   if (!error) return null;
   const detail = Array.isArray(error) ? error[0] : error;
   if (!detail) return null;
-  if (typeof detail === "string") return detail;
-  return String(detail.MESSAGE || detail.message || detail.error || JSON.stringify(detail));
+  const rawMsg = typeof detail === "string" ? detail : String(detail.MESSAGE || detail.message || detail.error || JSON.stringify(detail));
+  return cleanDhruErrorMessage(rawMsg);
 }
 
 type DhruAction =
@@ -436,10 +465,15 @@ export async function placeImeiOrder(
 
   let res = await dhruApiRequest("placeimeiorder", params, provider);
 
-  if (isActionUnsupported(res)) {
-    console.log('[Dhru API] placeimeiorder unsupported by provider, attempting fallback placeserverorder...');
+  if (isActionUnsupported(res) || isInvalidImeiError(res)) {
+    console.log('[Dhru API] placeimeiorder failed (unsupported action or non-numeric/invalid IMEI format), attempting fallback placeserverorder...');
     const serverParams = { ...params, QNT: "1", qnt: "1" };
-    res = await dhruApiRequest("placeserverorder", serverParams, provider);
+    const serverRes = await dhruApiRequest("placeserverorder", serverParams, provider);
+    if (serverRes && (serverRes.SUCCESS || serverRes.REFERENCEID || serverRes.ID || !serverRes.ERROR)) {
+      res = serverRes;
+    } else if (isActionUnsupported(res)) {
+      res = serverRes;
+    }
   }
 
   if (isActionUnsupported(res)) {

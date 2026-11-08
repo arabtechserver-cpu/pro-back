@@ -25,10 +25,17 @@ export function initOrderSyncCron() {
     if (syncRunning) return;
     syncRunning = true;
 
-    const cronAbort = AbortSignal.timeout(CRON_RUN_TIMEOUT_MS);
-    const cronDeadline = new Promise<never>((_, reject) =>
-      cronAbort.addEventListener('abort', () => reject(new Error('CRON_TIMEOUT')), { once: true })
-    );
+    const abortController = new AbortController();
+    let timeoutId: NodeJS.Timeout | null = setTimeout(() => {
+      abortController.abort(new Error('CRON_TIMEOUT'));
+    }, CRON_RUN_TIMEOUT_MS);
+
+    const cronDeadline = new Promise<never>((_, reject) => {
+      abortController.signal.addEventListener('abort', () => {
+        reject(abortController.signal.reason || new Error('CRON_TIMEOUT'));
+      }, { once: true });
+    });
+    cronDeadline.catch(() => {});
 
     try {
       // Find orders that are processing and have an API Order ID
@@ -41,7 +48,7 @@ export function initOrderSyncCron() {
 
       for await (const order of pendingOrders) {
         if (!order.apiOrderId) continue;
-        if (cronAbort.aborted) {
+        if (abortController.signal.aborted) {
           console.warn('[CRON] Hard deadline reached — deferring remaining orders to next tick.');
           break;
         }
@@ -335,6 +342,10 @@ export function initOrderSyncCron() {
         console.error('[CRON] General error in order sync:', error);
       }
     } finally {
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       syncRunning = false;
     }
   });

@@ -2,7 +2,9 @@ import { prisma } from '../utils/prisma';
 import {
   placeImeiOrder,
   placeServerOrder,
-  normalizeProviderCustomFields
+  normalizeProviderCustomFields,
+  cleanDhruErrorMessage,
+  isActionUnsupported
 } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
 import { resolveOrderServiceType } from '../utils/order-response';
@@ -298,16 +300,44 @@ export async function dispatchOrderToProvider(
   parsedNotes.dispatchServiceId = dhruService.id;
   parsedNotes.dispatchServiceType = serviceType;
 
+  let actualDispatchType = serviceType;
   try {
+    const rawTarget = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
+    const isNumericImei = /^\d{14,16}$/.test(rawTarget.replace(/[\s-]/g, ''));
+
     if (serviceType === 'imei') {
-      const imeiToSend = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
-      dhruResponse = await placeImeiOrder(
-        getProviderRemoteServiceId(dhruService.dhruId),
-        imeiToSend,
-        providerCustomFields,
-        providerConfig
-      );
+      if (isNumericImei) {
+        actualDispatchType = 'imei';
+        dhruResponse = await placeImeiOrder(
+          getProviderRemoteServiceId(dhruService.dhruId),
+          rawTarget,
+          providerCustomFields,
+          providerConfig
+        );
+      } else {
+        actualDispatchType = 'server';
+        dhruResponse = await placeServerOrder(
+          getProviderRemoteServiceId(dhruService.dhruId),
+          order.quantity || 1,
+          providerCustomFields,
+          rawTarget,
+          providerConfig
+        );
+
+        if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
+          if (isActionUnsupported(dhruResponse)) {
+            actualDispatchType = 'imei';
+            dhruResponse = await placeImeiOrder(
+              getProviderRemoteServiceId(dhruService.dhruId),
+              rawTarget,
+              providerCustomFields,
+              providerConfig
+            );
+          }
+        }
+      }
     } else {
+      actualDispatchType = 'server';
       const inputToSend = String(order.targetInput).trim();
       dhruResponse = await placeServerOrder(
         getProviderRemoteServiceId(dhruService.dhruId),
@@ -324,11 +354,13 @@ export async function dispatchOrderToProvider(
 
   if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
     console.error('[Dispatch Provider Error]:', dhruResponse);
-    const rawErrMsg =
+    const rawErrMsg = cleanDhruErrorMessage(
       dhruResponse?.Error ||
       dhruResponse?.ERROR?.[0]?.MESSAGE ||
       dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION ||
-      'رفض المزود الطلب';
+      dhruResponse?.error ||
+      'رفض المزود الطلب'
+    );
 
     const responseStr = JSON.stringify(dhruResponse || {}).toLowerCase();
     const isCreditError =
@@ -342,11 +374,18 @@ export async function dispatchOrderToProvider(
       responseStr.includes('command not found') ||
       responseStr.includes('action not found');
 
+    const isImeiValidationError =
+      responseStr.includes('invalid imei') ||
+      responseStr.includes('required imei') ||
+      responseStr.includes('validationerror');
+
     const userFacingMsg = isCreditError
       ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
       : isInvalidAction
         ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`
-        : `رفض المزود الطلب: ${rawErrMsg}`;
+        : isImeiValidationError
+          ? `رفض المزود الطلب: رقم IMEI غير صالح أو غير مطابق للشروط لدى المزود (${rawErrMsg}). إذا كانت الخدمة تقبل السيريال (SN) يرجى التأكد من تصنيف الخدمة كـ Server Service لدى المزود.`
+          : `رفض المزود الطلب: ${rawErrMsg}`;
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
@@ -398,9 +437,19 @@ export async function dispatchOrderToProvider(
     };
   }
 
-  if (dhruResponse.SUCCESS && dhruResponse.SUCCESS[0] && dhruResponse.SUCCESS[0].REFERENCEID) {
-    apiOrderId = String(dhruResponse.SUCCESS[0].REFERENCEID);
+  if (dhruResponse.SUCCESS && Array.isArray(dhruResponse.SUCCESS) && dhruResponse.SUCCESS[0]) {
+    apiOrderId = String(
+      dhruResponse.SUCCESS[0].REFERENCEID ||
+      dhruResponse.SUCCESS[0].ID ||
+      dhruResponse.SUCCESS[0].id ||
+      dhruResponse.SUCCESS[0].orderid ||
+      ""
+    ).trim() || null;
+  } else if (dhruResponse.REFERENCEID || dhruResponse.ID || dhruResponse.id) {
+    apiOrderId = String(dhruResponse.REFERENCEID || dhruResponse.ID || dhruResponse.id).trim() || null;
   }
+
+  parsedNotes.dispatchServiceType = actualDispatchType;
 
   const now = new Date();
   const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];

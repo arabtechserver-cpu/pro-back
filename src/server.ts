@@ -78,7 +78,8 @@ app.use((req, res, next) => {
 process.on('unhandledRejection', (reason: any) => {
   console.error('[UNHANDLED REJECTION]', {
     name: reason?.name || 'Error',
-    code: reason?.code || 'UNHANDLED_REJECTION'
+    code: reason?.code || 'UNHANDLED_REJECTION',
+    message: reason?.message || String(reason)
   });
 });
 

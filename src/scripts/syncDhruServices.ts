@@ -10,7 +10,13 @@ export function cleanServiceName(serviceName: string, info: string, groupName: s
   
   if (name.match(/^(تفعيل فوري تلقائي|تفعيل فوري|تفعيل تلقائي|طلب فوري|فوري تلقائي|تفعيل سريع)$/i) || name.length <= 3) {
     if (info) {
-      let extracted = info;
+      let extracted = String(info).trim();
+      if (extracted.startsWith('{') && extracted.endsWith('}')) {
+        try {
+          const parsed = JSON.parse(extracted);
+          extracted = String(parsed.notes || parsed.description || parsed.text || '').trim();
+        } catch {}
+      }
       extracted = extracted.replace(/^(تفعيل خدمة|خدمة|باقات وتفعيل خدمات|تفعيل باقة|شراء خدمة|طلب خدمة)\s+/i, '');
       extracted = extracted.replace(/\s+(فوري عبر API|عبر API|فوري|تلقائياً|تلقائي)$/i, '');
       extracted = extracted.trim();

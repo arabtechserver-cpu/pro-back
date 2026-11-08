@@ -176,7 +176,7 @@ router.post('/services/toggle-group', isAdmin, async (req, res) => {
 // POST /api/dhru/services/update - Edit service custom name, base credit, and profit margin
 router.post('/services/update', isAdmin, async (req, res) => {
   try {
-    const { serviceId, name, margin, credit, isActive, requiresCustom } = req.body;
+    const { serviceId, name, margin, credit, isActive, requiresCustom, info } = req.body;
     if (!serviceId) {
       return res.status(400).json({ error: 'serviceId is required' });
     }
@@ -193,6 +193,9 @@ router.post('/services/update', isAdmin, async (req, res) => {
     }
     if (isActive !== undefined) {
       updateData.isActive = Boolean(isActive);
+    }
+    if (info !== undefined) {
+      updateData.info = (info === null || String(info).trim() === '') ? null : String(info).trim();
     }
     // دعم تعديل الحقول المخصصة للخدمة من لوحة الأدمن
     if (requiresCustom !== undefined) {

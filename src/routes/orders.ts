@@ -1151,8 +1151,8 @@ router.post('/update-status', isAdmin, async (req, res) => {
 // POST /api/orders/update-fields - Admin update order custom fields / targetInput
 router.post('/update-fields', isAdmin, async (req, res) => {
   try {
-    const { orderId, targetInput } = req.body;
-    if (!orderId || targetInput === undefined) {
+    const { orderId, targetInput, customFields } = req.body;
+    if (!orderId || (targetInput === undefined && customFields === undefined)) {
       return res.status(400).json({ error: 'معرف الطلب والبيانات مطلوبة' });
     }
 
@@ -1164,23 +1164,34 @@ router.post('/update-fields', isAdmin, async (req, res) => {
       if (order.notes) parsedNotes = JSON.parse(order.notes);
     } catch {}
 
-    const trimmedInput = String(targetInput).trim();
-    parsedNotes.rawImei = trimmedInput;
-    if (parsedNotes.customFields && typeof parsedNotes.customFields === 'object') {
-      for (const key of Object.keys(parsedNotes.customFields)) {
-        const lowerKey = key.toLowerCase();
-        if (lowerKey.includes('imei') || lowerKey.includes('sn') || lowerKey.includes('serial')) {
-          parsedNotes.customFields[key] = trimmedInput;
+    const updateData: any = {};
+
+    if (targetInput !== undefined) {
+      const trimmedInput = String(targetInput).trim();
+      updateData.targetInput = trimmedInput;
+      parsedNotes.rawImei = trimmedInput;
+      if (parsedNotes.customFields && typeof parsedNotes.customFields === 'object') {
+        for (const key of Object.keys(parsedNotes.customFields)) {
+          const lowerKey = key.toLowerCase();
+          if (lowerKey.includes('imei') || lowerKey.includes('sn') || lowerKey.includes('serial')) {
+            parsedNotes.customFields[key] = trimmedInput;
+          }
         }
       }
     }
 
+    if (customFields && typeof customFields === 'object') {
+      parsedNotes.customFields = {
+        ...(parsedNotes.customFields || {}),
+        ...customFields
+      };
+    }
+
+    updateData.notes = JSON.stringify(parsedNotes);
+
     const updatedOrder = await prisma.order.update({
       where: { id: orderId },
-      data: {
-        targetInput: trimmedInput,
-        notes: JSON.stringify(parsedNotes)
-      }
+      data: updateData
     });
 
     return res.json({

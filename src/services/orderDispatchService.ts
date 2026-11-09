@@ -4,7 +4,8 @@ import {
   placeServerOrder,
   normalizeProviderCustomFields,
   cleanDhruErrorMessage,
-  isActionUnsupported
+  isActionUnsupported,
+  isInvalidImeiError
 } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
 import { resolveOrderServiceType } from '../utils/order-response';
@@ -301,10 +302,10 @@ export async function dispatchOrderToProvider(
   parsedNotes.dispatchServiceType = serviceType;
 
   let actualDispatchType = serviceType;
-  try {
-    const rawTarget = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
-    const isNumericImei = /^\d{14,16}$/.test(rawTarget.replace(/[\s-]/g, ''));
+  const rawTarget = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
+  const isNumericImei = /^\d{14,16}$/.test(rawTarget.replace(/[\s-]/g, ''));
 
+  try {
     if (serviceType === 'imei') {
       if (isNumericImei) {
         actualDispatchType = 'imei';
@@ -375,17 +376,35 @@ export async function dispatchOrderToProvider(
       responseStr.includes('action not found');
 
     const isImeiValidationError =
+      isInvalidImeiError(dhruResponse) ||
       responseStr.includes('invalid imei') ||
       responseStr.includes('required imei') ||
-      responseStr.includes('validationerror');
+      responseStr.includes('imei field');
 
-    const userFacingMsg = isCreditError
-      ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
-      : isInvalidAction
-        ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`
-        : isImeiValidationError
-          ? `رفض المزود الطلب: رقم IMEI غير صالح أو غير مطابق للشروط لدى المزود (${rawErrMsg}). إذا كانت الخدمة تتطلب رقم IMEI حصراً، يرجى الضغط على زر التعديل وإدخال رقم IMEI صحيح للجهاز (15 رقماً) ثم إعادة الإرسال.`
-          : `رفض المزود الطلب: ${rawErrMsg}`;
+    const isFieldValidationError =
+      !isImeiValidationError &&
+      (responseStr.includes('validationerror') ||
+        responseStr.includes('is required') ||
+        responseStr.includes('required field'));
+
+    let userFacingMsg = `رفض المزود الطلب: ${rawErrMsg}`;
+    if (isCreditError) {
+      userFacingMsg = 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.';
+    } else if (isImeiValidationError) {
+      if (!isNumericImei) {
+        userFacingMsg = `فشل الإرسال: القيمة المدخلة (${rawTarget}) هي سيريال تسلسلي وليست رقم IMEI مكون من 15 رقماً. خدمة المزود (${dhruService.apiProvider?.name || 'المزود'}) تتطلب رقم IMEI حصراً. يرجى الضغط على زر التعديل وإدخال رقم IMEI صحيح للجهاز ثم إعادة الإرسال.`;
+      } else {
+        userFacingMsg = `فشل الإرسال: رقم IMEI غير مطابق لشروط المزود (${rawErrMsg}). يرجى التأكد من كتابة رقم IMEI صحيح للجهاز (15 رقماً) عبر زر التعديل ثم إعادة الإرسال.`;
+      }
+    } else if (isFieldValidationError) {
+      userFacingMsg = `فشل الإرسال: رفض المزود الطلب لنقص أو عدم تطابق الحقول المطلوبة (${rawErrMsg}). يرجى الضغط على زر التعديل واستكمال البيانات المطلوبة ثم إعادة الإرسال.`;
+    } else if (isInvalidAction) {
+      if (!isNumericImei) {
+        userFacingMsg = `فشل الإرسال: رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة). الخدمة لدى المزود تتطلب رقم IMEI حصراً بينما المدخل (${rawTarget}) هو سيريال. يرجى الضغط على زر التعديل وإدخال رقم IMEI الجهاز (15 رقماً) ثم إعادة الإرسال.`;
+      } else {
+        userFacingMsg = `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`;
+      }
+    }
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];

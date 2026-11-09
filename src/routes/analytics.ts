@@ -145,7 +145,7 @@ router.get('/summary', isAdmin, async (req, res) => {
       // Historical metadata was JSON.stringify output; malformed imported JSON fails the report.
       const topRows = await tx.$queryRaw<{ id: string | null; views: bigint; invalidIds: boolean }[]>`
         SELECT CASE WHEN octet_length("serviceId") <= ${EVENT_METADATA_BYTES} THEN "serviceId" END AS "id",
-          COUNT(*) AS "views", BOOL_OR(BOOL_OR("idType" <> 'string')) OVER () AS "invalidIds"
+          COUNT(*) AS "views", BOOL_OR(BOOL_OR("idType" NOT IN ('string', 'number'))) OVER () AS "invalidIds"
         FROM (
           SELECT "metadata"::json ->> 'serviceId' AS "serviceId",
             json_typeof("metadata"::json -> 'serviceId') AS "idType"

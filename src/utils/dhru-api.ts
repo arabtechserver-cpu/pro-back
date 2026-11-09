@@ -391,6 +391,8 @@ export function normalizeProviderCustomFields(
     }
   } catch {}
 
+  const canonical = (s: string) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+
   const normalized: Record<string, string> = {};
   for (const [rawKey, rawVal] of Object.entries(customFields)) {
     if (rawVal === undefined || rawVal === null) continue;
@@ -399,6 +401,7 @@ export function normalizeProviderCustomFields(
 
     const inputKey = String(rawKey).trim();
     const cleanKey = inputKey.replace(/^custom_/i, "").trim().toLowerCase();
+    const canonKey = canonical(cleanKey);
 
     const matchingField = requiredMeta.find((meta: any) => {
       const fieldId = String(meta?.id || meta?.field_id || meta?.reqid || meta?.REQID || "").replace(/^custom_/i, "").toLowerCase();
@@ -412,19 +415,33 @@ export function normalizeProviderCustomFields(
         fieldApiName === cleanKey ||
         fieldId === inputKey.toLowerCase() ||
         fieldName === inputKey.toLowerCase() ||
-        fieldLabel === inputKey.toLowerCase()
+        fieldLabel === inputKey.toLowerCase() ||
+        canonical(fieldId) === canonKey ||
+        canonical(fieldName) === canonKey ||
+        canonical(fieldLabel) === canonKey ||
+        canonical(fieldApiName) === canonKey
       );
     });
 
-    const providerKey =
-      matchingField?.field_id
-      || matchingField?.customname
-      || matchingField?.fieldname
+    const primaryKey =
+      matchingField?.fieldname
       || matchingField?.name
-      || matchingField?.reqid
+      || matchingField?.field_name
+      || matchingField?.customname
+      || matchingField?.field_id
       || inputKey.replace(/^custom_/i, "");
 
-    normalized[String(providerKey)] = String(value);
+    const strKey = String(primaryKey).trim();
+    normalized[strKey] = String(value);
+
+    const underscoreKey = strKey.replace(/[\s-]+/g, "_");
+    if (underscoreKey && underscoreKey !== strKey) {
+      normalized[underscoreKey] = String(value);
+    }
+    const spacedKey = strKey.replace(/[_\-]+/g, " ");
+    if (spacedKey && spacedKey !== strKey) {
+      normalized[spacedKey] = String(value);
+    }
   }
 
   return normalized;
@@ -456,6 +473,10 @@ export async function placeImeiOrder(
       if (!valStr) return;
       const strippedKey = k.replace(/^custom_/i, "").trim();
       cleanFields[strippedKey] = valStr;
+      const underscoreKey = strippedKey.replace(/[\s-]+/g, "_");
+      if (underscoreKey) cleanFields[underscoreKey] = valStr;
+      const spacedKey = strippedKey.replace(/[_\-]+/g, " ");
+      if (spacedKey) cleanFields[spacedKey] = valStr;
     });
   }
 
@@ -570,6 +591,10 @@ export async function placeServerOrder(
       if (!valStr) return;
       const strippedKey = k.replace(/^custom_/i, "").trim();
       cleanFields[strippedKey] = valStr;
+      const underscoreKey = strippedKey.replace(/[\s-]+/g, "_");
+      if (underscoreKey) cleanFields[underscoreKey] = valStr;
+      const spacedKey = strippedKey.replace(/[_\-]+/g, " ");
+      if (spacedKey) cleanFields[spacedKey] = valStr;
     });
   }
 

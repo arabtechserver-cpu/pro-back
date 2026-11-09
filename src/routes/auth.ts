@@ -353,14 +353,14 @@ router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req
       return res.status(200).json({ success: false, error: 'البريد الإلكتروني وكلمة المرور مطلوبان' });
     }
 
-    const inputStr = email.trim().toLowerCase();
+    const inputStr = email.trim();
 
-    // Check DB for registered user by email or username
+    // Check DB for registered user by email or username (case-insensitive for reliability)
     const dbUser = await prisma.user.findFirst({
       where: {
         OR: [
-          { email: inputStr },
-          { username: inputStr }
+          { email: { equals: inputStr, mode: 'insensitive' } },
+          { username: { equals: inputStr, mode: 'insensitive' } }
         ]
       },
       include: {

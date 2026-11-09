@@ -1105,4 +1105,75 @@ export async function sendTelegramAdminLoginSuccess(
   }
 }
 
+// Send Admin Password Reset OTP via Telegram
+export async function sendTelegramAdminPasswordResetOtp(
+  otpCode: string,
+  user: { username: string; fullName?: string },
+  clientIp?: string
+): Promise<boolean> {
+  try {
+    await refreshAdminIds();
+    const chatIds = getAdminChatIds();
+    if (chatIds.length === 0) {
+      console.warn('[Telegram Recovery OTP] No admin chat IDs registered');
+      return false;
+    }
+
+    const message = [
+      '<b>[استعادة كلمة مرور الإدارة]</b>',
+      '',
+      `<b>المشرف:</b> @${escapeHtml(user.username)} (${escapeHtml(user.fullName || 'Admin')})`,
+      `<b>الوقت:</b> ${new Date().toLocaleTimeString('ar-EG')}`,
+      `<b>عنوان IP:</b> <code>${escapeHtml(clientIp || 'غير متوفر')}</code>`,
+      '',
+      '<b>رمز التحقق السري لإعادة تعيين كلمة المرور:</b>',
+      `<code>${otpCode}</code>`,
+      '',
+      '<i>هذا الرمز صالح لمدة 5 دقائق فقط لمرة واحدة. إذا لم تكن أنت من طلب ذلك، يرجى الحذر.</i>'
+    ].join('\n');
+
+    let successCount = 0;
+    for (const chatId of chatIds) {
+      try {
+        const res = await sendTelegramMessage(chatId, message);
+        if (res) successCount++;
+      } catch (err: any) {
+        console.error(`[Telegram sendTelegramAdminPasswordResetOtp Error for ${chatId}]:`, err?.message);
+      }
+    }
+    return successCount > 0;
+  } catch (error: any) {
+    console.error('[Telegram sendTelegramAdminPasswordResetOtp Error]:', error?.message);
+    return false;
+  }
+}
+
+// Notify Admins on Successful Admin Password Reset
+export async function sendTelegramAdminPasswordResetSuccess(
+  user: { username: string; fullName?: string },
+  clientIp?: string
+): Promise<void> {
+  try {
+    await refreshAdminIds();
+    const chatIds = getAdminChatIds();
+    if (chatIds.length === 0) return;
+
+    const message = [
+      '<b>[تنبيه أمان: تم تغيير كلمة مرور الإدارة]</b>',
+      '',
+      `تم إعادة تعيين كلمة مرور المشرف بنجاح: @${escapeHtml(user.username)} (${escapeHtml(user.fullName || 'Admin')})`,
+      `الوقت: ${new Date().toLocaleTimeString('ar-EG')}`,
+      `عنوان IP: <code>${escapeHtml(clientIp || 'غير متوفر')}</code>`,
+      '',
+      '<i>تم إنهاء كافة الجلسات السابقة تلقائياً وتفعيل كلمة المرور الجديدة.</i>'
+    ].join('\n');
+
+    for (const chatId of chatIds) {
+      await sendTelegramMessage(chatId, message);
+    }
+  } catch (error: any) {
+    console.error('[Telegram sendTelegramAdminPasswordResetSuccess Error]:', error?.message);
+  }
+}
+
 // The server starts polling only after successful database initialization.

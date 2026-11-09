@@ -5,8 +5,20 @@ import { digestOtp, matchesOtp } from '../utils/otp-security';
 import { prisma } from "../utils/prisma";
 import { generateToken, authenticateToken } from '../middleware/auth';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
-import { sendTelegramAlert, sendTelegramAdminOtp, sendTelegramAdminLoginSuccess } from '../utils/telegramService';
+import {
+  sendTelegramAlert,
+  sendTelegramAdminOtp,
+  sendTelegramAdminLoginSuccess,
+  sendTelegramAdminPasswordResetOtp,
+  sendTelegramAdminPasswordResetSuccess
+} from '../utils/telegramService';
 import { createAdminOtpChallenge, verifyAdminOtp, resendAdminOtp } from '../utils/adminOtp';
+import {
+  verifyMasterRecoveryPin,
+  createRecoveryChallenge,
+  verifyRecoveryOtp,
+  consumeRecoveryChallenge
+} from '../utils/adminRecovery';
 import { turnstileMiddleware } from '../middleware/turnstileMiddleware';
 import bcrypt from 'bcryptjs';
 import rateLimit from 'express-rate-limit';
@@ -593,6 +605,115 @@ const handleAdminOtpResend = async (req: any, res: any) => {
 
 router.post('/admin/resend-otp', handleAdminOtpResend);
 router.post('/resend-admin-otp', handleAdminOtpResend);
+
+// POST /api/auth/admin/forgot-password/request - Request Admin Password Reset with Master Recovery PIN
+router.post('/admin/forgot-password/request', turnstileMiddleware, async (req, res) => {
+  try {
+    const { recoveryPin, username } = req.body;
+    const clientIp = extractClientIp(req);
+
+    if (!recoveryPin) {
+      return res.status(400).json({ success: false, error: 'رمز الأمان السري مطلوب' });
+    }
+
+    const pinCheck = verifyMasterRecoveryPin(recoveryPin, clientIp);
+    if (!pinCheck.valid) {
+      return res.status(400).json({ success: false, error: pinCheck.error || 'رمز الأمان السري غير صحيح' });
+    }
+
+    let adminUser: any = null;
+    if (username && String(username).trim()) {
+      const cleanUser = String(username).trim().toLowerCase();
+      adminUser = await prisma.user.findFirst({
+        where: {
+          OR: [{ username: cleanUser }, { email: cleanUser }],
+          role: { in: ['admin', 'super_admin'] }
+        }
+      });
+    } else {
+      adminUser = await prisma.user.findFirst({
+        where: { role: { in: ['super_admin', 'admin'] } },
+        orderBy: { role: 'desc' }
+      });
+    }
+
+    if (!adminUser) {
+      return res.status(404).json({ success: false, error: 'تعذر العثور على حساب مسؤول مسجل في النظام' });
+    }
+
+    const { challengeToken, code } = createRecoveryChallenge({
+      id: adminUser.id,
+      username: adminUser.username,
+      email: adminUser.email
+    });
+
+    const sent = await sendTelegramAdminPasswordResetOtp(
+      code,
+      { username: adminUser.username, fullName: adminUser.fullName },
+      clientIp
+    );
+
+    if (!sent) {
+      console.warn('[Recovery] Telegram delivery returned false or no chat IDs');
+    }
+
+    return res.json({
+      success: true,
+      challengeToken,
+      message: 'تم التحقق من رمز الأمان بنجاح، وتم إرسال كود التحقق (OTP) إلى حساب تيليجرام الخاص بالإدارة.'
+    });
+  } catch (error: any) {
+    console.error('Admin forgot-password request error:', error);
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء معالجة طلب استعادة كلمة المرور' });
+  }
+});
+
+// POST /api/auth/admin/forgot-password/confirm - Confirm OTP and Set New Password
+router.post('/admin/forgot-password/confirm', async (req, res) => {
+  try {
+    const { challengeToken, otp, newPassword } = req.body;
+    const clientIp = extractClientIp(req);
+
+    if (!challengeToken || !otp || !newPassword) {
+      return res.status(400).json({ success: false, error: 'رمز التحقق وكلمة المرور الجديدة مطلوبان' });
+    }
+
+    const cleanPass = String(newPassword).trim();
+    if (cleanPass.length < 8) {
+      return res.status(400).json({ success: false, error: 'يجب ألا تقل كلمة المرور الجديدة عن 8 أحرف' });
+    }
+
+    const verifyResult = verifyRecoveryOtp(challengeToken, otp);
+    if (!verifyResult.success || !verifyResult.admin) {
+      return res.status(400).json({ success: false, error: verifyResult.error || 'رمز التحقق غير صحيح أو منتهي الصلاحية' });
+    }
+
+    const hashedPassword = await bcrypt.hash(cleanPass, 12);
+
+    await prisma.user.update({
+      where: { id: verifyResult.admin.id },
+      data: {
+        password: hashedPassword,
+        tokenVersion: { increment: 1 }
+      }
+    });
+
+    consumeRecoveryChallenge(challengeToken);
+
+    sendTelegramAdminPasswordResetSuccess(
+      { username: verifyResult.admin.username },
+      clientIp
+    ).catch(() => {});
+
+    return res.json({
+      success: true,
+      message: 'تم إعادة تعيين كلمة مرور الإدارة بنجاح. يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.'
+    });
+  } catch (error: any) {
+    console.error('Admin forgot-password confirm error:', error);
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء تحديث كلمة المرور' });
+  }
+});
 
 
 // POST /api/auth/google - Google Sign-In & One-Tap Authentication

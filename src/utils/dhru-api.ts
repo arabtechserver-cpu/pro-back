@@ -621,13 +621,13 @@ export async function placeServerOrder(
   let res = await dhruApiRequest("placeserverorder", params, provider);
 
   if (isActionUnsupported(res)) {
-    if (targetIdentifier && isNumericImei) {
-      console.log('[Dhru API] placeserverorder returned Command Not Found, attempting fallback placeimeiorder...');
-      const imeiParams = { ...params, IMEI: targetIdentifier, imei: targetIdentifier };
-      res = await dhruApiRequest("placeimeiorder", imeiParams, provider);
-    } else {
-      console.log('[Dhru API] placeserverorder returned Command Not Found (non-numeric identifier), skipping placeimeiorder, trying placeorder...');
+    console.log('[Dhru API] placeserverorder returned Command Not Found, attempting fallback placeimeiorder...');
+    const imeiParams: Record<string, string> = { ...params };
+    if (targetIdentifier) {
+      imeiParams["IMEI"] = targetIdentifier;
+      imeiParams["imei"] = targetIdentifier;
     }
+    res = await dhruApiRequest("placeimeiorder", imeiParams, provider);
   }
 
   if (isActionUnsupported(res)) {

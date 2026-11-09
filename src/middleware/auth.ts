@@ -55,8 +55,12 @@ function extractCandidateTokens(req: Request): string[] {
     req.originalUrl.includes('/wallet')
   );
 
+  const referer = (req.headers['referer'] || req.headers['referrer'] || '') as string;
+  const isFromAdminDashboard = referer.includes('/admin');
+
   // If request explicitly asks for all orders or admin operations, prioritize admin_token cookie!
   const isExplicitAdminQuery = !isClientUserRoute && (
+    isFromAdminDashboard ||
     req.query.all === 'true' ||
     req.query.all === '1' ||
     Boolean(req.headers['x-admin-token']) ||
@@ -64,6 +68,7 @@ function extractCandidateTokens(req: Request): string[] {
       req.originalUrl.includes('all=true') ||
       req.originalUrl.includes('/analytics') ||
       req.originalUrl.includes('/admin') ||
+      req.originalUrl.includes('telegram-admin') ||
       req.originalUrl.includes('/providers') ||
       req.originalUrl.includes('/settings') ||
       req.originalUrl.includes('/currencies')
@@ -178,10 +183,39 @@ export const generateToken = (payload: any, customExpiresIn?: string | number) =
 };
 
 export const isAdmin = (req: AuthRequest, res: Response, next: NextFunction) => {
-  authenticateToken(req, res, () => {
+  authenticateToken(req, res, async () => {
     if (req.user && ['admin', 'super_admin'].includes(req.user.role)) {
       return dashboardIpGuard(req, res, next);
     }
+
+    // Fallback: If user has an active admin_token cookie, authenticate with admin privileges
+    if (req.headers.cookie) {
+      const cookies = req.headers.cookie.split(';');
+      for (const cookie of cookies) {
+        const parts = cookie.trim().split('=');
+        if (parts[0]?.trim() === 'admin_token') {
+          const val = parts.slice(1).join('=').trim().replace(/^["']|["']$/g, '');
+          if (val) {
+            try {
+              const decoded: any = jwt.verify(val, JWT_SECRET, { algorithms: ['HS256'] });
+              if (decoded && (decoded.id || decoded.email)) {
+                const adminUser = decoded.id
+                  ? await prisma.user.findUnique({ where: { id: decoded.id } })
+                  : await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
+                if (adminUser && ['admin', 'super_admin'].includes(adminUser.role) && adminUser.status !== 'suspended') {
+                  const expectedVersion = adminUser.tokenVersion || 1;
+                  if (!decoded.tokenVersion || decoded.tokenVersion === expectedVersion) {
+                    req.user = adminUser;
+                    return dashboardIpGuard(req, res, next);
+                  }
+                }
+              }
+            } catch (_) {}
+          }
+        }
+      }
+    }
+
     return res.status(403).json({ error: 'Access denied: Admins only' });
   });
 };

@@ -13,10 +13,67 @@ if (!JWT_SECRET || JWT_SECRET.length < 32) {
   throw new Error('JWT_SECRET must be configured with at least 32 characters');
 }
 
+function isExplicitAdminRequest(req: Request): boolean {
+  const isClientUserRoute = Boolean(req.originalUrl && (
+    req.originalUrl.includes('/users/profile') ||
+    req.originalUrl.includes('/users/request-api') ||
+    req.originalUrl.includes('/users/regenerate-api-key') ||
+    req.originalUrl.includes('/users/balance') ||
+    req.originalUrl.includes('/orders/my-orders') ||
+    req.originalUrl.includes('/wallet')
+  ));
+  if (isClientUserRoute) return false;
+
+  const referer = String(req.headers?.['referer'] || req.headers?.['referrer'] || '');
+  const isFromAdminDashboard = referer.includes('/admin');
+
+  return (
+    isFromAdminDashboard ||
+    req.headers?.['x-admin-request'] === 'true' ||
+    Boolean(req.headers?.['x-admin-token']) ||
+    req.query?.all === 'true' ||
+    req.query?.all === '1' ||
+    req.query?.admin === 'true' ||
+    Boolean(req.originalUrl && (
+      req.originalUrl.includes('all=true') ||
+      req.originalUrl.includes('admin=true') ||
+      req.originalUrl.includes('/analytics') ||
+      req.originalUrl.includes('/admin') ||
+      req.originalUrl.includes('telegram-admin') ||
+      req.originalUrl.includes('/providers') ||
+      req.originalUrl.includes('/settings') ||
+      req.originalUrl.includes('/currencies') ||
+      req.originalUrl.includes('/backup') ||
+      (req.originalUrl.includes('/transactions') && (
+        req.originalUrl.includes('limit=') ||
+        req.originalUrl.includes('status=') ||
+        req.originalUrl.includes('cursor=') ||
+        req.originalUrl.includes('search=')
+      ))
+    ))
+  );
+}
+
+function isStrictAdminOnlyContext(req: Request): boolean {
+  const referer = String(req.headers?.['referer'] || req.headers?.['referrer'] || '');
+  return (
+    referer.includes('/admin') ||
+    req.headers?.['x-admin-request'] === 'true' ||
+    Boolean(req.headers?.['x-admin-token']) ||
+    req.query?.all === 'true' ||
+    req.query?.all === '1' ||
+    req.query?.admin === 'true' ||
+    Boolean(req.originalUrl && (
+      req.originalUrl.includes('all=true') ||
+      req.originalUrl.includes('admin=true')
+    ))
+  );
+}
+
 function extractCandidateTokens(req: Request): string[] {
   const tokens: string[] = [];
 
-  const authHeader = req.headers['authorization'];
+  const authHeader = req.headers?.['authorization'];
   let headerToken = '';
   if (authHeader && typeof authHeader === 'string') {
     const parts = authHeader.split(' ');
@@ -30,7 +87,7 @@ function extractCandidateTokens(req: Request): string[] {
   let cookieAdminToken = '';
   let cookieUserToken = '';
 
-  if (req.headers.cookie) {
+  if (req.headers?.cookie) {
     const cookies = req.headers.cookie.split(';');
     for (const cookie of cookies) {
       const parts = cookie.trim().split('=');
@@ -46,40 +103,12 @@ function extractCandidateTokens(req: Request): string[] {
     }
   }
 
-  const isClientUserRoute = req.originalUrl && (
-    req.originalUrl.includes('/users/profile') ||
-    req.originalUrl.includes('/users/request-api') ||
-    req.originalUrl.includes('/users/regenerate-api-key') ||
-    req.originalUrl.includes('/users/balance') ||
-    req.originalUrl.includes('/orders/my-orders') ||
-    req.originalUrl.includes('/wallet')
-  );
-
-  const referer = (req.headers['referer'] || req.headers['referrer'] || '') as string;
-  const isFromAdminDashboard = referer.includes('/admin');
-
-  // If request explicitly asks for all orders or admin operations, prioritize admin_token cookie!
-  const isExplicitAdminQuery = !isClientUserRoute && (
-    isFromAdminDashboard ||
-    req.query.all === 'true' ||
-    req.query.all === '1' ||
-    Boolean(req.headers['x-admin-token']) ||
-    (req.originalUrl && (
-      req.originalUrl.includes('all=true') ||
-      req.originalUrl.includes('/analytics') ||
-      req.originalUrl.includes('/admin') ||
-      req.originalUrl.includes('telegram-admin') ||
-      req.originalUrl.includes('/providers') ||
-      req.originalUrl.includes('/settings') ||
-      req.originalUrl.includes('/currencies')
-    ))
-  );
+  const isExplicitAdminQuery = isExplicitAdminRequest(req);
 
   if (isExplicitAdminQuery && cookieAdminToken) {
     tokens.push(cookieAdminToken);
   }
 
-  // Explicit Authorization header (e.g. from client app) takes precedence for client operations
   if (headerToken && !tokens.includes(headerToken)) {
     tokens.push(headerToken);
   }
@@ -97,6 +126,7 @@ function extractCandidateTokens(req: Request): string[] {
 
 export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const candidateTokens = extractCandidateTokens(req);
+  const requireAdminRole = isStrictAdminOnlyContext(req);
 
   for (const token of candidateTokens) {
     try {
@@ -121,6 +151,9 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
           }
           const expectedVersion = user.tokenVersion || 1;
           if (!Number.isInteger(decoded.tokenVersion) || decoded.tokenVersion !== expectedVersion) {
+            continue;
+          }
+          if (requireAdminRole && !['admin', 'super_admin'].includes(user.role)) {
             continue;
           }
           req.user = user;

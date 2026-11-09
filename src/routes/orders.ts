@@ -52,7 +52,13 @@ export async function enrichOrdersWithProviderData(orders: any[], isAdmin = fals
         { dhruId: { in: serviceIds } }
       ]
     },
-    include: {
+    select: {
+      id: true,
+      dhruId: true,
+      credit: true,
+      apiServiceType: true,
+      groupName: true,
+      requiresCustom: true,
       apiProvider: {
         select: { id: true, name: true, apiUrl: true, type: true, isActive: true, balance: true }
       },
@@ -115,13 +121,22 @@ router.get('/', authenticateToken, async (req: any, res) => {
 
     const isAdminUser = authenticatedUser.role === 'admin' || authenticatedUser.role === 'super_admin';
 
+    if ((all === 'true' || all === '1' || req.headers['x-admin-request'] === 'true') && !isAdminUser) {
+      return res.status(401).json({ error: 'Admin authentication required' });
+    }
+
     // 1. Admin Dashboard request: Only return all orders if the user is admin AND explicitly requesting all orders
     const isExplicitAdminAllRequest = isAdminUser && (all === 'true' || all === '1' || (!userId && !email));
 
     if (isExplicitAdminAllRequest) {
+      const requestedLimit = parseInt(String(req.query.limit || ''), 10);
+      const takeLimit = Number.isFinite(requestedLimit) && requestedLimit > 0
+        ? Math.min(2000, requestedLimit)
+        : 500;
+
       const fetchAllOrders = async () => {
         const allOrders = await prisma.order.findMany({
-          take: 2000,
+          take: takeLimit,
           orderBy: { createdAt: 'desc' },
           include: {
             user: {

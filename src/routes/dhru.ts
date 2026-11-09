@@ -26,6 +26,8 @@ import { getServiceQuantityConfig, enrichCustomFieldsWithQuantity } from '../uti
 type PricingSnapshot = { body: string; timestamp: number; etag: string };
 let pricingCache: PricingSnapshot | null = null;
 let pricingPending: Promise<PricingSnapshot> | null = null;
+let adminPricingCache: PricingSnapshot | null = null;
+let adminPricingPending: Promise<PricingSnapshot> | null = null;
 let pricingRevision = 0;
 const PRICING_CACHE_TTL = 10 * 60 * 1000; // 10 minutes TTL (instantly invalidated upon admin edits)
 
@@ -33,6 +35,8 @@ export function invalidateDhruServicesCache() {
   invalidateCatalogRevision();
   pricingCache = null;
   pricingPending = null;
+  adminPricingCache = null;
+  adminPricingPending = null;
   pricingRevision++;
 }
 
@@ -53,6 +57,10 @@ router.get('/services', (req, res, next) => {
         return res.status(304).end();
       }
       return res.type('application/json').send(pricingCache.body);
+    }
+
+    if (all === 'true' && !isPricingView && adminPricingCache && (Date.now() - adminPricingCache.timestamp < PRICING_CACHE_TTL)) {
+      return res.type('application/json').send(adminPricingCache.body);
     }
 
     const revision = pricingRevision;
@@ -90,7 +98,10 @@ router.get('/services', (req, res, next) => {
       : serializeAdminServiceCategories(categories, cleanServiceName);
     const body = JSON.stringify(cleanedCategories);
     const snapshot = { body, timestamp: Date.now(), etag: `"${createHash('sha256').update(body).digest('hex')}"` };
-    if (all !== 'true' && revision === pricingRevision && estimateBytes(snapshot.body) <= 4 * 1024 * 1024) pricingCache = snapshot;
+    if (revision === pricingRevision && estimateBytes(snapshot.body) <= 8 * 1024 * 1024) {
+      if (all !== 'true') pricingCache = snapshot;
+      else if (!isPricingView) adminPricingCache = snapshot;
+    }
     return snapshot;
     };
 
@@ -101,6 +112,12 @@ router.get('/services', (req, res, next) => {
         pricingPending = pending;
       }
       snapshot = await pricingPending;
+    } else if (!isPricingView) {
+      if (!adminPricingPending) {
+        const pending = buildResponse().finally(() => { if (adminPricingPending === pending) adminPricingPending = null; });
+        adminPricingPending = pending;
+      }
+      snapshot = await adminPricingPending;
     } else snapshot = await buildResponse();
 
     if (isPricingView && all !== 'true') {
@@ -512,6 +529,7 @@ router.get('/services/:id', optionalAuth, async (req: any, res) => {
 router.post('/sync', isAdmin, async (req, res) => {
   try {
     const result = await syncDhruServices();
+    invalidateDhruServicesCache();
     res.json(result);
   } catch (error: any) {
     console.error('Dhru sync error:', error);

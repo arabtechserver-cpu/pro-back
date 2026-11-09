@@ -251,6 +251,35 @@ router.get('/summary', isAdmin, async (req, res) => {
   }
 });
 
+let lastProviderBalanceRefreshAt = 0;
+let providerBalanceRefreshInFlight = false;
+
+function refreshActiveProviderBalanceInBackground(activeProvider: any) {
+  const now = Date.now();
+  if (providerBalanceRefreshInFlight || now - lastProviderBalanceRefreshAt < 60000) {
+    return;
+  }
+  providerBalanceRefreshInFlight = true;
+  lastProviderBalanceRefreshAt = now;
+
+  Promise.resolve()
+    .then(async () => {
+      const { makeProviderApiCall, extractProviderAccountInfo } = require('./providers');
+      const apiRes = await makeProviderApiCall(activeProvider.apiUrl, activeProvider.username, activeProvider.apiKey, 'accountinfo');
+      const accountInfo = extractProviderAccountInfo(apiRes?.data);
+      if (accountInfo) {
+        await prisma.apiProvider.update({
+          where: { id: activeProvider.id },
+          data: { balance: accountInfo.balance, currency: accountInfo.currency }
+        });
+      }
+    })
+    .catch(() => {})
+    .finally(() => {
+      providerBalanceRefreshInFlight = false;
+    });
+}
+
 // GET /api/analytics/dashboard-stats - Live comprehensive admin dashboard figures
 router.get('/dashboard-stats', isAdmin, async (req, res) => {
   try {
@@ -271,7 +300,8 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
       activeServices,
       recentOrders,
       recentTransactions,
-      recentUsers
+      recentUsers,
+      activeProvider
     ] = await Promise.all([
       prisma.user.count({ where: { role: { not: 'admin' } } }),
       prisma.user.count({ where: { role: { not: 'admin' }, status: 'active' } }),
@@ -293,14 +323,31 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
       prisma.order.findMany({
         take: 6,
         orderBy: { createdAt: 'desc' },
-        include: {
+        select: {
+          id: true,
+          userId: true,
+          serviceName: true,
+          serviceId: true,
+          targetInput: true,
+          price: true,
+          status: true,
+          apiOrderId: true,
+          createdAt: true,
           user: { select: { fullName: true, email: true, username: true, phone: true } }
         }
       }),
       prisma.transaction.findMany({
         take: 6,
         orderBy: { createdAt: 'desc' },
-        include: {
+        select: {
+          id: true,
+          userId: true,
+          type: true,
+          amount: true,
+          method: true,
+          status: true,
+          refNo: true,
+          createdAt: true,
           user: { select: { fullName: true, email: true, username: true, phone: true } }
         }
       }),
@@ -309,60 +356,27 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
         take: 6,
         orderBy: { createdAt: 'desc' },
         select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true, country: true, status: true, createdAt: true }
+      }),
+      prisma.apiProvider.findFirst({
+        where: { isActive: true },
+        orderBy: { updatedAt: 'desc' }
       })
     ]);
 
-    // Check active providers from database
-    const activeProvider = await prisma.apiProvider.findFirst({
-      where: { isActive: true },
-      orderBy: { updatedAt: 'desc' }
-    });
-
     let dhruInfo: any = null;
     if (activeProvider) {
-      try {
-        const { makeProviderApiCall, extractProviderAccountInfo } = require('./providers');
-        const apiRes = await makeProviderApiCall(activeProvider.apiUrl, activeProvider.username, activeProvider.apiKey, "accountinfo");
-        const accountInfo = extractProviderAccountInfo(apiRes.data);
-        if (accountInfo) {
-          dhruInfo = {
-            providerName: activeProvider.name,
-            balance: accountInfo.balance,
-            currency: accountInfo.currency,
-            formattedBalance: `$${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`,
-            SUCCESS: [{ credit: `$${accountInfo.balance.toFixed(2)} ${accountInfo.currency}` }],
-            connected: true
-          };
-          await prisma.apiProvider.update({
-            where: { id: activeProvider.id },
-            data: { balance: accountInfo.balance, currency: accountInfo.currency }
-          }).catch(() => {});
-        } else {
-          dhruInfo = {
-            providerName: activeProvider.name,
-            balance: activeProvider.balance,
-            currency: activeProvider.currency || 'USD',
-            formattedBalance: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}`,
-            SUCCESS: [{ credit: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}` }],
-            connected: true
-          };
-        }
-      } catch {
-        dhruInfo = {
-          providerName: activeProvider.name,
-          balance: activeProvider.balance,
-          currency: activeProvider.currency || 'USD',
-          formattedBalance: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}`,
-          SUCCESS: [{ credit: `$${activeProvider.balance.toFixed(2)} ${activeProvider.currency || 'USD'}` }],
-          connected: true
-        };
-      }
-    } else {
-      try {
-        const { getAccountInfo } = require('../utils/dhru-api');
-        dhruInfo = await getAccountInfo();
-      } catch {
-        dhruInfo = null;
+      const currency = activeProvider.currency || 'USD';
+      const balance = Number(activeProvider.balance) || 0;
+      dhruInfo = {
+        providerName: activeProvider.name,
+        balance,
+        currency,
+        formattedBalance: `$${balance.toFixed(2)} ${currency}`,
+        SUCCESS: [{ credit: `$${balance.toFixed(2)} ${currency}` }],
+        connected: true
+      };
+      if (activeProvider.apiUrl && activeProvider.apiKey) {
+        refreshActiveProviderBalanceInBackground(activeProvider);
       }
     }
 

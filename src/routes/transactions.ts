@@ -41,6 +41,10 @@ router.get('/', authenticateToken, async (req: any, res) => {
     const authUser = req.user;
     const isAdminUser = authUser && ['admin', 'super_admin'].includes(authUser.role);
 
+    if ((req.query.all === 'true' || req.query.admin === 'true' || req.headers['x-admin-request'] === 'true') && !isAdminUser) {
+      return res.status(401).json({ error: 'Admin authentication required' });
+    }
+
     // Prevent IDOR: force own user id if not an admin
     if (!isAdminUser && authUser) {
       targetUserId = authUser.id;
@@ -105,7 +109,18 @@ router.get('/', authenticateToken, async (req: any, res) => {
 
       const txs = await prisma.transaction.findMany({
         where: { userId: targetUserId },
-        orderBy: { createdAt: 'desc' }
+        take: 100,
+        orderBy: { createdAt: 'desc' },
+        select: {
+          id: true,
+          userId: true,
+          type: true,
+          amount: true,
+          method: true,
+          status: true,
+          refNo: true,
+          createdAt: true
+        }
       });
 
       return res.json({ success: true, transactions: txs });

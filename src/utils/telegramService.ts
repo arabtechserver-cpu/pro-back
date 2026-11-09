@@ -122,11 +122,14 @@ async function pollUpdates() {
       }
     } catch (err: any) {
       if (err?.response?.status === 409) {
-        isPolling = false;
         const description = String(err?.response?.data?.description || '').toLowerCase();
-        console.warn(description.includes('webhook')
-          ? '[Telegram Bot] Polling stopped: another process activated a webhook. Use TELEGRAM_UPDATES_MODE=webhook or remove the competing webhook setup.'
-          : '[Telegram Bot] Polling stopped: another bot listener is running. Keep only one polling instance for this token.');
+        if (description.includes('webhook')) {
+          console.warn('[Telegram Bot] Competing webhook detected while in polling mode; removing webhook and retrying in 8s...');
+          await axios.post(`${TELEGRAM_API_URL}/deleteWebhook`, { drop_pending_updates: false }).catch(() => {});
+        } else {
+          console.warn('[Telegram Bot] 409 Conflict on getUpdates (previous instance still closing); retrying in 8s...');
+        }
+        await new Promise((r) => setTimeout(r, 8000));
       } else if ([401, 403].includes(err?.response?.status)) {
         isPolling = false;
         console.warn('[Telegram Bot] Polling stopped: bot credentials were rejected.');

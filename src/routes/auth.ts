@@ -660,6 +660,7 @@ router.post('/admin/forgot-password/request', turnstileMiddleware, async (req, r
     return res.json({
       success: true,
       challengeToken,
+      currentUsername: adminUser.username,
       message: 'تم التحقق من رمز الأمان بنجاح، وتم إرسال كود التحقق (OTP) إلى حساب تيليجرام الخاص بالإدارة.'
     });
   } catch (error: any) {
@@ -668,10 +669,10 @@ router.post('/admin/forgot-password/request', turnstileMiddleware, async (req, r
   }
 });
 
-// POST /api/auth/admin/forgot-password/confirm - Confirm OTP and Set New Password
+// POST /api/auth/admin/forgot-password/confirm - Confirm OTP and Set New Password and Username
 router.post('/admin/forgot-password/confirm', async (req, res) => {
   try {
-    const { challengeToken, otp, newPassword } = req.body;
+    const { challengeToken, otp, newPassword, newUsername } = req.body;
     const clientIp = extractClientIp(req);
 
     if (!challengeToken || !otp || !newPassword) {
@@ -688,11 +689,34 @@ router.post('/admin/forgot-password/confirm', async (req, res) => {
       return res.status(400).json({ success: false, error: verifyResult.error || 'رمز التحقق غير صحيح أو منتهي الصلاحية' });
     }
 
+    let finalUsername = verifyResult.admin.username;
+    if (newUsername && String(newUsername).trim()) {
+      const cleanUsername = String(newUsername).trim();
+      if (cleanUsername.length < 3 || cleanUsername.length > 30) {
+        return res.status(400).json({ success: false, error: 'يجب أن يتراوح اسم المستخدم الجديد بين 3 و 30 حرفاً' });
+      }
+      if (!/^[a-zA-Z0-9_.-]+$/.test(cleanUsername)) {
+        return res.status(400).json({ success: false, error: 'اسم المستخدم يمكن أن يحتوي فقط على أحرف إنجليزية وأرقام ورموز (. _ -)' });
+      }
+
+      const existingUser = await prisma.user.findFirst({
+        where: {
+          username: cleanUsername,
+          NOT: { id: verifyResult.admin.id }
+        }
+      });
+      if (existingUser) {
+        return res.status(400).json({ success: false, error: 'اسم المستخدم هذا مستخدم بالفعل من قبل حساب آخر' });
+      }
+      finalUsername = cleanUsername;
+    }
+
     const hashedPassword = await bcrypt.hash(cleanPass, 12);
 
     await prisma.user.update({
       where: { id: verifyResult.admin.id },
       data: {
+        username: finalUsername,
         password: hashedPassword,
         tokenVersion: { increment: 1 }
       }
@@ -701,17 +725,21 @@ router.post('/admin/forgot-password/confirm', async (req, res) => {
     consumeRecoveryChallenge(challengeToken);
 
     sendTelegramAdminPasswordResetSuccess(
-      { username: verifyResult.admin.username },
+      {
+        username: finalUsername,
+        fullName: verifyResult.admin.username !== finalUsername ? `سابقاً: ${verifyResult.admin.username}` : undefined
+      },
       clientIp
     ).catch(() => {});
 
     return res.json({
       success: true,
-      message: 'تم إعادة تعيين كلمة مرور الإدارة بنجاح. يمكنك الآن تسجيل الدخول بكلمة المرور الجديدة.'
+      updatedUsername: finalUsername,
+      message: 'تم تحديث بيانات دخول الإدارة (اسم المستخدم وكلمة المرور) بنجاح. يمكنك الآن تسجيل الدخول بالبيانات الجديدة.'
     });
   } catch (error: any) {
     console.error('Admin forgot-password confirm error:', error);
-    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء تحديث كلمة المرور' });
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء تحديث بيانات الدخول' });
   }
 });
 

@@ -1159,13 +1159,13 @@ export async function sendTelegramAdminPasswordResetSuccess(
     if (chatIds.length === 0) return;
 
     const message = [
-      '<b>[تنبيه أمان: تم تغيير كلمة مرور الإدارة]</b>',
+      '<b>[تنبيه أمان: تم تحديث بيانات دخول الإدارة]</b>',
       '',
-      `تم إعادة تعيين كلمة مرور المشرف بنجاح: @${escapeHtml(user.username)} (${escapeHtml(user.fullName || 'Admin')})`,
+      `تم تحديث بيانات حساب المشرف بنجاح: @${escapeHtml(user.username)} ${user.fullName ? `(${escapeHtml(user.fullName)})` : ''}`,
       `الوقت: ${new Date().toLocaleTimeString('ar-EG')}`,
       `عنوان IP: <code>${escapeHtml(clientIp || 'غير متوفر')}</code>`,
       '',
-      '<i>تم إنهاء كافة الجلسات السابقة تلقائياً وتفعيل كلمة المرور الجديدة.</i>'
+      '<i>تم إنهاء كافة الجلسات السابقة تلقائياً وتفعيل البيانات الجديدة.</i>'
     ].join('\n');
 
     for (const chatId of chatIds) {

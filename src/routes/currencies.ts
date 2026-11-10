@@ -86,6 +86,21 @@ export interface CurrencyConfig {
     clientId?: string;
     isActive: boolean;
   };
+  bybit?: {
+    nameAr?: string;
+    nameEn?: string;
+    uid: string;
+    networks: Array<{
+      chain: string;
+      chainType: string;
+      address: string;
+      nameAr: string;
+      nameEn: string;
+    }>;
+    instructionsAr: string;
+    instructionsEn: string;
+    isActive: boolean;
+  };
   customMethods?: CustomPaymentMethod[];
   updatedAt?: string;
 }
@@ -152,6 +167,65 @@ const DEFAULT_CONFIG: CurrencyConfig = {
     nameAr: "باي بال (PayPal)",
     nameEn: "PayPal",
     email: "paypal@gsmteam.com",
+    isActive: true
+  },
+  bybit: {
+    nameAr: "باي بيت (Bybit Pay & Deposit فوري تلقائي)",
+    nameEn: "Bybit (Instant Auto Pay & Deposit)",
+    uid: "600627456",
+    networks: [
+      {
+        chain: "TRX",
+        chainType: "TRON (TRC20)",
+        address: "TFT4t2shanZFQn5aT5Kvas7bsf3Xap9toe",
+        nameAr: "شبكة ترون (TRC20) - الأكثر استخداماً",
+        nameEn: "TRON (TRC20)"
+      },
+      {
+        chain: "BSC",
+        chainType: "BSC (BEP20)",
+        address: "0xafd534f94c99aa0ae7de9b1967bd0f4e038644c5",
+        nameAr: "شبكة بينانس الذكية (BEP20) - عمولة منخفضة",
+        nameEn: "BNB Smart Chain (BEP20)"
+      },
+      {
+        chain: "ETH",
+        chainType: "Ethereum (ERC20)",
+        address: "0xafd534f94c99aa0ae7de9b1967bd0f4e038644c5",
+        nameAr: "شبكة إيثيريوم (ERC20)",
+        nameEn: "Ethereum (ERC20)"
+      },
+      {
+        chain: "MATIC",
+        chainType: "Polygon PoS",
+        address: "0xafd534f94c99aa0ae7de9b1967bd0f4e038644c5",
+        nameAr: "شبكة بوليجون (Polygon PoS)",
+        nameEn: "Polygon PoS"
+      },
+      {
+        chain: "ARBI",
+        chainType: "Arbitrum One(USDT0)",
+        address: "0xafd534f94c99aa0ae7de9b1967bd0f4e038644c5",
+        nameAr: "شبكة أربيتروم (Arbitrum One)",
+        nameEn: "Arbitrum One"
+      },
+      {
+        chain: "TON",
+        chainType: "TON",
+        address: "UQB6wXz3mUc2I6b_hdPQTiyEyt3xkXl0_km4_mxgz36OyC0E",
+        nameAr: "شبكة تون (TON)",
+        nameEn: "The Open Network (TON)"
+      },
+      {
+        chain: "SOL",
+        chainType: "SOL",
+        address: "Gu7hKmCXNKr8An1ZaaNRpseLkdguHnpBht4jZtGgJpqY",
+        nameAr: "شبكة سولانا (Solana)",
+        nameEn: "Solana (SOL)"
+      }
+    ],
+    instructionsAr: "اختر الشبكة المناسبة أو التحويل الداخلي عبر Bybit UID (600627456)، حول المبلغ المطلوب ثم الصق هاش المعاملة (TxID) واضغط تأكيد ليتم شحن رصيدك تلقائياً وفورياً.",
+    instructionsEn: "Select your preferred network or Bybit internal transfer via UID (600627456), transfer the funds and enter TxID / Hash for instant automated verification.",
     isActive: true
   }
 };

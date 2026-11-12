@@ -11,6 +11,123 @@ import { getProviderRemoteServiceId } from '../utils/provider-service-id';
 import { resolveOrderServiceType } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 
+export interface DhruDispatchErrorClassification {
+  category: 'credit' | 'out_of_stock' | 'imei' | 'fields' | 'invalid_action' | 'other';
+  isCreditError: boolean;
+  title: string;
+  userFacingMsg: string;
+}
+
+export function classifyDhruDispatchError(
+  dhruResponse: any,
+  rawTarget: string,
+  providerName: string,
+  dhruId: string
+): DhruDispatchErrorClassification {
+  const rawErrMsg = cleanDhruErrorMessage(
+    dhruResponse?.Error ||
+    dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION ||
+    dhruResponse?.ERROR?.[0]?.MESSAGE ||
+    dhruResponse?.error ||
+    'رفض المزود الطلب'
+  ).replace(/^ValidationError\d*\s*/i, '').trim() || 'رفض المزود الطلب';
+
+  const responseStr = JSON.stringify(dhruResponse || {}).toLowerCase();
+  const isNumericImei = /^\d{14,16}$/.test(String(rawTarget || '').replace(/[\s-]/g, ''));
+
+  const isCreditError =
+    responseStr.includes('creditprocesserror') ||
+    responseStr.includes('not enough credit') ||
+    responseStr.includes('insufficient credit') ||
+    responseStr.includes('low credit');
+
+  if (isCreditError) {
+    return {
+      category: 'credit',
+      isCreditError: true,
+      title: 'فشل الإرسال: رصيد المزود غير كاف',
+      userFacingMsg: 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
+    };
+  }
+
+  // Provider operational errors often arrive wrapped as "ValidationError123 Out of Stock ...";
+  // match stock/availability failures before generic validation checks so admins are not told to edit fields.
+  const isOutOfStock =
+    responseStr.includes('out of stock') ||
+    responseStr.includes('stock empty') ||
+    responseStr.includes('no stock') ||
+    responseStr.includes('sold out') ||
+    responseStr.includes('temporarily unavailable') ||
+    responseStr.includes('service unavailable') ||
+    responseStr.includes('service disabled') ||
+    responseStr.includes('under maintenance');
+
+  if (isOutOfStock) {
+    return {
+      category: 'out_of_stock',
+      isCreditError: false,
+      title: 'فشل الإرسال: الخدمة غير متوفرة حالياً لدى المزود',
+      userFacingMsg: `الخدمة غير متوفرة حالياً لدى المزود (نفاد الكمية / Out of Stock: ${rawErrMsg}). يرجى المحاولة لاحقاً أو تحويل الطلب لمزود آخر.`
+    };
+  }
+
+  const isImeiValidationError =
+    isInvalidImeiError(dhruResponse) ||
+    responseStr.includes('invalid imei') ||
+    responseStr.includes('required imei') ||
+    responseStr.includes('imei field');
+
+  if (isImeiValidationError) {
+    return {
+      category: 'imei',
+      isCreditError: false,
+      title: 'فشل الإرسال: رقم IMEI غير صالح',
+      userFacingMsg: !isNumericImei
+        ? `القيمة المدخلة (${rawTarget}) هي سيريال تسلسلي وليست رقم IMEI مكون من 15 رقماً. خدمة المزود (${providerName || 'المزود'}) تتطلب رقم IMEI حصراً. يرجى الضغط على زر التعديل وإدخال رقم IMEI صحيح للجهاز ثم إعادة الإرسال.`
+        : `رقم IMEI غير مطابق لشروط المزود (${rawErrMsg}). يرجى التأكد من كتابة رقم IMEI صحيح للجهاز (15 رقماً) عبر زر التعديل ثم إعادة الإرسال.`
+    };
+  }
+
+  const isFieldValidationError =
+    responseStr.includes('validationerror') ||
+    responseStr.includes('is required') ||
+    responseStr.includes('required field') ||
+    responseStr.includes('missing field') ||
+    responseStr.includes('invalid customfield');
+
+  if (isFieldValidationError) {
+    return {
+      category: 'fields',
+      isCreditError: false,
+      title: 'فشل الإرسال: بيانات الطلب غير مكتملة',
+      userFacingMsg: `رفض المزود الطلب لنقص أو عدم تطابق الحقول المطلوبة (${rawErrMsg}). يرجى الضغط على زر التعديل واستكمال البيانات المطلوبة ثم إعادة الإرسال.`
+    };
+  }
+
+  const isInvalidAction =
+    responseStr.includes('invalid action') ||
+    responseStr.includes('command not found') ||
+    responseStr.includes('action not found');
+
+  if (isInvalidAction) {
+    return {
+      category: 'invalid_action',
+      isCreditError: false,
+      title: 'فشل الإرسال: نوع العملية غير مدعوم (Invalid Action)',
+      userFacingMsg: !isNumericImei
+        ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة). الخدمة لدى المزود تتطلب رقم IMEI حصراً بينما المدخل (${rawTarget}) هو سيريال. يرجى الضغط على زر التعديل وإدخال رقم IMEI الجهاز (15 رقماً) ثم إعادة الإرسال.`
+        : `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruId}) لدى المزود (${providerName || 'المزود'}).`
+    };
+  }
+
+  return {
+    category: 'other',
+    isCreditError: false,
+    title: 'فشل الإرسال للمزود',
+    userFacingMsg: `رفض المزود الطلب: ${rawErrMsg}`
+  };
+}
+
 export const AUTO_DISPATCH_SETTINGS_KEY = 'auto_dispatch_settings';
 
 export interface AutoDispatchConfig {
@@ -355,67 +472,19 @@ export async function dispatchOrderToProvider(
 
   if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
     console.error('[Dispatch Provider Error]:', dhruResponse);
-    const rawErrMsg = cleanDhruErrorMessage(
-      dhruResponse?.Error ||
-      dhruResponse?.ERROR?.[0]?.MESSAGE ||
-      dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION ||
-      dhruResponse?.error ||
-      'رفض المزود الطلب'
+    const { isCreditError, title: classifiedTitle, userFacingMsg } = classifyDhruDispatchError(
+      dhruResponse,
+      rawTarget,
+      dhruService.apiProvider?.name || 'المزود',
+      dhruService.dhruId
     );
-
-    const responseStr = JSON.stringify(dhruResponse || {}).toLowerCase();
-    const isCreditError =
-      responseStr.includes('creditprocesserror') ||
-      responseStr.includes('not enough credit') ||
-      responseStr.includes('insufficient credit') ||
-      responseStr.includes('low credit');
-
-    const isInvalidAction =
-      responseStr.includes('invalid action') ||
-      responseStr.includes('command not found') ||
-      responseStr.includes('action not found');
-
-    const isImeiValidationError =
-      isInvalidImeiError(dhruResponse) ||
-      responseStr.includes('invalid imei') ||
-      responseStr.includes('required imei') ||
-      responseStr.includes('imei field');
-
-    const isFieldValidationError =
-      !isImeiValidationError &&
-      (responseStr.includes('validationerror') ||
-        responseStr.includes('is required') ||
-        responseStr.includes('required field'));
-
-    let userFacingMsg = `رفض المزود الطلب: ${rawErrMsg}`;
-    if (isCreditError) {
-      userFacingMsg = 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.';
-    } else if (isImeiValidationError) {
-      if (!isNumericImei) {
-        userFacingMsg = `فشل الإرسال: القيمة المدخلة (${rawTarget}) هي سيريال تسلسلي وليست رقم IMEI مكون من 15 رقماً. خدمة المزود (${dhruService.apiProvider?.name || 'المزود'}) تتطلب رقم IMEI حصراً. يرجى الضغط على زر التعديل وإدخال رقم IMEI صحيح للجهاز ثم إعادة الإرسال.`;
-      } else {
-        userFacingMsg = `فشل الإرسال: رقم IMEI غير مطابق لشروط المزود (${rawErrMsg}). يرجى التأكد من كتابة رقم IMEI صحيح للجهاز (15 رقماً) عبر زر التعديل ثم إعادة الإرسال.`;
-      }
-    } else if (isFieldValidationError) {
-      userFacingMsg = `فشل الإرسال: رفض المزود الطلب لنقص أو عدم تطابق الحقول المطلوبة (${rawErrMsg}). يرجى الضغط على زر التعديل واستكمال البيانات المطلوبة ثم إعادة الإرسال.`;
-    } else if (isInvalidAction) {
-      if (!isNumericImei) {
-        userFacingMsg = `فشل الإرسال: رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة). الخدمة لدى المزود تتطلب رقم IMEI حصراً بينما المدخل (${rawTarget}) هو سيريال. يرجى الضغط على زر التعديل وإدخال رقم IMEI الجهاز (15 رقماً) ثم إعادة الإرسال.`;
-      } else {
-        userFacingMsg = `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruService.dhruId}) لدى المزود (${dhruService.apiProvider?.name || 'المزود'}).`;
-      }
-    }
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
     events.push({
       time: now.toISOString(),
       action: isAuto ? 'AUTO_DISPATCH_FAILED' : 'DISPATCH_FAILED',
-      title: isCreditError
-        ? 'فشل الإرسال: رصيد المزود غير كاف'
-        : isInvalidAction
-          ? 'فشل الإرسال: نوع العملية غير مدعوم (Invalid Action)'
-          : (isAuto ? 'فشل الإرسال التلقائي للمزود' : 'فشل الإرسال للمزود'),
+      title: isAuto && classifiedTitle === 'فشل الإرسال للمزود' ? 'فشل الإرسال التلقائي للمزود' : classifiedTitle,
       desc: userFacingMsg
     });
     parsedNotes.events = events;

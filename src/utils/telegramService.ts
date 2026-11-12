@@ -1,20 +1,60 @@
 import axios from 'axios';
+import https from 'https';
 import FormData from 'form-data';
 import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import { prisma } from "../utils/prisma";
-import { placeImeiOrder, placeServerOrder, normalizeProviderCustomFields } from './dhru-api';
-import { getProviderRemoteServiceId } from './provider-service-id';
 import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailService';
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
-import { normalizeTelegramAdminChatIds } from './telegram-config';
-import { resolveOrderServiceType } from './order-response';
+import { normalizeTelegramAdminChatIds, sanitizeTelegramReplyMarkup } from './telegram-config';
+import { roundCurrency } from './currency';
 import { getUploadDir } from './uploads';
 
 const TELEGRAM_BOT_TOKEN = process.env.TELEGRAM_BOT_TOKEN || '';
 const TELEGRAM_API_URL = `https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}`;
 const DEFAULT_ADMIN_CHAT_ID = process.env.TELEGRAM_ADMIN_CHAT_ID || '';
+
+// Telegram API stalls intermittently over IPv6 in Docker; pin IPv4 keep-alive connections
+// while calling axios directly so tests and HTTP interceptors observe every request.
+const telegramHttpsAgent = new https.Agent({ keepAlive: true, family: 4, maxSockets: 10 });
+
+function getTelegramApiUrl(): string {
+  const token = process.env.TELEGRAM_BOT_TOKEN || TELEGRAM_BOT_TOKEN;
+  return `https://api.telegram.org/bot${token}`;
+}
+
+export function isMarkupRejectedError(err: any): boolean {
+  const desc = String(err?.response?.data?.description || err?.message || '');
+  return /inline keyboard|reply_markup|button_url_invalid|wrong port number|url host is empty|unsupported url protocol/i.test(desc);
+}
+
+export function computePollingBackoffMs(consecutiveFailures: number, status?: number, retryAfterSec?: number): number {
+  const attempt = Math.max(1, consecutiveFailures);
+  if (status === 429) {
+    const seconds = Number.isFinite(Number(retryAfterSec)) ? Math.max(5, Number(retryAfterSec)) : 15;
+    return Math.min(120000, seconds * 1000);
+  }
+  if (status === 409) {
+    return Math.min(60000, 10000 + (attempt - 1) * 5000);
+  }
+  return Math.min(60000, 5000 * 2 ** Math.min(attempt - 1, 4));
+}
+
+function sleepWithAbort(ms: number, signal?: AbortSignal): Promise<void> {
+  if (ms <= 0 || signal?.aborted) return Promise.resolve();
+  return new Promise((resolve) => {
+    const onAbort = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
 
 // Admin Chat IDs - env var is the primary source, DB extends it.
 let adminChatIds: string[] = normalizeTelegramAdminChatIds([], DEFAULT_ADMIN_CHAT_ID);
@@ -77,81 +117,164 @@ async function flushPendingNotifications() {
 // Long Polling Telegram Bot Updates
 let lastUpdateId = 0;
 let isPolling = false;
+let pollingStopRequested = false;
+let pollingAbortController: AbortController | null = null;
+let pollingRetryTimer: NodeJS.Timeout | null = null;
+
+function clearPollingRetryTimer() {
+  if (pollingRetryTimer) {
+    clearTimeout(pollingRetryTimer);
+    pollingRetryTimer = null;
+  }
+}
 
 export async function startTelegramBotPolling() {
   if (!process.env.TELEGRAM_BOT_TOKEN) return;
   const mode = (process.env.TELEGRAM_UPDATES_MODE || 'polling').trim().toLowerCase();
   if (mode === 'webhook' || mode === 'disabled') return;
   if (isPolling) return;
+
+  pollingStopRequested = false;
+  clearPollingRetryTimer();
   isPolling = true;
-  try {
-    // Transfer to polling once on startup without dropping pending updates.
-    const webhook = await axios.get(`${TELEGRAM_API_URL}/getWebhookInfo`, { timeout: 5000 });
-    if (!webhook.data?.ok) throw new Error('Unable to inspect Telegram webhook');
-    if (webhook.data.result?.url) {
-      const deleted = await axios.post(`${TELEGRAM_API_URL}/deleteWebhook`, { drop_pending_updates: false }, { timeout: 5000 });
-      if (!deleted.data?.ok) throw new Error('Unable to remove Telegram webhook');
+  pollingAbortController = new AbortController();
+
+  let startupFailures = 0;
+  while (isPolling && !pollingStopRequested) {
+    const apiUrl = getTelegramApiUrl();
+    try {
+      // Transfer to polling without dropping pending updates.
+      const webhook = await axios.get(`${apiUrl}/getWebhookInfo`, {
+        httpsAgent: telegramHttpsAgent,
+        timeout: 10000,
+        signal: pollingAbortController.signal
+      });
+      if (!webhook.data?.ok) throw new Error('Unable to inspect Telegram webhook');
+      if (webhook.data.result?.url) {
+        const deleted = await axios.post(
+          `${apiUrl}/deleteWebhook`,
+          { drop_pending_updates: false },
+          { httpsAgent: telegramHttpsAgent, timeout: 10000, signal: pollingAbortController.signal }
+        );
+        if (!deleted.data?.ok) throw new Error('Unable to remove Telegram webhook');
+      }
+      await refreshAdminIds();
+      break;
+    } catch (err: any) {
+      if (pollingStopRequested) {
+        isPolling = false;
+        return;
+      }
+      const status = Number(err?.response?.status) || 0;
+      if (status === 401 || status === 404) {
+        isPolling = false;
+        console.warn('[Telegram Bot] Polling stopped: bot token was rejected by Telegram API.');
+        return;
+      }
+      startupFailures++;
+      const retryAfter = err?.response?.data?.parameters?.retry_after;
+      const waitMs = computePollingBackoffMs(startupFailures, status, retryAfter);
+      console.warn(`[Telegram Bot] Polling startup attempt #${startupFailures} failed (${err?.message || status || 'network error'}), retrying in ${Math.round(waitMs / 1000)}s...`);
+      await sleepWithAbort(waitMs, pollingAbortController.signal);
     }
-    await refreshAdminIds();
-  } catch {
+  }
+
+  if (!isPolling || pollingStopRequested) {
     isPolling = false;
-    console.warn('[Telegram Bot] Polling startup failed. Check bot credentials and connectivity.');
     return;
   }
+
   console.log('[Telegram Bot Listener] Started background Telegram updates polling...');
   console.log('[Telegram Bot] Active Admin Chat ID(s):', adminChatIds);
-  pollUpdates();
+  void pollUpdates();
 }
 
 async function pollUpdates() {
-  while (isPolling) {
+  let consecutiveFailures = 0;
+
+  while (isPolling && !pollingStopRequested) {
+    const apiUrl = getTelegramApiUrl();
     try {
-      const res = await axios.get(`${TELEGRAM_API_URL}/getUpdates`, {
+      const controller = pollingAbortController || new AbortController();
+      const res = await axios.get(`${apiUrl}/getUpdates`, {
         params: {
           offset: lastUpdateId + 1,
           timeout: 20
         },
-        timeout: 25000
+        httpsAgent: telegramHttpsAgent,
+        timeout: 30000,
+        signal: controller.signal
       });
+
+      consecutiveFailures = 0;
 
       if (res.data?.ok && Array.isArray(res.data.result)) {
         for (const update of res.data.result) {
-          await handleIncomingTelegramUpdate(update);
-          lastUpdateId = update.update_id;
+          if (typeof update?.update_id === 'number') {
+            // Advance offset before handling so a bad or crashing update never traps polling in a replay loop.
+            lastUpdateId = Math.max(lastUpdateId, update.update_id);
+          }
+          try {
+            await handleIncomingTelegramUpdate(update);
+          } catch (updateErr: any) {
+            console.error(`[Telegram Bot] Failed to process update #${update?.update_id}:`, updateErr?.message || updateErr);
+          }
         }
       }
     } catch (err: any) {
-      if (err?.response?.status === 409) {
-        const description = String(err?.response?.data?.description || '').toLowerCase();
-        if (description.includes('webhook')) {
-          console.warn('[Telegram Bot] Competing webhook detected while in polling mode; removing webhook and retrying in 8s...');
-          await axios.post(`${TELEGRAM_API_URL}/deleteWebhook`, { drop_pending_updates: false }).catch(() => {});
-        } else {
-          console.warn('[Telegram Bot] 409 Conflict on getUpdates (previous instance still closing); retrying in 8s...');
-        }
-        await new Promise((r) => setTimeout(r, 8000));
-      } else if ([401, 403].includes(err?.response?.status)) {
+      if (pollingStopRequested) break;
+      const status = Number(err?.response?.status) || 0;
+      if ([401, 404].includes(status)) {
         isPolling = false;
         console.warn('[Telegram Bot] Polling stopped: bot credentials were rejected.');
-      } else {
-        await new Promise((r) => setTimeout(r, 5000));
+        break;
       }
+      consecutiveFailures++;
+      const retryAfter = err?.response?.data?.parameters?.retry_after;
+      const waitMs = computePollingBackoffMs(consecutiveFailures, status, retryAfter);
+      if (status === 409) {
+        const description = String(err?.response?.data?.description || '').toLowerCase();
+        if (description.includes('webhook')) {
+          console.warn(`[Telegram Bot] Competing webhook detected while in polling mode; removing webhook and retrying in ${Math.round(waitMs / 1000)}s...`);
+          await axios.post(
+            `${apiUrl}/deleteWebhook`,
+            { drop_pending_updates: false },
+            { httpsAgent: telegramHttpsAgent, timeout: 10000 }
+          ).catch(() => {});
+        } else {
+          console.warn(`[Telegram Bot] 409 Conflict on getUpdates (previous instance still closing); retrying in ${Math.round(waitMs / 1000)}s...`);
+        }
+      } else {
+        console.warn(`[Telegram Bot] Polling error (${err?.message || status || 'unknown'}), retrying in ${Math.round(waitMs / 1000)}s...`);
+      }
+      await sleepWithAbort(waitMs, pollingAbortController?.signal);
     }
   }
+  isPolling = false;
 }
 
 export function stopTelegramBotPolling() {
+  pollingStopRequested = true;
   isPolling = false;
+  clearPollingRetryTimer();
+  if (pollingAbortController) {
+    pollingAbortController.abort();
+    pollingAbortController = null;
+  }
 }
 
 // Answer Telegram Callback Query (for button feedback)
 async function answerCallbackQuery(callbackQueryId: string, text?: string, showAlert = false) {
   try {
-    await axios.post(`${TELEGRAM_API_URL}/answerCallbackQuery`, {
-      callback_query_id: callbackQueryId,
-      text: text || '',
-      show_alert: showAlert
-    });
+    await axios.post(
+      `${getTelegramApiUrl()}/answerCallbackQuery`,
+      {
+        callback_query_id: callbackQueryId,
+        text: text || '',
+        show_alert: showAlert
+      },
+      { httpsAgent: telegramHttpsAgent, timeout: 10000 }
+    );
   } catch (err: any) {
     console.warn('[Telegram Callback Answer Error]:', err?.message);
   }
@@ -232,113 +355,34 @@ async function handleIncomingTelegramUpdate(update: any) {
         const orderId = data.replace('send_dhru_', '').trim();
         await answerCallbackQuery(cbId, 'جاري ارسال الطلب للمزود...', false);
 
-        const order = await prisma.order.findUnique({
+        const { dispatchOrderToProvider } = await import('../services/orderDispatchService');
+        const dispatchResult = await dispatchOrderToProvider(orderId, { isAuto: false, requestedBy: 'telegram' });
+
+        if (!dispatchResult.success) {
+          const errText = dispatchResult.userFacingMsg || dispatchResult.error || 'تعذر إرسال الطلب للمزود';
+          await sendTelegramMessage(chatId, `[ERROR] <b>تعذر تنفيذ الإرسال:</b>\n<code>${escapeHtml(errText)}</code>`);
+          return;
+        }
+
+        const dispatchedOrder = await prisma.order.findUnique({
           where: { id: orderId },
           include: { user: true }
         });
-
-        if (!order) {
-          await sendTelegramMessage(chatId, `[ERROR] <b>الطلب #${orderId.slice(-6)} غير موجود في قاعدة البيانات!</b>`);
-          return;
-        }
-
-        const reservation = await prisma.order.updateMany({
-          where: {
-            id: orderId,
-            status: 'pending',
-            apiOrderId: null,
-            refundedAt: null
-          },
-          data: {
-            status: 'dispatching'
-          }
-        });
-
-        if (reservation.count === 0) {
-          await sendTelegramMessage(chatId, `[WARNING] <b>لا يمكن إرسال الطلب:</b> تم إرساله مسبقاً، أو قيد الإرسال، أو مسترد.`);
-          return;
-        }
-
-        const dhruService = await prisma.dhruService.findFirst({
-          where: { OR: [{ id: order.serviceId }, { dhruId: order.serviceId }] },
-          include: { dhruCategory: true, apiProvider: true }
-        });
-
-        if (!dhruService || !dhruService.dhruId) {
-          await prisma.order.update({
-            where: { id: orderId },
-            data: { status: 'pending' }
-          });
-          await sendTelegramMessage(chatId, `[ERROR] <b>تعذر العثور على معرّف الخدمة (Dhru ID) للخدمة "${order.serviceName}"!</b>`);
-          return;
-        }
-
-        let dispatchNotes: any = {};
-        try { dispatchNotes = JSON.parse(order.notes || '{}'); } catch {}
-        const customFields = normalizeProviderCustomFields(dispatchNotes.customFields || {}, dhruService.requiresCustom);
-        customFields.QNT = String(order.quantity);
-        const providerConfig = dhruService.apiProvider ? {
-          apiUrl: dhruService.apiProvider.apiUrl,
-          username: dhruService.apiProvider.username,
-          apiKey: dhruService.apiProvider.apiKey
-        } : undefined;
-        const serviceType = resolveOrderServiceType(
-          dhruService.apiServiceType,
-          dhruService.dhruCategory?.name,
-          dhruService.groupName
-        );
-        dispatchNotes.dispatchProviderId = dhruService.providerId || null;
-        dispatchNotes.dispatchServiceId = dhruService.id;
-        dispatchNotes.dispatchServiceType = serviceType;
-        let dhruResponse: any = null;
-        const remoteId = getProviderRemoteServiceId(dhruService.dhruId);
-        if (serviceType === 'imei') {
-          dhruResponse = await placeImeiOrder(remoteId, dispatchNotes.rawImei || order.targetInput, customFields, providerConfig);
-        } else {
-          dhruResponse = await placeServerOrder(remoteId, order.quantity, customFields, order.targetInput, providerConfig);
-        }
-
-        if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
-          await prisma.order.update({
-            where: { id: orderId },
-            data: { status: 'pending' }
-          });
-          const rawErrMsg = dhruResponse?.Error || dhruResponse?.ERROR?.[0]?.MESSAGE || dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION || 'خطأ غير معروف من المزود';
-          const isCredit = JSON.stringify(dhruResponse || {}).toLowerCase().includes('credit');
-          const isInvalidAction = JSON.stringify(dhruResponse || {}).toLowerCase().includes('invalid action');
-          const finalErrMsg = isCredit
-            ? 'رصيد حسابك لدى المزود الخارجي غير كافٍ. يرجى شحن حسابك لدى المزود أولاً ثم إعادة المحاولة.'
-            : isInvalidAction
-              ? `رفض المزود الطلب: نوع العملية غير مدعوم لهذه الخدمة (Invalid Action). يرجى التأكد من معرف الخدمة (Service ID: ${remoteId}).`
-              : rawErrMsg;
-          await sendTelegramMessage(chatId, `[ERROR] <b>فشل إرسال الطلب للمزود:</b>\n<code>${finalErrMsg}</code>`);
-          return;
-        }
-
-        const refId = String(dhruResponse?.SUCCESS?.[0]?.REFERENCEID || dhruResponse?.REFERENCEID || 'SENT');
-
-        await prisma.order.update({
-          where: { id: orderId },
-          data: {
-            apiOrderId: refId,
-            status: 'processing',
-            notes: JSON.stringify(dispatchNotes)
-          }
-        });
+        const refId = dispatchResult.apiOrderId || 'SENT';
 
         await sendTelegramMessage(
           chatId,
-          `<b>تم إرسال الطلب للمزود بنجاح عبر التلجرام!</b>\n\n<b>رقم الطلب:</b> #${order.id.slice(-6)}\n<b>الخدمة:</b> ${order.serviceName}\n<b>Dhru Ref ID:</b> <code>${refId}</code>\n<b>العميل:</b> ${order.user?.fullName} (<code>${order.user?.email}</code>)\n<b>الحالة:</b> جاري التنفيذ لدى المزود`
+          `<b>تم إرسال الطلب للمزود بنجاح عبر التلجرام!</b>\n\n<b>رقم الطلب:</b> #${orderId.slice(-6)}\n<b>الخدمة:</b> ${escapeHtml(dispatchedOrder?.serviceName || '')}\n<b>Dhru Ref ID:</b> <code>${escapeHtml(refId)}</code>\n<b>العميل:</b> ${escapeHtml(dispatchedOrder?.user?.fullName || 'Client')} (<code>${escapeHtml(dispatchedOrder?.user?.email || '')}</code>)\n<b>الحالة:</b> جاري التنفيذ لدى المزود`
         );
 
-        if (order.user?.email) {
-          sendOrderConfirmationEmail(order.user.email, {
-            orderId: order.id.slice(-6),
-            serviceName: order.serviceName,
-            targetInput: order.targetInput,
-            price: order.price,
-            remainingBalance: order.user.balance,
-            username: order.user.fullName
+        if (dispatchedOrder?.user?.email) {
+          sendOrderConfirmationEmail(dispatchedOrder.user.email, {
+            orderId: dispatchedOrder.id.slice(-6),
+            serviceName: dispatchedOrder.serviceName,
+            targetInput: dispatchedOrder.targetInput,
+            price: dispatchedOrder.price,
+            remainingBalance: dispatchedOrder.user.balance,
+            username: dispatchedOrder.user.fullName
           }).catch(() => {});
         }
         return;
@@ -347,7 +391,7 @@ async function handleIncomingTelegramUpdate(update: any) {
       // 2. Approve Deposit: approve_tx_{txId}
       if (data.startsWith('approve_tx_')) {
         const txId = data.replace('approve_tx_', '').trim();
-        await answerCallbackQuery(cbId, '⏳ جاري اعتماد الإيداع وإضافة الرصيد...', false);
+        await answerCallbackQuery(cbId, 'جاري اعتماد الإيداع وإضافة الرصيد...', false);
 
         const tx = await prisma.transaction.findUnique({ where: { id: txId } });
         if (!tx) {
@@ -358,7 +402,7 @@ async function handleIncomingTelegramUpdate(update: any) {
         // Atomic Status Update & Balance Increment
         let updatedUser: any;
         let uTx: any;
-        
+
         try {
           [uTx, updatedUser] = await prisma.$transaction(async (t) => {
             const updatedTxResult = await t.transaction.updateMany({
@@ -370,11 +414,15 @@ async function handleIncomingTelegramUpdate(update: any) {
               throw new Error('ALREADY_PROCESSED');
             }
 
-            const userRes = await t.user.update({
+            const incremented = await t.user.update({
               where: { id: tx.userId },
-              data: { balance: { increment: tx.amount } }
+              data: { balance: { increment: roundCurrency(tx.amount) } }
             });
-            
+            const rounded = roundCurrency(incremented.balance, 4);
+            const userRes = rounded !== incremented.balance
+              ? await t.user.update({ where: { id: tx.userId }, data: { balance: rounded } })
+              : incremented;
+
             return [tx, userRes];
           });
         } catch (txError: any) {
@@ -476,16 +524,20 @@ async function handleIncomingTelegramUpdate(update: any) {
               throw new Error('NO_USER_ID');
             }
 
-            const userRes = await t.user.update({
+            const incremented = await t.user.update({
               where: { id: order.userId },
-              data: { balance: { increment: order.price } }
+              data: { balance: { increment: roundCurrency(order.price) } }
             });
+            const rounded = roundCurrency(incremented.balance, 4);
+            const userRes = rounded !== incremented.balance
+              ? await t.user.update({ where: { id: order.userId }, data: { balance: rounded } })
+              : incremented;
 
             await t.transaction.create({
               data: {
                 userId: order.userId,
                 type: `استرجاع رصيد طلب ملغي: #${order.id.slice(-6)}`,
-                amount: order.price,
+                amount: roundCurrency(order.price),
                 method: 'استرجاع للمحفظة',
                 refNo: `REFUND-#${order.id.slice(-6)}`,
                 status: 'completed'
@@ -729,30 +781,47 @@ export function sanitizeTelegramHtml(input: string): string {
   return result.replace(/\n{3,}/g, '\n\n').trim();
 }
 
+async function postTelegramMessage(chatId: string, text: string, parseMode?: 'HTML', replyMarkup?: any) {
+  const payload: Record<string, any> = { chat_id: chatId, text };
+  if (parseMode) payload.parse_mode = parseMode;
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  const res = await axios.post(`${getTelegramApiUrl()}/sendMessage`, payload, {
+    httpsAgent: telegramHttpsAgent,
+    timeout: 15000
+  });
+  console.log(`[Telegram Service] Message sent to Chat ID: ${chatId}`);
+  return res.data;
+}
+
 // Send Text Message to Telegram
 export async function sendTelegramMessage(chatId: string, text: string, replyMarkup?: any) {
+  const safeMarkup = sanitizeTelegramReplyMarkup(replyMarkup);
   const sanitizedText = sanitizeTelegramHtml(text);
+
   try {
-    const res = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
-      chat_id: chatId,
-      text: sanitizedText,
-      parse_mode: 'HTML',
-      reply_markup: replyMarkup
-    });
-    console.log(`[Telegram Service] Message sent to Chat ID: ${chatId}`);
-    return res.data;
+    return await postTelegramMessage(chatId, sanitizedText, 'HTML', safeMarkup);
   } catch (error: any) {
     const errorDesc = error?.response?.data?.description || error?.message;
-    console.warn(`[Telegram Service Error] Failed HTML send to ${chatId} (${errorDesc}), retrying plain text...`);
+    const markupRejected = Boolean(safeMarkup) && isMarkupRejectedError(error);
+    console.warn(`[Telegram Service Error] Failed HTML send to ${chatId} (${errorDesc}), retrying fallback...`);
+
+    const secondMarkup = markupRejected ? undefined : safeMarkup;
     try {
-      const res2 = await axios.post(`${TELEGRAM_API_URL}/sendMessage`, {
-        chat_id: chatId,
-        text: stripHtml(text),
-        reply_markup: replyMarkup
-      });
-      return res2.data;
+      if (markupRejected) {
+        return await postTelegramMessage(chatId, sanitizedText, 'HTML', undefined);
+      }
+      return await postTelegramMessage(chatId, stripHtml(text), undefined, secondMarkup);
     } catch (err2: any) {
+      if (secondMarkup) {
+        try {
+          return await postTelegramMessage(chatId, stripHtml(text), undefined, undefined);
+        } catch (err3: any) {
+          console.error(`[Telegram Final Fallback Error for ${chatId}]:`, err3?.response?.data?.description || err3?.message);
+          return undefined;
+        }
+      }
       console.error(`[Telegram Plain Text Fallback Error for ${chatId}]:`, err2?.response?.data?.description || err2?.message);
+      return undefined;
     }
   }
 }
@@ -906,6 +975,7 @@ export async function sendTelegramPhotoNotification({
     }
 
     const imageInfo = await resolveImageBuffer(imageSource);
+    const safeMarkup = sanitizeTelegramReplyMarkup(replyMarkup);
     const sanitizedCaption = sanitizeTelegramHtml(caption);
     const trimmedCaption = sanitizedCaption.length > 1024
       ? sanitizeTelegramHtml(sanitizedCaption.slice(0, 1000)) + '...'
@@ -913,71 +983,64 @@ export async function sendTelegramPhotoNotification({
 
     for (const chatId of targetChatIds) {
       let delivered = false;
+      let markupForChat = safeMarkup;
 
       // 1. Try sendPhoto or sendDocument if image buffer is available
       if (imageInfo) {
         const isLargeFile = imageInfo.buffer.length > 9.5 * 1024 * 1024;
+        const postMedia = async (endpoint: 'sendPhoto' | 'sendDocument', field: 'photo' | 'document', cap: string, html: boolean, markup?: any) => {
+          const form = new FormData();
+          form.append('chat_id', chatId);
+          form.append('caption', cap);
+          if (html) form.append('parse_mode', 'HTML');
+          if (markup) form.append('reply_markup', JSON.stringify(markup));
+          form.append(field, imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
+          await axios.post(`${getTelegramApiUrl()}/${endpoint}`, form, {
+            httpsAgent: telegramHttpsAgent,
+            headers: form.getHeaders(),
+            timeout: 60000
+          });
+        };
 
         if (!isLargeFile) {
           try {
-            const form = new FormData();
-            form.append('chat_id', chatId);
-            form.append('caption', trimmedCaption);
-            form.append('parse_mode', 'HTML');
-            if (replyMarkup) {
-              form.append('reply_markup', JSON.stringify(replyMarkup));
-            }
-            form.append('photo', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
-
-            await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form, {
-              headers: form.getHeaders(),
-              timeout: 60000
-            });
+            await postMedia('sendPhoto', 'photo', trimmedCaption, true, markupForChat);
             console.log(`[Telegram Bot] Receipt photo sent successfully to Admin Chat ID: ${chatId}`);
             delivered = true;
           } catch (photoErr: any) {
+            if (isMarkupRejectedError(photoErr)) markupForChat = undefined;
             const photoDesc = photoErr?.response?.data?.description || photoErr?.message;
             console.warn(`[Telegram sendPhoto HTML failed for ${chatId}, trying plain text caption]:`, photoDesc);
 
-            // Retry sendPhoto with plain text caption
             try {
-              const form2 = new FormData();
-              form2.append('chat_id', chatId);
-              form2.append('caption', stripHtml(trimmedCaption));
-              if (replyMarkup) {
-                form2.append('reply_markup', JSON.stringify(replyMarkup));
-              }
-              form2.append('photo', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
-
-              await axios.post(`${TELEGRAM_API_URL}/sendPhoto`, form2, {
-                headers: form2.getHeaders(),
-                timeout: 60000
-              });
+              await postMedia('sendPhoto', 'photo', stripHtml(trimmedCaption), false, markupForChat);
               console.log(`[Telegram Bot] Receipt photo (plain) sent successfully to Admin Chat ID: ${chatId}`);
               delivered = true;
-            } catch (photoErr2: any) {}
+            } catch (photoErr2: any) {
+              if (isMarkupRejectedError(photoErr2)) markupForChat = undefined;
+            }
           }
         }
 
         // 2. If not delivered yet (or if file is large > 9.5MB), send as Document
         if (!delivered) {
           try {
-            const docForm = new FormData();
-            docForm.append('chat_id', chatId);
-            docForm.append('caption', stripHtml(trimmedCaption));
-            if (replyMarkup) {
-              docForm.append('reply_markup', JSON.stringify(replyMarkup));
-            }
-            docForm.append('document', imageInfo.buffer, { filename: imageInfo.filename, contentType: imageInfo.mimeType });
-
-            await axios.post(`${TELEGRAM_API_URL}/sendDocument`, docForm, {
-              headers: docForm.getHeaders(),
-              timeout: 60000
-            });
+            await postMedia('sendDocument', 'document', stripHtml(trimmedCaption), false, markupForChat);
             console.log(`[Telegram Bot] Receipt document sent successfully to Admin Chat ID: ${chatId}`);
             delivered = true;
           } catch (docErr: any) {
-            console.warn(`[Telegram sendDocument failed for ${chatId}]:`, docErr?.response?.data?.description || docErr?.message);
+            if (isMarkupRejectedError(docErr)) {
+              markupForChat = undefined;
+              try {
+                await postMedia('sendDocument', 'document', stripHtml(trimmedCaption), false, undefined);
+                console.log(`[Telegram Bot] Receipt document sent successfully (without buttons) to Admin Chat ID: ${chatId}`);
+                delivered = true;
+              } catch (docErr2: any) {
+                console.warn(`[Telegram sendDocument failed for ${chatId}]:`, docErr2?.response?.data?.description || docErr2?.message);
+              }
+            } else {
+              console.warn(`[Telegram sendDocument failed for ${chatId}]:`, docErr?.response?.data?.description || docErr?.message);
+            }
           }
         }
       }
@@ -987,7 +1050,7 @@ export async function sendTelegramPhotoNotification({
         await sendTelegramMessage(
           chatId,
           caption + (imageInfo ? '\n\n<i>(مرفق مع الطلب صورة إيصال التحويل)</i>' : ''),
-          replyMarkup
+          markupForChat
         );
       }
     }
@@ -1017,7 +1080,8 @@ export async function sendDocumentToAdmins(filePath: string, caption: string): P
           form.append('parse_mode', 'HTML');
           form.append('document', fs.createReadStream(filePath));
 
-          await axios.post(`${TELEGRAM_API_URL}/sendDocument`, form, {
+          await axios.post(`${getTelegramApiUrl()}/sendDocument`, form, {
+            httpsAgent: telegramHttpsAgent,
             headers: form.getHeaders(),
             timeout: 60000
           });

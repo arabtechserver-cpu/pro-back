@@ -198,11 +198,32 @@ export async function callFoxreloadApi(
   customApiKey?: string,
   readTimeoutMs?: number
 ): Promise<{ ok: boolean; status: number; data: any; raw: string; retryAfterMs?: number }> {
+  const defaultTimeoutMs = 12000;
   const readDeadline = readTimeoutMs === undefined ? Infinity : Date.now() + readTimeoutMs;
   return (method === 'GET' ? providerReads : providerWrites).run(() => {
     if (method === 'GET' && Date.now() >= readDeadline) throw new RequestDeadlineError();
-    return requestFoxreloadApi(endpointPath, method, bodyPayload, lang, currency, customApiKey, readTimeoutMs === undefined ? 5000 : Math.max(1, readDeadline - Date.now()));
+    return requestFoxreloadApi(endpointPath, method, bodyPayload, lang, currency, customApiKey, readTimeoutMs === undefined ? defaultTimeoutMs : Math.max(1, readDeadline - Date.now()));
   });
+}
+
+function summarizeFoxreloadErrorBody(statusCode: number | undefined, rawBody: string): string {
+  if (!rawBody) return '';
+  if (/^\s*</.test(rawBody)) {
+    const blocked = statusCode === 403 ? ' (Cloudflare/WAF Blocked)' : '';
+    return `HTML response (${rawBody.length} bytes)${blocked}`;
+  }
+  return rawBody.length > 300 ? `${rawBody.slice(0, 300)}...` : rawBody;
+}
+
+function isAbortTimeoutError(err: any): boolean {
+  const name = String(err?.name || '');
+  const code = String(err?.code || '');
+  const message = String(err?.message || '');
+  return name === 'AbortError' || name === 'TimeoutError' || code === 'ABORT_ERR' || /aborted/i.test(message);
+}
+
+function isCatalogReadEndpoint(endpointPath: string): boolean {
+  return endpointPath.startsWith('/api/categories') || endpointPath.startsWith('/api/products');
 }
 
 async function requestFoxreloadApi(
@@ -212,8 +233,17 @@ async function requestFoxreloadApi(
   lang: string = 'en',
   currency: string = 'usd',
   customApiKey?: string,
-  readTimeoutMs = 5000
+  readTimeoutMs = 12000
 ): Promise<{ ok: boolean; status: number; data: any; raw: string; retryAfterMs?: number }> {
+  if (method === 'GET' && isCatalogReadEndpoint(endpointPath) && Date.now() < foxreloadBlockedUntil) {
+    return {
+      ok: false,
+      status: 403,
+      data: { error: 'FoxReload catalog temporarily paused after WAF block (403)' },
+      raw: 'Circuit breaker active after 403',
+    };
+  }
+
   const apiKey = (customApiKey || (await getFoxreloadSettings()).apiKey || getEnvApiKey()).trim();
 
   if (!apiKey) {
@@ -233,6 +263,7 @@ async function requestFoxreloadApi(
       'X-Language': lang,
       'X-Currency': currency.toLowerCase(),
       'Accept': 'application/json',
+      'User-Agent': 'ArabTechProServer/1.0 (+https://arabtechproserver.tech)',
     };
 
     if (bodyPayload && method === 'POST') {
@@ -247,6 +278,13 @@ async function requestFoxreloadApi(
       method,
       headers,
       timeout: method === 'GET' ? readTimeoutMs : 15000,
+    };
+
+    let settled = false;
+    const finish = (result: { ok: boolean; status: number; data: any; raw: string; retryAfterMs?: number }) => {
+      if (settled) return;
+      settled = true;
+      resolve(result);
     };
 
     const req = https.request({ ...options, signal: AbortSignal.timeout(options.timeout) }, (res) => {
@@ -266,8 +304,19 @@ async function requestFoxreloadApi(
         }
 
         const isOk = Boolean(res.statusCode && res.statusCode >= 200 && res.statusCode < 300);
-        if (!isOk) {
-          console.warn(`[FoxReload API Error] ${method} ${endpointPath} - Status: ${res.statusCode} - Response:`, data);
+        if (isOk) {
+          consecutiveWafBlocks = 0;
+          foxreloadBlockedUntil = 0;
+        } else {
+          console.warn(`[FoxReload API Error] ${method} ${endpointPath} - Status: ${res.statusCode} - Response: ${summarizeFoxreloadErrorBody(res.statusCode, data)}`);
+        }
+
+        if (res.statusCode === 403 && isCatalogReadEndpoint(endpointPath)) {
+          consecutiveWafBlocks++;
+          const cooldownMs = Math.min(60 * 60 * 1000, 15 * 60 * 1000 * 2 ** Math.min(consecutiveWafBlocks - 1, 2));
+          foxreloadBlockedUntil = Date.now() + cooldownMs;
+          nextCatalogRefreshAt = Math.max(nextCatalogRefreshAt, foxreloadBlockedUntil);
+          nextEsimRefreshAt = Math.max(nextEsimRefreshAt, foxreloadBlockedUntil);
         }
 
         // Parse Retry-After header on 429 so callers can back off properly
@@ -282,9 +331,12 @@ async function requestFoxreloadApi(
           } else {
             retryAfterMs = 60_000;
           }
+          const rateCooldown = Date.now() + Math.max(retryAfterMs, 5 * 60 * 1000);
+          nextCatalogRefreshAt = Math.max(nextCatalogRefreshAt, rateCooldown);
+          nextEsimRefreshAt = Math.max(nextEsimRefreshAt, rateCooldown);
         }
 
-        resolve({
+        finish({
           ok: isOk,
           status: res.statusCode || 500,
           data: parsed,
@@ -297,7 +349,7 @@ async function requestFoxreloadApi(
     req.on('timeout', () => {
       req.destroy();
       console.warn(`[FoxReload API Timeout] ${method} ${endpointPath}`);
-      resolve({
+      finish({
         ok: false,
         status: 504,
         data: { error: 'FoxReload API request timed out' },
@@ -306,8 +358,18 @@ async function requestFoxreloadApi(
     });
 
     req.on('error', (err) => {
+      if (isAbortTimeoutError(err)) {
+        console.warn(`[FoxReload API Timeout] ${method} ${endpointPath}`);
+        finish({
+          ok: false,
+          status: 504,
+          data: { error: 'FoxReload API request timed out' },
+          raw: 'Gateway Timeout',
+        });
+        return;
+      }
       console.error(`[FoxReload API Exception] ${method} ${endpointPath}:`, err.message);
-      resolve({
+      finish({
         ok: false,
         status: 500,
         data: { error: err.message },
@@ -496,10 +558,26 @@ let esimInFlight: Promise<FoxreloadProduct[]> | null = null;
 let esimWalk: { revision: number; state: ProductWalkState } | null = null;
 let nextEsimRefreshAt = 0;
 let productsView: { all: FoxreloadProduct[]; esim: FoxreloadProduct[]; data: FoxreloadProduct[] } | null = null;
+let foxreloadBlockedUntil = 0;
+let consecutiveWafBlocks = 0;
+let consecutiveCatalogFailures = 0;
 
 function newProductWalk(): ProductWalkState { return { products: new Map(), cursors: new Set(), cursor: '', offset: 0 }; }
 
-class ProductPageUnavailable extends Error {}
+class ProductPageUnavailable extends Error {
+  readonly statusCode?: number;
+  constructor(message: string, statusCode?: number) {
+    super(message);
+    this.statusCode = statusCode;
+  }
+}
+
+export function computeFoxreloadRetryCooldownMs(statusCode: number | undefined, consecutiveFailures: number): number {
+  if (statusCode === 403) return 15 * 60 * 1000;
+  if (statusCode === 429) return 5 * 60 * 1000;
+  const step = Math.max(1, consecutiveFailures);
+  return Math.min(10 * 60 * 1000, 2 * 60 * 1000 * 2 ** Math.min(step - 1, 2));
+}
 
 function settingsFingerprint(settings: FoxreloadSettings): string {
   return createHash('sha256').update(JSON.stringify(settings)).digest('hex');
@@ -546,11 +624,14 @@ export function clearCatalogCache() {
   esimWalk = null;
   nextEsimRefreshAt = 0;
   productsView = null;
+  foxreloadBlockedUntil = 0;
+  consecutiveWafBlocks = 0;
+  consecutiveCatalogFailures = 0;
 }
 
 // Follow the documented offset/cursor pagination; publish only complete snapshots.
 export async function readFoxreloadProductPages(
-  fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; data: any; retryAfterMs?: number }>,
+  fetchPage: (path: string, remainingMs: number) => Promise<{ ok: boolean; status?: number; data: any; retryAfterMs?: number }>,
   categoryId?: string,
   budgetMs = 22000,
   state: ProductWalkState = newProductWalk(),
@@ -565,7 +646,7 @@ export async function readFoxreloadProductPages(
     if (categoryId) query.set('categoryId', categoryId);
     if (useCursor) { query.set('includeDescendants', 'true'); if (state.cursor) query.set('cursor', state.cursor); }
     else query.set('offset', String(state.offset));
-    const response = await fetchPage(`/api/products/?${query}`, Math.min(10000, budgetMs - (Date.now() - started)));
+    const response = await fetchPage(`/api/products/?${query}`, Math.min(15000, budgetMs - (Date.now() - started)));
 
     // Respect Retry-After on rate limit — wait then retry the same page
     if (!response.ok && response.retryAfterMs) {
@@ -579,7 +660,7 @@ export async function readFoxreloadProductPages(
     }
 
     if (!response.ok || !Array.isArray(response.data?.items)) {
-      throw new ProductPageUnavailable('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published');
+      throw new ProductPageUnavailable('FoxReload product catalog is temporarily unavailable; incomplete catalog was not published', response.status);
     }
     const page = response.data;
     const previousSize = products.size;
@@ -621,11 +702,11 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
       const items = await readFoxreloadProductPages(async (path, budget) => {
         if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
         let response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, budget);
-        // On 5xx, do a single immediate retry. On 429, let readFoxreloadProductPages handle the backoff.
-        if (!response.ok && response.status >= 500 && response.status !== 429) {
+        // Only retry transient 5xx responses (never 504 timeouts, 429 rate limits, or 403 WAF blocks).
+        if (!response.ok && response.status >= 500 && response.status !== 504 && response.status !== 429) {
           const remaining = deadline - Date.now();
           if (remaining <= 0) throw new RequestDeadlineError();
-          response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
+          response = await callFoxreloadApi(path, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(12000, remaining));
         }
         return response;
       }, undefined, 15 * 60 * 1000, walk.state);
@@ -634,6 +715,7 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
       items.length = 0;
       if (resumableProductWalk === walk) resumableProductWalk = null;
       if (revision === foxCatalogRevision) {
+        consecutiveCatalogFailures = 0;
         lastProductsSnapshot = { timestamp: Date.now(), data };
         productsView = null;
         invalidateCatalogRevision();
@@ -644,7 +726,10 @@ export async function getFoxreloadAllProducts(forceRefresh = false, waitMs = 220
     const pending = work.catch(error => {
       if (revision === foxCatalogRevision) {
         if (!(error instanceof ProductPageUnavailable) && !(error instanceof RequestDeadlineError)) resumableProductWalk = null;
-        nextCatalogRefreshAt = Date.now() + 30000;
+        consecutiveCatalogFailures++;
+        const statusCode = error instanceof ProductPageUnavailable ? error.statusCode : undefined;
+        const cooldownMs = computeFoxreloadRetryCooldownMs(statusCode, consecutiveCatalogFailures);
+        nextCatalogRefreshAt = Math.max(nextCatalogRefreshAt, Date.now() + cooldownMs);
       }
       throw error;
     }).finally(() => {
@@ -685,11 +770,11 @@ export async function getFoxreloadEsimProducts(forceRefresh = false, waitMs = 22
         readFoxreloadProductPages(async (endpoint, budget) => {
           if (revision !== foxCatalogRevision) throw new Error('FoxReload catalog settings changed during refresh');
           let response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, budget);
-          // On 5xx, do a single immediate retry. On 429, let readFoxreloadProductPages handle the backoff.
-          if (!response.ok && response.status >= 500 && response.status !== 429) {
+          // Only retry transient 5xx responses (never 504 timeouts, 429 rate limits, or 403 WAF blocks).
+          if (!response.ok && response.status >= 500 && response.status !== 504 && response.status !== 429) {
             const remaining = deadline - Date.now();
             if (remaining <= 0) throw new RequestDeadlineError();
-            response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(10000, remaining));
+            response = await callFoxreloadApi(endpoint, 'GET', undefined, 'en', 'usd', settings.apiKey, Math.min(12000, remaining));
           }
           return response;
         }, 'esim', 15 * 60 * 1000, walk.state, true)
@@ -703,6 +788,7 @@ export async function getFoxreloadEsimProducts(forceRefresh = false, waitMs = 22
       const data = items.map(item => mapProductItem(item, settings, hidden, 'esim')).filter(isValidProduct);
       walk.state.products.clear(); items.length = 0;
       if (esimWalk === walk) esimWalk = null;
+      consecutiveCatalogFailures = 0;
       const catalog = { sections: { esim: { id: 'esim', nameAr: 'شرائح الإنترنت eSIM', nameEn: 'eSIM', bundles } } };
       esimSnapshot = { timestamp: Date.now(), data, catalog };
       productsView = null;
@@ -714,7 +800,10 @@ export async function getFoxreloadEsimProducts(forceRefresh = false, waitMs = 22
     const pending = work.catch(error => {
       if (revision === foxCatalogRevision) {
         if (!(error instanceof ProductPageUnavailable) && !(error instanceof RequestDeadlineError)) esimWalk = null;
-        nextEsimRefreshAt = Date.now() + 30000;
+        consecutiveCatalogFailures++;
+        const statusCode = error instanceof ProductPageUnavailable ? error.statusCode : undefined;
+        const cooldownMs = computeFoxreloadRetryCooldownMs(statusCode, consecutiveCatalogFailures);
+        nextEsimRefreshAt = Math.max(nextEsimRefreshAt, Date.now() + cooldownMs);
       }
       throw error;
     }).finally(() => { if (esimInFlight === pending) esimInFlight = null; });
@@ -782,11 +871,19 @@ export function startFoxreloadCatalogWarmup(): void {
     try {
       const isSynced = await isFoxreloadCatalogSynced();
       if (!isSynced) return;
-      getAvailableFoxreloadCatalog().catch(() => {});
+      if (Date.now() < foxreloadBlockedUntil) return;
+      await getFoxreloadFullCatalog(false).catch(() => {});
+      // Run eSIM and full-catalog walks sequentially so warmup never triggers simultaneous API bursts.
+      if (Date.now() >= nextEsimRefreshAt) {
+        await getFoxreloadEsimProducts(false, 15 * 60 * 1000).catch(() => {});
+      }
+      if (Date.now() >= nextCatalogRefreshAt && Date.now() >= foxreloadBlockedUntil) {
+        await getFoxreloadAllProducts(false, 15 * 60 * 1000).catch(() => {});
+      }
     } catch {}
   };
-  warm();
-  catalogWarmupTimer = setInterval(warm, 10 * 60 * 1000);
+  void warm();
+  catalogWarmupTimer = setInterval(() => { void warm(); }, 15 * 60 * 1000);
   catalogWarmupTimer.unref();
 }
 
@@ -809,7 +906,8 @@ async function fetchParentTree(
     undefined,
     'en',
     'usd',
-    settings.apiKey
+    settings.apiKey,
+    15000
   );
 
   const rawList = res.data?.items || (Array.isArray(res.data) ? res.data : []);

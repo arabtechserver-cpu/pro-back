@@ -7,6 +7,7 @@ import { resolveOrderServiceType } from '../utils/order-response';
 import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
 import { pagedRows } from '../utils/paged-rows';
 import { BoundedCache } from '../utils/bounded-cache';
+import { roundCurrency } from '../utils/currency';
 
 let syncRunning = false;
 const missingProviderWarnings = new BoundedCache<string, boolean>(1000, 128 * 1024, 24 * 60 * 60 * 1000);
@@ -102,10 +103,17 @@ export function initOrderSyncCron() {
 
                     if (updateRes.count === 0) return;
 
-                    await tx.user.update({
+                    const refundedUser = await tx.user.update({
                       where: { id: targetUserId },
-                      data: { balance: { increment: order.price } },
+                      data: { balance: { increment: roundCurrency(order.price) } },
                     });
+                    const roundedBalance = roundCurrency(refundedUser.balance, 4);
+                    if (roundedBalance !== refundedUser.balance) {
+                      await tx.user.update({
+                        where: { id: targetUserId },
+                        data: { balance: roundedBalance },
+                      });
+                    }
 
                     await tx.transaction.create({
                       data: {
@@ -289,10 +297,17 @@ export function initOrderSyncCron() {
                     return;
                   }
 
-                  await tx.user.update({
+                  const refundedUser = await tx.user.update({
                     where: { id: targetUserId },
-                    data: { balance: { increment: order.price } }
+                    data: { balance: { increment: roundCurrency(order.price) } }
                   });
+                  const roundedBalance = roundCurrency(refundedUser.balance, 4);
+                  if (roundedBalance !== refundedUser.balance) {
+                    await tx.user.update({
+                      where: { id: targetUserId },
+                      data: { balance: roundedBalance }
+                    });
+                  }
 
                   await tx.transaction.create({
                     data: {

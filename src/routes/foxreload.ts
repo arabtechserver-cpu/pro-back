@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from '../utils/prisma';
 import { authenticateToken, isAdmin } from '../middleware/auth';
 import { validateFoxreloadOrder } from '../utils/foxreload-contract';
+import { roundCurrency } from '../utils/currency';
 import {
   getFoxreloadSettings,
   updateFoxreloadSettings,
@@ -152,16 +153,29 @@ router.post('/order', authenticateToken, async (req: any, res) => {
 
     const normalizedTarget = targetInput ? String(targetInput).trim() : 'Digital Voucher / Code';
 
+    const cleanTotalPrice = roundCurrency(totalPrice);
     const orderResult = await prisma.$transaction(async (tx) => {
-      await tx.user.update({
-        where: { id: userId },
-        data: { balance: { decrement: totalPrice } },
+      const debited = await tx.user.updateMany({
+        where: { id: userId, balance: { gte: cleanTotalPrice } },
+        data: { balance: { decrement: cleanTotalPrice } },
       });
+
+      if (debited.count === 0) {
+        throw new Error('INSUFFICIENT_BALANCE_CONCURRENT');
+      }
+
+      const freshUser = await tx.user.findUnique({ where: { id: userId }, select: { balance: true } });
+      if (freshUser) {
+        const roundedBalance = roundCurrency(freshUser.balance, 4);
+        if (roundedBalance !== freshUser.balance) {
+          await tx.user.update({ where: { id: userId }, data: { balance: roundedBalance } });
+        }
+      }
 
       await tx.walletTransaction.create({
         data: {
           userId,
-          amount: totalPrice,
+          amount: cleanTotalPrice,
           type: 'purchase',
           status: 'completed',
         },
@@ -174,7 +188,7 @@ router.post('/order', authenticateToken, async (req: any, res) => {
           serviceId: `foxreload:${productId}`,
           targetInput: normalizedTarget,
           quantity: qty,
-          price: totalPrice,
+          price: cleanTotalPrice,
           status: 'pending',
           source: 'foxreload',
           notes: JSON.stringify({
@@ -233,6 +247,9 @@ router.post('/order', authenticateToken, async (req: any, res) => {
       message: 'تم استلام طلبك وخصم المبلغ من محفظتك بنجاح، وهو قيد المعالجة والاعتماد.',
     });
   } catch (error: any) {
+    if (error?.message === 'INSUFFICIENT_BALANCE_CONCURRENT') {
+      return res.status(400).json({ error: 'رصيد محفظتك غير كافٍ لإتمام الطلب.' });
+    }
     console.error('FoxReload order error:', error);
     return res.status(500).json({ error: error.message || 'حدث خطأ أثناء معالجة الطلب' });
   }
@@ -548,15 +565,23 @@ router.post('/admin/orders/:id/reject', async (req, res) => {
 
     await prisma.$transaction(async (tx) => {
       if (order.userId) {
-        await tx.user.update({
+        const cleanRefund = roundCurrency(order.price);
+        const refundedUser = await tx.user.update({
           where: { id: order.userId },
-          data: { balance: { increment: order.price } },
+          data: { balance: { increment: cleanRefund } },
         });
+        const roundedBalance = roundCurrency(refundedUser.balance, 4);
+        if (roundedBalance !== refundedUser.balance) {
+          await tx.user.update({
+            where: { id: order.userId },
+            data: { balance: roundedBalance },
+          });
+        }
 
         await tx.walletTransaction.create({
           data: {
             userId: order.userId,
-            amount: order.price,
+            amount: cleanRefund,
             type: 'refund',
             status: 'completed',
           },

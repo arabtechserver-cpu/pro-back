@@ -209,6 +209,7 @@ model User {
   customDiscount   Float           @default(0.0)
   googleSub        String?         @unique
   tokenVersion     Int             @default(1)
+  lastActivityAt   DateTime?
   deletedAt        DateTime?
   createdAt        DateTime        @default(now())
   updatedAt        DateTime        @default(now()) @updatedAt

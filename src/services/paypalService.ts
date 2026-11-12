@@ -43,6 +43,29 @@ export async function getPayPalAccessToken(): Promise<string> {
   }
 }
 
+function toPayPalGatewayError(error: any, fallbackMessage: string): PayPalGatewayError {
+  if (error instanceof PayPalGatewayError) return error;
+  const upstreamStatus = Number(error?.response?.status) || 0;
+  const isTimeout = error?.code === 'ECONNABORTED' || error?.code === 'ETIMEDOUT' || error?.name === 'TimeoutError' || error?.name === 'AbortError';
+  const detail = error?.response?.data?.details?.[0]?.description || error?.response?.data?.message || error?.message || '';
+  if (isTimeout) {
+    return new PayPalGatewayError('PAYPAL_TIMEOUT', 504, `${fallbackMessage}: انتهت مهلة الاتصال بخدمة PayPal`);
+  }
+  if (upstreamStatus === 401 || upstreamStatus === 403) {
+    return new PayPalGatewayError('PAYPAL_AUTH_FAILED', 503, `${fallbackMessage}: رفض PayPal بيانات الاعتماد`);
+  }
+  if (upstreamStatus === 400 || upstreamStatus === 422) {
+    return new PayPalGatewayError('PAYPAL_REJECTED', upstreamStatus, `${fallbackMessage}: ${detail || 'بيانات الطلب مرفوضة من PayPal'}`);
+  }
+  if (upstreamStatus === 404) {
+    return new PayPalGatewayError('PAYPAL_ORDER_NOT_FOUND', 404, `${fallbackMessage}: طلب الدفع غير موجود لدى PayPal`);
+  }
+  if (upstreamStatus === 429) {
+    return new PayPalGatewayError('PAYPAL_RATE_LIMITED', 503, `${fallbackMessage}: تم تجاوز حد الطلبات المؤقت لدى PayPal`);
+  }
+  return new PayPalGatewayError('PAYPAL_UNAVAILABLE', 502, `${fallbackMessage}: ${detail || 'تعذر الاتصال ببوابة PayPal حالياً'}`);
+}
+
 // 2. Create PayPal Order v2
 export async function createPayPalOrder(amountUSD: number, returnUrl: string, cancelUrl: string) {
   try {
@@ -79,7 +102,7 @@ export async function createPayPalOrder(amountUSD: number, returnUrl: string, ca
     });
 
     const orderData = response.data;
-    const approvalLink = orderData.links?.find((link: any) => link.rel === 'approve');
+    const approvalLink = orderData.links?.find((link: any) => link.rel === 'approve' || link.rel === 'payer-action');
 
     return {
       orderId: orderData.id,
@@ -89,8 +112,7 @@ export async function createPayPalOrder(amountUSD: number, returnUrl: string, ca
   } catch (error: any) {
     if (error instanceof PayPalGatewayError) throw error;
     console.error('[PayPal Create Order Error]:', error?.response?.data || error?.message);
-    const errorDetail = error?.response?.data?.details?.[0]?.description || error?.response?.data?.message || error?.message;
-    throw new Error(`فشل إنشاء طلب الدفع عبر PayPal: ${errorDetail}`);
+    throw toPayPalGatewayError(error, 'فشل إنشاء طلب الدفع عبر PayPal');
   }
 }
 
@@ -101,6 +123,7 @@ export async function getPayPalOrderDetails(orderId: string) {
     const response = await axios({
       url: `${getPayPalConfig().baseUrl}/v2/checkout/orders/${orderId}`,
       method: 'GET',
+      timeout: 10000,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`
@@ -110,7 +133,7 @@ export async function getPayPalOrderDetails(orderId: string) {
   } catch (error: any) {
     if (error instanceof PayPalGatewayError) throw error;
     console.error('[PayPal Get Order Details Error]:', error?.response?.data || error?.message);
-    throw new Error('فشل التحقق من تفاصيل الطلب من PayPal');
+    throw toPayPalGatewayError(error, 'فشل التحقق من تفاصيل الطلب من PayPal');
   }
 }
 
@@ -122,6 +145,7 @@ export async function capturePayPalOrder(orderId: string) {
     const response = await axios({
       url: `${getPayPalConfig().baseUrl}/v2/checkout/orders/${orderId}/capture`,
       method: 'POST',
+      timeout: 15000,
       headers: {
         'Content-Type': 'application/json',
         Authorization: `Bearer ${accessToken}`
@@ -134,7 +158,6 @@ export async function capturePayPalOrder(orderId: string) {
     console.error('[PayPal Capture Order Error]:', error?.response?.data || error?.message);
     const errorName = error?.response?.data?.name;
     const errorIssue = error?.response?.data?.details?.[0]?.issue;
-    const errorDesc = error?.response?.data?.details?.[0]?.description || error?.response?.data?.message || error?.message;
 
     // If order was already captured, inspect order details to see if it really completed
     if (errorIssue === 'ORDER_ALREADY_CAPTURED' || errorName === 'UNPROCESSABLE_ENTITY') {
@@ -146,7 +169,7 @@ export async function capturePayPalOrder(orderId: string) {
       } catch (_) {}
     }
 
-    throw new Error(`فشل تأكيد عملية الدفع من PayPal: ${errorDesc || 'لم يتم تأكيد الدفع من قبل العميل على موقع PayPal'}`);
+    throw toPayPalGatewayError(error, 'فشل تأكيد عملية الدفع من PayPal');
   }
 }
 

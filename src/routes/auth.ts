@@ -4,6 +4,7 @@ import crypto from 'crypto';
 import { digestOtp, matchesOtp } from '../utils/otp-security';
 import { prisma } from "../utils/prisma";
 import { generateToken, authenticateToken } from '../middleware/auth';
+import { isAdminRole, USER_IDLE_TIMEOUT_MS } from '../utils/userSessionPolicy';
 import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
 import {
   sendTelegramAlert,
@@ -41,6 +42,42 @@ const setAuthCookies = (res: any, token: string, role: string) => {
     path: '/'
   });
 };
+
+const touchUserSessionActivity = async (userId: string) => {
+  if (!userId || typeof (prisma as any)?.user?.update !== 'function') return;
+  await Promise.resolve(
+    prisma.user.update({
+      where: { id: userId },
+      data: { lastActivityAt: new Date() }
+    })
+  ).catch(() => {});
+};
+
+const heartbeatLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
+  windowMs: 15 * 60 * 1000,
+  max: 240,
+  message: { success: false, error: 'Too many activity heartbeat requests' },
+  validate: { xForwardedForHeader: false }
+});
+
+// Separate limiter so active session heartbeats never consume login/OTP rate-limit slots behind shared NAT IPs.
+router.post('/heartbeat', heartbeatLimiter, authenticateToken, async (req: any, res) => {
+  const user = req.user;
+  if (!user?.id) {
+    return res.status(401).json({ success: false, code: 'INVALID_SESSION', error: 'Authentication required' });
+  }
+  const now = Date.now();
+  if (!isAdminRole(user.role)) {
+    await touchUserSessionActivity(user.id);
+  }
+  return res.json({
+    success: true,
+    idleTimeoutMs: USER_IDLE_TIMEOUT_MS,
+    lastActivityAt: now,
+    expiresAt: now + USER_IDLE_TIMEOUT_MS
+  });
+});
 
 const authLimiter = rateLimit({
   store: new BoundedRateLimitStore(),
@@ -162,7 +199,8 @@ router.post('/register', turnstileMiddleware, validateBody(registerSchema), asyn
         country: country || 'EG',
         role: 'user',
         status: 'active',
-        balance: 0.0
+        balance: 0.0,
+        lastActivityAt: new Date()
       }
     });
 
@@ -333,7 +371,7 @@ router.post('/logout', authenticateToken, async (req: any, res) => {
     if (req.user?.id) {
       await prisma.user.update({
         where: { id: req.user.id },
-        data: { tokenVersion: { increment: 1 } }
+        data: { tokenVersion: { increment: 1 }, lastActivityAt: null }
       });
     }
     res.clearCookie('user_token', { path: '/' });
@@ -429,6 +467,8 @@ router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req
       });
     }
 
+    await touchUserSessionActivity(dbUser.id);
+
     const token = generateToken({
       id: dbUser.id,
       email: dbUser.email,
@@ -445,6 +485,7 @@ router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req
     return res.json({
       success: true,
       token,
+      idleTimeoutMs: USER_IDLE_TIMEOUT_MS,
       user: {
         id: dbUser.id,
         fullName: dbUser.fullName,
@@ -816,8 +857,10 @@ router.post('/google', async (req, res) => {
       if (!user.googleSub && googleId) {
         await prisma.user.update({
           where: { id: user.id },
-          data: { googleSub: String(googleId) }
+          data: { googleSub: String(googleId), lastActivityAt: new Date() }
         });
+      } else {
+        await touchUserSessionActivity(user.id);
       }
     } else {
       // Create new user automatically
@@ -835,7 +878,8 @@ router.post('/google', async (req, res) => {
           status: 'active',
           balance: 0.0,
           role: 'user',
-          tokenVersion: 1
+          tokenVersion: 1,
+          lastActivityAt: new Date()
         }
       });
 
@@ -852,10 +896,12 @@ router.post('/google', async (req, res) => {
       role: user.role,
       tokenVersion: user.tokenVersion ?? 1
     }, '7d');
+    setAuthCookies(res, token, user.role);
 
     return res.json({
       success: true,
       token,
+      idleTimeoutMs: USER_IDLE_TIMEOUT_MS,
       user: {
         id: user.id,
         fullName: user.fullName,

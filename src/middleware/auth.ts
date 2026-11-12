@@ -2,6 +2,10 @@ import { Request, Response, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import { prisma } from "../utils/prisma";
 import { dashboardIpGuard } from './dashboardIpGuard';
+import {
+  isUserSessionIdleExpired,
+  shouldTouchUserActivity
+} from '../utils/userSessionPolicy';
 
 export interface AuthRequest extends Request {
   user?: any;
@@ -124,9 +128,35 @@ function extractCandidateTokens(req: Request): string[] {
   return tokens;
 }
 
+function isPassiveActivityRequest(req: Request): boolean {
+  return req.headers?.['x-passive-request'] === 'true' || req.headers?.['x-passive-poll'] === 'true';
+}
+
+function scheduleUserActivityTouch(
+  user: { id?: string; role?: string; lastActivityAt?: Date | string | number | null },
+  tokenIssuedAtSec: unknown,
+  req: Request,
+  nowMs: number
+) {
+  if (!user.id || typeof (prisma as any)?.user?.update !== 'function') return;
+  if (!shouldTouchUserActivity(user.role, user.lastActivityAt, tokenIssuedAtSec, isPassiveActivityRequest(req), nowMs)) {
+    return;
+  }
+  const nextActivity = new Date(nowMs);
+  user.lastActivityAt = nextActivity;
+  void Promise.resolve(
+    prisma.user.update({
+      where: { id: user.id },
+      data: { lastActivityAt: nextActivity }
+    })
+  ).catch(() => {});
+}
+
 export const authenticateToken = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const candidateTokens = extractCandidateTokens(req);
   const requireAdminRole = isStrictAdminOnlyContext(req);
+  const nowMs = Date.now();
+  let idleExpired = false;
 
   for (const token of candidateTokens) {
     try {
@@ -156,6 +186,11 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
           if (requireAdminRole && !['admin', 'super_admin'].includes(user.role)) {
             continue;
           }
+          if (isUserSessionIdleExpired(user.role, user.lastActivityAt, decoded.iat, nowMs)) {
+            idleExpired = true;
+            continue;
+          }
+          scheduleUserActivityTouch(user, decoded.iat, req, nowMs);
           req.user = user;
           res.setHeader?.('Cache-Control', 'private, no-store');
           return next();
@@ -166,11 +201,20 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
     }
   }
 
+  if (idleExpired) {
+    res.clearCookie?.('user_token', { path: '/' });
+    return res.status(401).json({
+      error: 'انتهت جلسة الدخول تلقائياً لعدم النشاط لمدة 30 دقيقة. يرجى تسجيل الدخول مجدداً.',
+      code: 'SESSION_IDLE_EXPIRED'
+    });
+  }
+
   return res.status(401).json({ error: 'Access denied: Authentication token required or session expired', code: 'INVALID_SESSION' });
 };
 
 export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFunction) => {
   const candidateTokens = extractCandidateTokens(req);
+  const nowMs = Date.now();
 
   for (const token of candidateTokens) {
     try {
@@ -191,6 +235,11 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
           if (!Number.isInteger(decoded.tokenVersion) || decoded.tokenVersion !== expectedVersion) {
             continue;
           }
+          if (isUserSessionIdleExpired(user.role, user.lastActivityAt, decoded.iat, nowMs)) {
+            res.clearCookie?.('user_token', { path: '/' });
+            continue;
+          }
+          scheduleUserActivityTouch(user, decoded.iat, req, nowMs);
           req.user = user;
           res.setHeader?.('Cache-Control', 'private, no-store');
           return next();

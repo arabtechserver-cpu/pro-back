@@ -208,6 +208,8 @@ router.post("/update-credentials", authenticateToken, validateBody(updateCredent
       return res.json({ success: true, message: "لم يتم إجراء أي تعديلات" });
     }
 
+    updateData.lastActivityAt = new Date();
+
     const updatedUser = await prisma.user.update({
       where: { id: userId },
       data: updateData,

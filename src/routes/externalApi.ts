@@ -23,6 +23,7 @@ import {
 } from '../services/foxreloadService';
 
 import { tryAutoDispatchOrder } from '../services/orderDispatchService';
+import { roundCurrency } from '../utils/currency';
 
 const router = Router();
 
@@ -482,13 +483,22 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
     let createdOrder: any = null;
     try {
       createdOrder = await prisma.$transaction(async (tx) => {
+        const cleanTotal = roundCurrency(finalTotalPrice);
         const updated = await tx.user.updateMany({
-          where: { id: user.id, balance: { gte: finalTotalPrice } },
-          data: { balance: { decrement: finalTotalPrice } }
+          where: { id: user.id, balance: { gte: cleanTotal } },
+          data: { balance: { decrement: cleanTotal } }
         });
 
         if (updated.count === 0) {
           throw new Error('INSUFFICIENT_BALANCE_RACE');
+        }
+
+        const freshUser = await tx.user.findUnique({ where: { id: user.id }, select: { balance: true } });
+        if (freshUser) {
+          const rounded = roundCurrency(freshUser.balance, 4);
+          if (rounded !== freshUser.balance) {
+            await tx.user.update({ where: { id: user.id }, data: { balance: rounded } });
+          }
         }
 
         await tx.transaction.create({
@@ -534,10 +544,14 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
     if (!dispatchRes.success) {
       // Revert transaction and refund client
       await prisma.$transaction(async (tx) => {
-        await tx.user.update({
+        const refundedUser = await tx.user.update({
           where: { id: user.id },
-          data: { balance: { increment: finalTotalPrice } }
+          data: { balance: { increment: roundCurrency(finalTotalPrice) } }
         });
+        const rounded = roundCurrency(refundedUser.balance, 4);
+        if (rounded !== refundedUser.balance) {
+          await tx.user.update({ where: { id: user.id }, data: { balance: rounded } });
+        }
         await tx.order.update({
           where: { id: createdOrder.id },
           data: {
@@ -620,13 +634,22 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
   let order: any;
   try {
     order = await prisma.$transaction(async (tx) => {
+      const cleanTotal = roundCurrency(finalTotalPrice);
       const updatedUser = await tx.user.updateMany({
-        where: { id: user.id, balance: { gte: finalTotalPrice } },
-        data: { balance: { decrement: finalTotalPrice } }
+        where: { id: user.id, balance: { gte: cleanTotal } },
+        data: { balance: { decrement: cleanTotal } }
       });
 
       if (updatedUser.count === 0) {
         throw new Error('INSUFFICIENT_BALANCE_RACE');
+      }
+
+      const freshUser = await tx.user.findUnique({ where: { id: user.id }, select: { balance: true } });
+      if (freshUser) {
+        const rounded = roundCurrency(freshUser.balance, 4);
+        if (rounded !== freshUser.balance) {
+          await tx.user.update({ where: { id: user.id }, data: { balance: rounded } });
+        }
       }
 
       await tx.transaction.create({

@@ -11,6 +11,8 @@ import {
   sendTelegramMessage,
   escapeHtml
 } from '../utils/telegramService';
+import { resolvePrimaryFrontendUrl, isValidTelegramButtonUrl } from '../utils/telegram-config';
+import { roundCurrency } from '../utils/currency';
 import { isAdmin, authenticateToken, optionalAuth } from '../middleware/auth';
 import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
@@ -411,9 +413,13 @@ router.post('/', depositLimiter, authenticateToken, validateBody(createDepositTr
     const safeMethod = escapeHtml(method);
     const safeRefNo = escapeHtml(refNo);
 
-    const receiptLink = savedReceiptPath
-      ? `\nصورة الإيصال: <a href="${process.env.FRONTEND_URL || ''}${savedReceiptPath}">عرض الصورة كاملة</a>`
-      : '';
+    const frontendBaseUrl = resolvePrimaryFrontendUrl();
+    const fullReceiptUrl = savedReceiptPath && frontendBaseUrl ? `${frontendBaseUrl}${savedReceiptPath}` : '';
+    const receiptLink = fullReceiptUrl
+      ? `\nصورة الإيصال: <a href="${fullReceiptUrl}">عرض الصورة كاملة</a>`
+      : savedReceiptPath
+        ? `\nصورة الإيصال: مرفقة بالنظام`
+        : '';
 
     const caption = `
 <b>إيداع جديد قيد المراجعة (New Deposit Pending)</b>
@@ -430,9 +436,9 @@ ${receiptLink}
     `.trim();
 
     const inlineKeyboard: any[][] = [];
-    if (savedReceiptPath) {
+    if (fullReceiptUrl && isValidTelegramButtonUrl(fullReceiptUrl)) {
       inlineKeyboard.push([
-        { text: "فتح الإيصال بالدقة الكاملة", url: `${process.env.FRONTEND_URL || ''}${savedReceiptPath}` }
+        { text: "فتح الإيصال بالدقة الكاملة", url: fullReceiptUrl }
       ]);
     }
     inlineKeyboard.push([
@@ -499,10 +505,14 @@ router.post('/approve', isAdmin, validateBody(approveTransactionSchema), async (
           throw new Error('ALREADY_PROCESSED');
         }
 
-        const userResult = await t.user.update({
+        const incrementedUser = await t.user.update({
           where: { id: tx.userId },
-          data: { balance: { increment: tx.amount } }
+          data: { balance: { increment: roundCurrency(tx.amount) } }
         });
+        const roundedBalance = roundCurrency(incrementedUser.balance, 4);
+        const userResult = roundedBalance !== incrementedUser.balance
+          ? await t.user.update({ where: { id: tx.userId }, data: { balance: roundedBalance } })
+          : incrementedUser;
 
         const txObj = await t.transaction.findUnique({ where: { id: transactionId } });
         

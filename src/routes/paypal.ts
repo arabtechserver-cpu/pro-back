@@ -7,6 +7,8 @@ import { authenticateToken } from '../middleware/auth';
 import { applyPayPalRefund, PayPalRefundError } from '../services/paypalRefunds';
 import { getPublicPayPalConfig } from '../utils/paypalConfig';
 import { PayPalGatewayError } from '../utils/paypalError';
+import { resolvePrimaryFrontendUrl } from '../utils/telegram-config';
+import { roundCurrency } from '../utils/currency';
 
 const router = Router();
 
@@ -37,14 +39,16 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
       return res.status(400).json({ error: 'الحد الأدنى لمبلغ الإيداع عبر PayPal هو $1.00 USD' });
     }
 
-    const originHost = req.headers.origin || 'https://arabtechproserver.tech';
+    const rawOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : null;
+    const originHost = resolvePrimaryFrontendUrl(rawOrigin) || 'https://arabtechproserver.tech';
     const returnUrl = `${originHost}/ar/wallet?paypal=success`;
     const cancelUrl = `${originHost}/ar/wallet?paypal=cancel`;
 
-    const paypalOrder = await createPayPalOrder(numAmount, returnUrl, cancelUrl);
+    const cleanAmount = roundCurrency(numAmount);
+    const paypalOrder = await createPayPalOrder(cleanAmount, returnUrl, cancelUrl);
 
-    if (!paypalOrder.approvalUrl || !paypalOrder.orderId) {
-      return res.status(500).json({ error: 'لم يتم العثور على رابط تأكيد الدفع من PayPal' });
+    if (!paypalOrder.orderId) {
+      return res.status(502).json({ error: 'لم يتم استلام معرف طلب الدفع من PayPal' });
     }
 
     // Persist PaymentIntent linked to the authenticated user
@@ -53,7 +57,7 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
         userId,
         provider: 'paypal',
         orderId: paypalOrder.orderId,
-        amount: numAmount,
+        amount: cleanAmount,
         currency: 'USD',
         status: 'created'
       }
@@ -62,8 +66,8 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
     return res.json({
       success: true,
       orderId: paypalOrder.orderId,
-      approvalUrl: paypalOrder.approvalUrl,
-      amount: numAmount
+      approvalUrl: paypalOrder.approvalUrl || returnUrl,
+      amount: cleanAmount
     });
   } catch (error: any) {
     if (error instanceof PayPalGatewayError) {
@@ -196,10 +200,14 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
           }
         });
 
-        const updatedUser = await tx.user.update({
+        const incrementedUser = await tx.user.update({
           where: { id: userId },
-          data: { balance: { increment: capturedAmount } }
+          data: { balance: { increment: roundCurrency(capturedAmount) } }
         });
+        const roundedBalance = roundCurrency(incrementedUser.balance, 4);
+        const updatedUser = roundedBalance !== incrementedUser.balance
+          ? await tx.user.update({ where: { id: userId }, data: { balance: roundedBalance } })
+          : incrementedUser;
 
         return {
           alreadyCaptured: false,
@@ -342,10 +350,17 @@ router.post('/webhook', async (req, res) => {
           }
         });
 
-        await tx.user.update({
+        const incrementedUser = await tx.user.update({
           where: { id: intent.userId },
-          data: { balance: { increment: capturedAmount } }
+          data: { balance: { increment: roundCurrency(capturedAmount) } }
         });
+        const roundedBalance = roundCurrency(incrementedUser.balance, 4);
+        if (roundedBalance !== incrementedUser.balance) {
+          await tx.user.update({
+            where: { id: intent.userId },
+            data: { balance: roundedBalance }
+          });
+        }
       });
 
       console.log(`[PayPal Webhook] Successfully completed capture ${captureId} for user ${intent.userId}`);

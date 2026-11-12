@@ -171,12 +171,13 @@ async function executeToolCall(toolCall: any, userId?: string, guestInfo: any = 
         `━━━━━━━━━━━━━━━━━━━━━━\n` +
         `<i>تم الاستلام والإرسال فورياً عبر المساعد الذكي AI</i>`;
 
-      const replyMarkup = {
-        inline_keyboard: [
-          customerPhone ? [{ text: "فتح محادثة واتساب مع العميل", url: `https://wa.me/${customerPhone.replace(/[^0-9]/g, '')}` }] : [],
-          customerEmail ? [{ text: "إرسال إيميل للعميل", url: `mailto:${customerEmail}` }] : []
-        ].filter(r => r.length > 0)
-      };
+      const waDigits = customerPhone ? customerPhone.replace(/[^0-9]/g, '') : '';
+      const keyboardRows: Array<Array<{ text: string; url: string }>> = [];
+      if (waDigits.length >= 7) {
+        keyboardRows.push([{ text: "فتح محادثة واتساب مع العميل", url: `https://wa.me/${waDigits}` }]);
+      }
+      // Telegram inline keyboard URL buttons reject mailto: links, so email stays in message text only.
+      const replyMarkup = keyboardRows.length > 0 ? { inline_keyboard: keyboardRows } : undefined;
 
       console.log(`[AI Complaint] Dispatching Ticket #${ticketId} to Telegram admins...`);
       await sendTelegramPhotoNotification({ caption: tgMsg, replyMarkup }).catch(err => {

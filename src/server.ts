@@ -6,7 +6,7 @@ import { prisma } from './utils/prisma';
 import { browserWriteGuard, getAllowedOrigins } from './middleware/browserWriteGuard';
 import { publicFileGuard, publicImageGuard } from './middleware/publicFileGuard';
 import { getTrustedProxies } from './utils/trustedProxy';
-import { startTelegramBotPolling } from './utils/telegramService';
+import { startTelegramBotPolling, stopTelegramBotPolling } from './utils/telegramService';
 import { createResourceGuard } from './middleware/resourceGuard';
 import { EventEmitter } from 'events';
 import rateLimit from 'express-rate-limit';
@@ -251,7 +251,7 @@ async function runStartupTasks() {
 
 async function startServer() {
   try {
-    app.listen(PORT, '0.0.0.0', () => {
+    const server = app.listen(PORT, '0.0.0.0', () => {
       console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
       if (process.env.STARTUP_MAINTENANCE !== 'false' || process.env.BACKGROUND_JOBS_ENABLED !== 'false') {
         setImmediate(() => {
@@ -259,6 +259,18 @@ async function startServer() {
         });
       }
     });
+
+    const shutdown = (signal: string) => {
+      console.log(`[Server] Received ${signal}, shutting down cleanly...`);
+      stopTelegramBotPolling();
+      server.close(() => {
+        prisma.$disconnect().catch(() => {}).finally(() => process.exit(0));
+      });
+      setTimeout(() => process.exit(0), 5000).unref();
+    };
+
+    process.once('SIGTERM', () => shutdown('SIGTERM'));
+    process.once('SIGINT', () => shutdown('SIGINT'));
   } catch (error) {
     console.error('Failed to initialize and start server:', error);
     process.exit(1);

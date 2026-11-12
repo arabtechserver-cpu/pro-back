@@ -15,6 +15,7 @@ import { createOrderSchema } from '../schemas/order.schema';
 import { dispatchOrderToProvider, tryAutoDispatchOrder } from '../services/orderDispatchService';
 import rateLimit from 'express-rate-limit';
 import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
+import { roundCurrency } from '../utils/currency';
 
 const dispatchProviderLimiter = rateLimit({
   store: new BoundedRateLimitStore(2000),
@@ -413,9 +414,10 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
         });
 
         // A. Deduct Balance Atomically
+        const cleanDebit = roundCurrency(finalTotalPrice);
         const updatedUserResult = await tx.user.updateMany({
-          where: { id: targetUserId, balance: { gte: finalTotalPrice } },
-          data: { balance: { decrement: finalTotalPrice } }
+          where: { id: targetUserId, balance: { gte: cleanDebit } },
+          data: { balance: { decrement: cleanDebit } }
         });
 
         if (updatedUserResult.count === 0) {
@@ -424,6 +426,14 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
 
         const uUser = await tx.user.findUnique({ where: { id: targetUserId } });
         if (!uUser) throw new Error('User not found after deduction');
+        const roundedBalance = roundCurrency(uUser.balance, 4);
+        if (roundedBalance !== uUser.balance) {
+          await tx.user.update({
+            where: { id: targetUserId },
+            data: { balance: roundedBalance }
+          });
+          uUser.balance = roundedBalance;
+        }
 
         // B. Create Order in DB with status: 'pending'
         const createdOrder = await tx.order.create({
@@ -508,7 +518,7 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
       throw txError; // re-throw to outer catch block
     }
 
-    console.log(`[Order Created] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${newOrder.price} - Remaining Balance: $${updatedUser.balance}`);
+    console.log(`[Order Created] Order #${newOrder.id.slice(-6)} for User ${updatedUser.username} - Total: $${Number(newOrder.price).toFixed(2)} - Remaining Balance: $${Number(updatedUser.balance).toFixed(2)}`);
 
     // 4. Attempt Auto-Dispatch to Provider if enabled and within Sudan operating window
     let autoDispatched = false;
@@ -778,16 +788,24 @@ router.post('/refund', isAdmin, async (req, res) => {
         const uOrder = await tx.order.findUnique({ where: { id: orderId } });
 
         if (order.userId && refundAmount > 0) {
-          await tx.user.update({
+          const cleanRefund = roundCurrency(refundAmount);
+          const refundedUser = await tx.user.update({
             where: { id: order.userId },
-            data: { balance: { increment: refundAmount } }
+            data: { balance: { increment: cleanRefund } }
           });
+          const roundedBalance = roundCurrency(refundedUser.balance, 4);
+          if (roundedBalance !== refundedUser.balance) {
+            await tx.user.update({
+              where: { id: order.userId },
+              data: { balance: roundedBalance }
+            });
+          }
 
           await tx.transaction.create({
             data: {
               userId: order.userId,
               type: `استرجاع رصيد لطلب (#${order.id.slice(-6)})`,
-              amount: refundAmount,
+              amount: cleanRefund,
               method: 'استرجاع يدوي للمحفظة',
               refNo: refundRef,
               status: 'completed'
@@ -879,16 +897,24 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
         const uOrder = await tx.order.findUnique({ where: { id: orderId } });
 
         if (order.userId && refundAmount > 0) {
-          await tx.user.update({
+          const cleanRefund = roundCurrency(refundAmount);
+          const refundedUser = await tx.user.update({
             where: { id: order.userId },
-            data: { balance: { increment: refundAmount } }
+            data: { balance: { increment: cleanRefund } }
           });
+          const roundedBalance = roundCurrency(refundedUser.balance, 4);
+          if (roundedBalance !== refundedUser.balance) {
+            await tx.user.update({
+              where: { id: order.userId },
+              data: { balance: roundedBalance }
+            });
+          }
 
           await tx.transaction.create({
             data: {
               userId: order.userId,
               type: `استرجاع رصيد (إلغاء من المزود #${order.id.slice(-6)})`,
-              amount: refundAmount,
+              amount: cleanRefund,
               method: 'استرجاع للمحفظة',
               refNo: `REF-PROV-#${order.id.slice(-6)}`,
               status: 'completed'
@@ -1072,16 +1098,24 @@ router.post('/check-status', isAdmin, async (req, res) => {
             return await tx.order.findUnique({ where: { id: orderId } });
           }
 
-          await tx.user.update({
+          const cleanRefund = roundCurrency(order.price);
+          const refundedUser = await tx.user.update({
             where: { id: targetUserId },
-            data: { balance: { increment: order.price } }
+            data: { balance: { increment: cleanRefund } }
           });
+          const roundedBalance = roundCurrency(refundedUser.balance, 4);
+          if (roundedBalance !== refundedUser.balance) {
+            await tx.user.update({
+              where: { id: targetUserId },
+              data: { balance: roundedBalance }
+            });
+          }
 
           await tx.transaction.create({
             data: {
               userId: targetUserId,
               type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
-              amount: order.price,
+              amount: cleanRefund,
               method: 'استرجاع تلقائي',
               refNo: refundRef,
               status: 'completed'

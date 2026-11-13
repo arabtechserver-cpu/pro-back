@@ -2,6 +2,9 @@ import { prisma } from '../utils/prisma';
 import {
   placeImeiOrder,
   placeServerOrder,
+  getAccountInfo,
+  parseDhruAccountInfo,
+  extractProviderHost,
   normalizeProviderCustomFields,
   cleanDhruErrorMessage,
   isActionUnsupported,
@@ -18,11 +21,76 @@ export interface DhruDispatchErrorClassification {
   userFacingMsg: string;
 }
 
+export interface DhruCreditDiagnostic {
+  providerName?: string;
+  providerHost?: string;
+  usingEnvFallback?: boolean;
+  recordedOrderCost?: number | null;
+  liveBalance?: number | null;
+  liveCurrency?: string | null;
+}
+
+function formatCreditErrorClassification(
+  creditDiag?: DhruCreditDiagnostic
+): DhruDispatchErrorClassification {
+  if (!creditDiag) {
+    return {
+      category: 'credit',
+      isCreditError: true,
+      title: 'فشل الإرسال: رصيد المزود غير كاف',
+      userFacingMsg:
+        'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
+    };
+  }
+
+  const effectiveProviderName = String(creditDiag.providerName || 'المزود').trim() || 'المزود';
+  const hostSuffix = creditDiag.providerHost ? ` (${creditDiag.providerHost})` : '';
+  const sourceLabel = creditDiag.usingEnvFallback
+    ? `${effectiveProviderName}${hostSuffix} [إعدادات .env الافتراضية]`
+    : `${effectiveProviderName}${hostSuffix}`;
+  const liveBalance =
+    typeof creditDiag.liveBalance === 'number' && Number.isFinite(creditDiag.liveBalance)
+      ? creditDiag.liveBalance
+      : null;
+  const recordedCost =
+    typeof creditDiag.recordedOrderCost === 'number' && Number.isFinite(creditDiag.recordedOrderCost)
+      ? creditDiag.recordedOrderCost
+      : null;
+  const currency = creditDiag.liveCurrency || 'USD';
+
+  if (liveBalance !== null && recordedCost !== null && liveBalance >= recordedCost) {
+    return {
+      category: 'credit',
+      isCreditError: true,
+      title: 'فشل الإرسال: المزود يرفض الطلب برصيد غير كافٍ رغم وجود رصيد',
+      userFacingMsg: `رفض المزود ${sourceLabel} الطلب برسالة (You have not enough credit) رغم أن رصيد حسابك المباشر لديه الآن (${liveBalance} ${currency}) يغطي التكلفة المسجلة (${recordedCost} ${currency}). السبب غالباً نفاد رصيد الموزع الأعلى لدى المزود (Upstream Supplier) أو ارتفاع سعر الخدمة الفعلي لديه أو اختلاف عملة الحساب.`
+    };
+  }
+
+  if (liveBalance !== null) {
+    const costPart = recordedCost !== null ? ` مقابل تكلفة مسجلة (${recordedCost} ${currency})` : '';
+    return {
+      category: 'credit',
+      isCreditError: true,
+      title: 'فشل الإرسال: رصيد المزود غير كاف',
+      userFacingMsg: `رصيد حسابك لدى المزود ${sourceLabel} هو (${liveBalance} ${currency})${costPart}، وهو غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.`
+    };
+  }
+
+  return {
+    category: 'credit',
+    isCreditError: true,
+    title: 'فشل الإرسال: رصيد المزود غير كاف',
+    userFacingMsg: `رفض المزود ${sourceLabel} الطلب بسبب عدم كفاية الرصيد (You have not enough credit)، وتعذر التحقق من الرصيد الحي للحساب الآن. يُرجى مراجعة رصيد حسابك ومزوده الفرعي لدى ${sourceLabel} ثم إعادة الإرسال.`
+  };
+}
+
 export function classifyDhruDispatchError(
   dhruResponse: any,
   rawTarget: string,
   providerName: string,
-  dhruId: string
+  dhruId: string,
+  creditDiag?: DhruCreditDiagnostic
 ): DhruDispatchErrorClassification {
   const rawErrMsg = cleanDhruErrorMessage(
     dhruResponse?.Error ||
@@ -42,12 +110,7 @@ export function classifyDhruDispatchError(
     responseStr.includes('low credit');
 
   if (isCreditError) {
-    return {
-      category: 'credit',
-      isCreditError: true,
-      title: 'فشل الإرسال: رصيد المزود غير كاف',
-      userFacingMsg: 'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
-    };
+    return formatCreditErrorClassification(creditDiag);
   }
 
   // Provider operational errors often arrive wrapped as "ValidationError123 Out of Stock ...";
@@ -362,13 +425,18 @@ export async function dispatchOrderToProvider(
     };
   }
 
-  // Look up DhruService & Provider
-  const dhruService = await prisma.dhruService.findFirst({
-    where: {
-      OR: [{ id: String(order.serviceId) }, { dhruId: String(order.serviceId) }]
-    },
+  // Prefer exact database UUID lookup before falling back to provider service code
+  const serviceLookupKey = String(order.serviceId);
+  let dhruService = await prisma.dhruService.findUnique({
+    where: { id: serviceLookupKey },
     include: { dhruCategory: true, apiProvider: true }
   });
+  if (!dhruService) {
+    dhruService = await prisma.dhruService.findFirst({
+      where: { dhruId: serviceLookupKey },
+      include: { dhruCategory: true, apiProvider: true }
+    });
+  }
 
   if (!dhruService || !dhruService.dhruId) {
     await prisma.order.update({
@@ -389,6 +457,16 @@ export async function dispatchOrderToProvider(
       apiKey: dhruService.apiProvider.apiKey
     }
     : undefined;
+
+  const usingEnvFallback = !dhruService.apiProvider;
+  const providerName = dhruService.apiProvider?.name || 'إعدادات المزود الافتراضية (.env)';
+  const providerHost = extractProviderHost(dhruService.apiProvider?.apiUrl) || 'غير محدد';
+  const remoteServiceId = getProviderRemoteServiceId(dhruService.dhruId);
+  const dispatchQuantity = Math.max(1, Number(order.quantity) || 1);
+  const unitCost = Number(dhruService.credit);
+  const recordedOrderCost = Number.isFinite(unitCost)
+    ? Number((unitCost * dispatchQuantity).toFixed(4))
+    : null;
 
   let customFields: Record<string, string> = {};
   let rawImei = '';
@@ -471,13 +549,65 @@ export async function dispatchOrderToProvider(
   }
 
   if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
-    console.error('[Dispatch Provider Error]:', dhruResponse);
-    const { isCreditError, title: classifiedTitle, userFacingMsg } = classifyDhruDispatchError(
+    const initialClass = classifyDhruDispatchError(
       dhruResponse,
       rawTarget,
-      dhruService.apiProvider?.name || 'المزود',
+      providerName,
       dhruService.dhruId
     );
+
+    const creditDiag: DhruCreditDiagnostic = {
+      providerName,
+      providerHost,
+      usingEnvFallback,
+      recordedOrderCost,
+      liveBalance: null,
+      liveCurrency: dhruService.apiProvider?.currency || 'USD'
+    };
+
+    let liveAccountCheckError: string | undefined;
+    if (initialClass.isCreditError) {
+      try {
+        const acctRes = await getAccountInfo(providerConfig);
+        const parsedAcct = parseDhruAccountInfo(acctRes);
+        if (parsedAcct) {
+          creditDiag.liveBalance = parsedAcct.balance;
+          creditDiag.liveCurrency = parsedAcct.currency;
+          if (dhruService.apiProvider?.id) {
+            await prisma.apiProvider.update({
+              where: { id: dhruService.apiProvider.id },
+              data: {
+                balance: parsedAcct.balance,
+                currency: parsedAcct.currency
+              }
+            }).catch(() => {});
+          }
+        } else if (acctRes?.error || acctRes?.ERROR || acctRes?.Error) {
+          liveAccountCheckError =
+            cleanDhruErrorMessage(acctRes?.ERROR?.[0]?.MESSAGE || acctRes?.Error || acctRes?.error) || undefined;
+        }
+      } catch (acctErr: any) {
+        liveAccountCheckError = acctErr?.message || 'accountinfo check failed';
+      }
+    }
+
+    console.error('[Dispatch Provider Error]:', {
+      orderId,
+      providerName,
+      providerHost,
+      usingEnvFallback,
+      remoteServiceId,
+      quantity: dispatchQuantity,
+      recordedOrderCost,
+      liveBalance: creditDiag.liveBalance,
+      liveCurrency: creditDiag.liveCurrency,
+      ...(liveAccountCheckError ? { liveAccountCheckError } : {}),
+      dhruResponse
+    });
+
+    const { isCreditError, title: classifiedTitle, userFacingMsg } = initialClass.isCreditError
+      ? classifyDhruDispatchError(dhruResponse, rawTarget, providerName, dhruService.dhruId, creditDiag)
+      : initialClass;
 
     const now = new Date();
     const events = Array.isArray(parsedNotes.events) ? parsedNotes.events : [];
@@ -499,17 +629,37 @@ export async function dispatchOrderToProvider(
 
     // Alert admin on Telegram if credit error or if auto-dispatch failed
     try {
-      const providerName = dhruService.apiProvider?.name || 'سيرفر المزود';
+      const liveBalance =
+        typeof creditDiag.liveBalance === 'number' && Number.isFinite(creditDiag.liveBalance)
+          ? creditDiag.liveBalance
+          : null;
+      const hasSufficientLiveBalance =
+        liveBalance !== null &&
+        recordedOrderCost !== null &&
+        liveBalance >= recordedOrderCost;
+
       const alertTitle = isCreditError
-        ? 'تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي'
+        ? hasSufficientLiveBalance
+          ? 'تنبيه الإدارة: المزود يرفض الطلب بالرصيد رغم وجود رصيد ظاهر'
+          : 'تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي'
         : (isAuto ? 'تنبيه الإدارة: تعذر الإرسال التلقائي للطلب للمزود' : 'تنبيه الإدارة: فشل إرسال الطلب للمزود');
+
+      const hostBadge = usingEnvFallback ? `${providerHost} [.env]` : providerHost;
+      const balanceLine = isCreditError
+        ? `- <b>الرصيد الحي لدى المزود:</b> ${
+            liveBalance !== null
+              ? `${liveBalance} ${creditDiag.liveCurrency || 'USD'}`
+              : 'تعذر التحقق'
+          } (التكلفة المسجلة: ${recordedOrderCost ?? 'غير محددة'})\n`
+        : '';
 
       void sendTelegramPhotoNotification({
         caption:
           `<b>${alertTitle}</b>\n\n` +
           `- <b>رقم الطلب:</b> #${order.id.slice(-6)}\n` +
           `- <b>اسم الخدمة:</b> ${dhruService.name}\n` +
-          `- <b>المزود المربوط:</b> ${providerName}\n` +
+          `- <b>المزود المربوط:</b> ${providerName} (${hostBadge})\n` +
+          balanceLine +
           `- <b>سبب الرفض:</b> <code>${userFacingMsg}</code>\n\n` +
           `<b>الإجراء:</b> الطلب تم تركه في حالة (قيد الانتظار) للمراجعة اليدوية.`
       });

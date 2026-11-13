@@ -86,6 +86,77 @@ export function formatProviderConnectionError(error: { code?: string; message: s
   return error.message;
 }
 
+export interface DhruAccountInfo {
+  balance: number;
+  currency: string;
+}
+
+function parseProviderNumber(value: unknown): number | null {
+  if (value === undefined || value === null || value === "") return null;
+  const parsed = parseFloat(String(value).replace(/[^\d.-]/g, ""));
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+/**
+ * Safely extract a provider's hostname for logs and alerts without exposing credentials or query tokens.
+ */
+export function extractProviderHost(rawUrl?: string | null): string {
+  const candidate = String(rawUrl !== undefined && rawUrl !== null ? rawUrl : DHRU_API_URL).trim();
+  if (!candidate) return "";
+  try {
+    const normalized = /^https?:\/\//i.test(candidate) ? candidate : `https://${candidate}`;
+    return new URL(normalized).hostname || "";
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Parse balance and currency across DHRU `accountinfo` variations, including the panel's common `AccoutInfo` typo.
+ */
+export function parseDhruAccountInfo(payload: any): DhruAccountInfo | null {
+  if (!payload || typeof payload !== "object") return null;
+
+  const roots: any[] = [payload];
+  if (Array.isArray(payload.SUCCESS)) roots.push(...payload.SUCCESS);
+  else if (payload.SUCCESS && typeof payload.SUCCESS === "object") roots.push(payload.SUCCESS);
+
+  if (Array.isArray(payload.RESULT)) roots.push(...payload.RESULT);
+  else if (payload.RESULT && typeof payload.RESULT === "object") roots.push(payload.RESULT);
+
+  const candidates = roots.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") return [];
+    return [
+      entry,
+      entry.AccoutInfo,
+      entry.accoutinfo,
+      entry.AccountInfo,
+      entry.accountinfo,
+      entry.accountInfo
+    ].filter(Boolean);
+  });
+
+  for (const candidate of candidates) {
+    const balance =
+      parseProviderNumber(candidate?.creditraw) ??
+      parseProviderNumber(candidate?.credit) ??
+      parseProviderNumber(candidate?.Credit) ??
+      parseProviderNumber(candidate?.balance) ??
+      parseProviderNumber(candidate?.Balance) ??
+      parseProviderNumber(candidate?.credits) ??
+      parseProviderNumber(candidate?.amount);
+
+    if (balance === null) continue;
+
+    const currency =
+      String(candidate?.currency || candidate?.Currency || payload?.currency || payload?.Currency || "USD").trim() ||
+      "USD";
+    return { balance, currency };
+  }
+
+  return null;
+}
+
 export function cleanDhruErrorMessage(raw: unknown): string {
   if (!raw) return "";
   let text = String(raw).trim();
@@ -197,9 +268,14 @@ export function dhruApiRequest(
   provider?: ProviderConfig
 ): Promise<any> {
   return new Promise(async (resolve) => {
+    const scopedProvider = provider ?? null;
+    if (scopedProvider && !String(scopedProvider.apiUrl || "").trim()) {
+      return resolve({ error: "Missing or unconfigured provider API URL", SUCCESS: false });
+    }
+
     let targetUrl: string;
     try {
-      targetUrl = normalizeTargetApiUrl(provider?.apiUrl);
+      targetUrl = normalizeTargetApiUrl(scopedProvider ? scopedProvider.apiUrl : undefined);
     } catch (err: any) {
       return resolve({ error: err.message, SUCCESS: false });
     }
@@ -208,8 +284,12 @@ export function dhruApiRequest(
       return resolve({ error: "Missing or unconfigured provider API URL", SUCCESS: false });
     }
 
-    const username = (provider?.username !== undefined ? provider.username : DHRU_USERNAME) || "";
-    const apiKey = (provider?.apiKey || DHRU_API_KEY || "").trim();
+    const username = scopedProvider ? String(scopedProvider.username || "").trim() : String(DHRU_USERNAME || "").trim();
+    const apiKey = scopedProvider ? String(scopedProvider.apiKey || "").trim() : String(DHRU_API_KEY || "").trim();
+
+    if (scopedProvider && !apiKey) {
+      return resolve({ error: "Missing provider API key", SUCCESS: false });
+    }
 
     // Separate bracket-style keys (e.g. customfield[FIELD_NAME]) from plain keys.
     // URLSearchParams percent-encodes '[' and ']' in key names, which breaks PHP

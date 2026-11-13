@@ -17,7 +17,12 @@ import {
   enrichCustomFieldsWithQuantity
 } from "../utils/provider-quantity";
 import { invalidateDhruServicesCache } from "./dhru";
-import { isPrivateIP, isPrivateHostname, formatProviderConnectionError } from "../utils/dhru-api";
+import {
+  isPrivateIP,
+  isPrivateHostname,
+  formatProviderConnectionError,
+  parseDhruAccountInfo
+} from "../utils/dhru-api";
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -77,46 +82,8 @@ export function normalizeApiUrl(rawUrl: string): string {
   return urlObj.toString();
 }
 
-function collectAccountInfoCandidates(payload: any): any[] {
-  if (!payload || typeof payload !== "object") return [];
-
-  const candidates: any[] = [payload];
-
-  if (Array.isArray(payload.SUCCESS)) candidates.push(...payload.SUCCESS);
-  else if (payload.SUCCESS && typeof payload.SUCCESS === "object") candidates.push(payload.SUCCESS);
-
-  if (Array.isArray(payload.RESULT)) candidates.push(...payload.RESULT);
-  else if (payload.RESULT && typeof payload.RESULT === "object") candidates.push(payload.RESULT);
-
-  return candidates.flatMap((candidate) => {
-    if (!candidate || typeof candidate !== "object") return [];
-    return [candidate, candidate.AccountInfo, candidate.accountinfo, candidate.accountInfo].filter(Boolean);
-  });
-}
-
-function parseProviderNumber(value: any): number | null {
-  if (value === undefined || value === null || value === "") return null;
-  const parsed = parseFloat(String(value).replace(/[^\d.-]/g, ""));
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
 export function extractProviderAccountInfo(payload: any): { balance: number; currency: string } | null {
-  const candidates = collectAccountInfoCandidates(payload);
-
-  for (const candidate of candidates) {
-    const balance =
-      parseProviderNumber(candidate?.credit) ??
-      parseProviderNumber(candidate?.balance) ??
-      parseProviderNumber(candidate?.credits) ??
-      parseProviderNumber(candidate?.amount);
-
-    if (balance === null) continue;
-
-    const currency = String(candidate?.currency || candidate?.Currency || payload?.currency || "USD").trim() || "USD";
-    return { balance, currency };
-  }
-
-  return null;
+  return parseDhruAccountInfo(payload);
 }
 
 export function getProviderApiErrorMessage(payload: any): string | null {

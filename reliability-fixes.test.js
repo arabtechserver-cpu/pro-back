@@ -20,7 +20,12 @@ const {
   isMarkupRejectedError,
   computePollingBackoffMs
 } = require('./dist/utils/telegramService');
-const { classifyDhruDispatchError } = require('./dist/services/orderDispatchService');
+const {
+  classifyDhruDispatchError,
+  dispatchOrderToProvider
+} = require('./dist/services/orderDispatchService');
+const dhruApi = require('./dist/utils/dhru-api');
+const { extractProviderAccountInfo } = require('./dist/routes/providers');
 const { computeFoxreloadRetryCooldownMs } = require('./dist/services/foxreloadService');
 const { createPayPalOrder } = require('./dist/services/paypalService');
 const { PayPalGatewayError } = require('./dist/utils/paypalError');
@@ -282,5 +287,225 @@ test('authenticateToken rejects regular users idle >= 30m with SESSION_IDLE_EXPI
   } finally {
     prisma.user.findUnique = origFindUnique;
     prisma.user.update = origUpdate;
+  }
+});
+
+test('parseDhruAccountInfo handles DHRU AccoutInfo typo, creditraw, host helper, and scoped API key guard', async () => {
+  const typoPayload = {
+    SUCCESS: [
+      {
+        message: 'Your Accout Info',
+        AccoutInfo: {
+          credit: '$125.50',
+          creditraw: '125.5000',
+          currency: 'USD'
+        }
+      }
+    ],
+    apiversion: '2025.03'
+  };
+
+  assert.deepEqual(dhruApi.parseDhruAccountInfo(typoPayload), {
+    balance: 125.5,
+    currency: 'USD'
+  });
+  assert.deepEqual(extractProviderAccountInfo(typoPayload), {
+    balance: 125.5,
+    currency: 'USD'
+  });
+  assert.equal(dhruApi.parseDhruAccountInfo({ ERROR: [{ MESSAGE: 'Invalid API key' }] }), null);
+  assert.equal(dhruApi.extractProviderHost('https://panel.example.com/api/index.php?key=secret'), 'panel.example.com');
+  assert.equal(dhruApi.extractProviderHost(''), '');
+
+  const missingKeyRes = await dhruApi.dhruApiRequest('accountinfo', {}, {
+    apiUrl: 'https://panel.example.com/api/index.php',
+    username: 'reseller1',
+    apiKey: ''
+  });
+  assert.equal(missingKeyRes.SUCCESS, false);
+  assert.equal(missingKeyRes.error, 'Missing provider API key');
+
+  const missingUrlRes = await dhruApi.dhruApiRequest('accountinfo', {}, {
+    apiUrl: '',
+    username: 'reseller1',
+    apiKey: 'secret-key'
+  });
+  assert.equal(missingUrlRes.SUCCESS, false);
+  assert.equal(missingUrlRes.error, 'Missing or unconfigured provider API URL');
+});
+
+test('classifyDhruDispatchError distinguishes live balance vs upstream supplier exhaustion on CreditprocessError', () => {
+  const creditErr = {
+    ERROR: [
+      {
+        MESSAGE: 'CreditprocessError',
+        FULL_DESCRIPTION: 'error: <li>You have not enough credit</li>'
+      }
+    ]
+  };
+
+  const upstreamExhausted = classifyDhruDispatchError(creditErr, 'user@example.com', 'DHRU Main', '15800', {
+    providerName: 'DHRU Main',
+    providerHost: 'supplier.example.com',
+    usingEnvFallback: false,
+    recordedOrderCost: 5.83,
+    liveBalance: 50.25,
+    liveCurrency: 'USD'
+  });
+  assert.equal(upstreamExhausted.category, 'credit');
+  assert.equal(upstreamExhausted.isCreditError, true);
+  assert.equal(upstreamExhausted.userFacingMsg.includes('supplier.example.com'), true);
+  assert.equal(upstreamExhausted.userFacingMsg.includes('50.25 USD'), true);
+  assert.equal(upstreamExhausted.userFacingMsg.includes('5.83 USD'), true);
+  assert.equal(upstreamExhausted.userFacingMsg.includes('Upstream Supplier'), true);
+
+  const insufficientDirect = classifyDhruDispatchError(creditErr, 'user@example.com', 'DHRU Main', '15800', {
+    providerName: 'DHRU Main',
+    providerHost: 'supplier.example.com',
+    usingEnvFallback: false,
+    recordedOrderCost: 5.83,
+    liveBalance: 1.5,
+    liveCurrency: 'USD'
+  });
+  assert.equal(insufficientDirect.category, 'credit');
+  assert.equal(insufficientDirect.userFacingMsg.includes('1.5 USD'), true);
+  assert.equal(insufficientDirect.userFacingMsg.includes('5.83 USD'), true);
+  assert.equal(insufficientDirect.userFacingMsg.includes('Upstream Supplier'), false);
+
+  const envFallbackUnknown = classifyDhruDispatchError(creditErr, 'user@example.com', '.env', '15800', {
+    providerName: 'إعدادات المزود الافتراضية (.env)',
+    providerHost: 'fallback.example.com',
+    usingEnvFallback: true,
+    recordedOrderCost: 5.83,
+    liveBalance: null,
+    liveCurrency: 'USD'
+  });
+  assert.equal(envFallbackUnknown.category, 'credit');
+  assert.equal(envFallbackUnknown.userFacingMsg.includes('fallback.example.com'), true);
+  assert.equal(envFallbackUnknown.userFacingMsg.includes('.env'), true);
+});
+
+test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, syncs provider balance, and classifies upstream vs low balance', async () => {
+  const origOrderFindUnique = prisma.order.findUnique;
+  const origOrderUpdateMany = prisma.order.updateMany;
+  const origOrderUpdate = prisma.order.update;
+  const origServiceFindUnique = prisma.dhruService.findUnique;
+  const origServiceFindFirst = prisma.dhruService.findFirst;
+  const origProviderUpdate = prisma.apiProvider.update;
+  const origPlaceServerOrder = dhruApi.placeServerOrder;
+  const origGetAccountInfo = dhruApi.getAccountInfo;
+  const origConsoleError = console.error;
+  console.error = () => {};
+
+  const providerUpdates = [];
+  const orderUpdates = [];
+  let serviceFindFirstCalls = 0;
+  let mockLiveAccountBalance = '50.25';
+
+  try {
+    prisma.order.findUnique = async () => ({
+      id: 'ord-test-15800',
+      userId: 'user-1',
+      serviceId: 'srv-uuid-1',
+      serviceName: 'Server Check Service',
+      targetInput: '+249912625971 | test@example.com',
+      quantity: 1,
+      price: 6.5,
+      status: 'pending',
+      notes: JSON.stringify({
+        customFields: {
+          Email: 'test@example.com'
+        }
+      }),
+      user: { username: 'ARABPRO2', telegramChatId: null }
+    });
+    prisma.order.updateMany = async () => ({ count: 1 });
+    prisma.order.update = async (args) => {
+      orderUpdates.push(args);
+      return args.data;
+    };
+    prisma.dhruService.findUnique = async ({ where }) => {
+      assert.equal(where.id, 'srv-uuid-1');
+      return {
+        id: 'srv-uuid-1',
+        dhruId: 'prov-1::15800',
+        name: 'Server Check Service',
+        groupName: 'Server Services',
+        credit: 5.83,
+        apiServiceType: 'server',
+        requiresCustom: null,
+        providerId: 'prov-1',
+        dhruCategory: { id: 'cat-1', name: 'Server Services' },
+        apiProvider: {
+          id: 'prov-1',
+          name: 'DHRU Primary',
+          apiUrl: 'https://primary-dhru.example.com/api/index.php',
+          username: 'reseller',
+          apiKey: 'secret-provider-key',
+          balance: 10,
+          currency: 'USD'
+        }
+      };
+    };
+    prisma.dhruService.findFirst = async () => {
+      serviceFindFirstCalls += 1;
+      return null;
+    };
+    prisma.apiProvider.update = async (args) => {
+      providerUpdates.push(args);
+      return args.data;
+    };
+    dhruApi.placeServerOrder = async () => ({
+      ERROR: [
+        {
+          MESSAGE: 'CreditprocessError',
+          FULL_DESCRIPTION: 'error: <li>You have not enough credit</li>'
+        }
+      ],
+      apiversion: '2025.03'
+    });
+    dhruApi.getAccountInfo = async () => ({
+      SUCCESS: [
+        {
+          message: 'Your Accout Info',
+          AccoutInfo: {
+            credit: `$${mockLiveAccountBalance}`,
+            creditraw: mockLiveAccountBalance,
+            currency: 'USD'
+          }
+        }
+      ]
+    });
+
+    const upstreamRes = await dispatchOrderToProvider('ord-test-15800', { requestedBy: 'admin' });
+    assert.equal(serviceFindFirstCalls, 0);
+    assert.equal(upstreamRes.success, false);
+    assert.equal(upstreamRes.statusCode, 400);
+    assert.equal(upstreamRes.error.includes('primary-dhru.example.com'), true);
+    assert.equal(upstreamRes.error.includes('50.25 USD'), true);
+    assert.equal(upstreamRes.error.includes('Upstream Supplier'), true);
+    assert.equal(providerUpdates[0].where.id, 'prov-1');
+    assert.deepEqual(providerUpdates[0].data, { balance: 50.25, currency: 'USD' });
+    assert.equal(orderUpdates[0].data.status, 'pending');
+
+    mockLiveAccountBalance = '2.00';
+    const lowBalRes = await dispatchOrderToProvider('ord-test-15800', { requestedBy: 'admin' });
+    assert.equal(lowBalRes.success, false);
+    assert.equal(lowBalRes.statusCode, 400);
+    assert.equal(lowBalRes.error.includes('primary-dhru.example.com'), true);
+    assert.equal(lowBalRes.error.includes('2 USD'), true);
+    assert.equal(lowBalRes.error.includes('5.83 USD'), true);
+    assert.equal(lowBalRes.error.includes('Upstream Supplier'), false);
+    assert.deepEqual(providerUpdates[1].data, { balance: 2, currency: 'USD' });
+  } finally {
+    prisma.order.findUnique = origOrderFindUnique;
+    prisma.order.updateMany = origOrderUpdateMany;
+    prisma.order.update = origOrderUpdate;
+    prisma.dhruService.findUnique = origServiceFindUnique;
+    prisma.dhruService.findFirst = origServiceFindFirst;
+    prisma.apiProvider.update = origProviderUpdate;
+    dhruApi.placeServerOrder = origPlaceServerOrder;
+    dhruApi.getAccountInfo = origGetAccountInfo;
+    console.error = origConsoleError;
   }
 });

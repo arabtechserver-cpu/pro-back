@@ -408,15 +408,12 @@ export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
       callFoxreloadApi('/api/access/me/balances/', 'GET', undefined, 'en', 'usd', effectiveKey),
     ]);
 
-    if (!accountRes.ok && !balancesRes.ok) {
+    if (!balancesRes.ok) {
       const errorMsg =
-        accountRes.data?.error ||
-        accountRes.data?.detail ||
-        accountRes.data?.message ||
         balancesRes.data?.error ||
         balancesRes.data?.detail ||
         balancesRes.data?.message ||
-        (accountRes.status === 401 ? 'مفتاح الربط (API Key) غير صالح أو منتهي الصلاحية لدى FoxReload (401)' : `فشل الاتصال بـ FoxReload (كود الخطأ: ${accountRes.status || balancesRes.status})`);
+        (balancesRes.status === 401 ? 'مفتاح الربط (API Key) غير صالح أو منتهي الصلاحية لدى FoxReload (401)' : `فشل قراءة رصيد FoxReload (كود الخطأ: ${balancesRes.status})`);
 
       return {
         success: false,
@@ -434,16 +431,17 @@ export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
     const balancesList: Array<{ currency: string; amount: number }> = [];
     if (Array.isArray(balancesRes.data)) {
       for (const item of balancesRes.data) {
-        balancesList.push({
-          currency: String(item.currency || 'USD').toUpperCase(),
-          amount: Number(item.amount ?? item.balance ?? 0),
-        });
+        const currency = String(item?.currency ?? '').trim().toUpperCase();
+        const rawAmount = item?.available ?? item?.amount ?? item?.balance;
+        if (!currency || (typeof rawAmount !== 'number' &&
+          (typeof rawAmount !== 'string' || !rawAmount.trim()))) continue;
+        const amount = Number(rawAmount);
+        if (Number.isFinite(amount)) balancesList.push({ currency, amount });
       }
     }
 
     if (balancesList.length === 0) {
-      balancesList.push({ currency: 'USD', amount: 0 });
-      balancesList.push({ currency: 'RUB', amount: 0 });
+      return { success: false, balances: [], error: 'لم يرجع FoxReload بيانات رصيد قابلة للقراءة.' };
     }
 
     return {

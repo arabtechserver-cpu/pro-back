@@ -7,6 +7,7 @@ import {
   extractProviderHost,
   normalizeProviderCustomFields,
   cleanDhruErrorMessage,
+  getDhruApiErrorMessage,
   isActionUnsupported,
   isInvalidImeiError
 } from '../utils/dhru-api';
@@ -39,7 +40,7 @@ function formatCreditErrorClassification(
       isCreditError: true,
       title: 'فشل الإرسال: رصيد المزود غير كاف',
       userFacingMsg:
-        'رصيد حسابك لدى المزود الخارجي غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.'
+        'رفض المزود الطلب برسالة (You have not enough credit).'
     };
   }
 
@@ -58,22 +59,13 @@ function formatCreditErrorClassification(
       : null;
   const currency = creditDiag.liveCurrency || 'USD';
 
-  if (liveBalance !== null && recordedCost !== null && liveBalance >= recordedCost) {
-    return {
-      category: 'credit',
-      isCreditError: true,
-      title: 'فشل الإرسال: المزود يرفض الطلب برصيد غير كافٍ رغم وجود رصيد',
-      userFacingMsg: `رفض المزود ${sourceLabel} الطلب برسالة (You have not enough credit) رغم أن رصيد حسابك المباشر لديه الآن (${liveBalance} ${currency}) يغطي التكلفة المسجلة (${recordedCost} ${currency}). السبب غالباً نفاد رصيد الموزع الأعلى لدى المزود (Upstream Supplier) أو ارتفاع سعر الخدمة الفعلي لديه أو اختلاف عملة الحساب.`
-    };
-  }
-
   if (liveBalance !== null) {
-    const costPart = recordedCost !== null ? ` مقابل تكلفة مسجلة (${recordedCost} ${currency})` : '';
+    const costPart = recordedCost !== null ? `؛ التكلفة المسجلة محلياً: ${recordedCost}` : '';
     return {
       category: 'credit',
       isCreditError: true,
-      title: 'فشل الإرسال: رصيد المزود غير كاف',
-      userFacingMsg: `رصيد حسابك لدى المزود ${sourceLabel} هو (${liveBalance} ${currency})${costPart}، وهو غير كافٍ لتنفيذ الطلب (You have not enough credit). يُرجى شحن حساب المزود أولاً ثم إعادة الإرسال.`
+      title: 'فشل الإرسال: المزود رفض الطلب برسالة رصيد غير كافٍ',
+      userFacingMsg: `رفض المزود ${sourceLabel} الطلب برسالة (You have not enough credit). الرصيد الظاهر: ${liveBalance} ${currency}${costPart}. تحقق من سعر الخدمة وعملتها وصلاحية الحساب لدى المزود قبل الشحن أو إعادة الإرسال. إذا كانت البيانات صحيحة، اطلب من المزود توضيح سبب الرفض لكود الخدمة.`
     };
   }
 
@@ -81,7 +73,7 @@ function formatCreditErrorClassification(
     category: 'credit',
     isCreditError: true,
     title: 'فشل الإرسال: رصيد المزود غير كاف',
-    userFacingMsg: `رفض المزود ${sourceLabel} الطلب بسبب عدم كفاية الرصيد (You have not enough credit)، وتعذر التحقق من الرصيد الحي للحساب الآن. يُرجى مراجعة رصيد حسابك ومزوده الفرعي لدى ${sourceLabel} ثم إعادة الإرسال.`
+    userFacingMsg: `رفض المزود ${sourceLabel} الطلب برسالة (You have not enough credit)، وتعذر قراءة الرصيد الحالي. راجع رصيد الحساب وسعر الخدمة لدى المزود قبل إعادة الإرسال.`
   };
 }
 
@@ -95,12 +87,12 @@ export function classifyDhruDispatchError(
   const rawErrMsg = cleanDhruErrorMessage(
     dhruResponse?.Error ||
     dhruResponse?.ERROR?.[0]?.FULL_DESCRIPTION ||
-    dhruResponse?.ERROR?.[0]?.MESSAGE ||
-    dhruResponse?.error ||
+    getDhruApiErrorMessage(dhruResponse) ||
     'رفض المزود الطلب'
   ).replace(/^ValidationError\d*\s*/i, '').trim() || 'رفض المزود الطلب';
 
-  const responseStr = JSON.stringify(dhruResponse || {}).toLowerCase();
+  // DHRU may echo order fields alongside the error. Classify the error only.
+  const responseStr = `${getDhruApiErrorMessage(dhruResponse) || ''} ${rawErrMsg}`.toLowerCase();
   const isNumericImei = /^\d{14,16}$/.test(String(rawTarget || '').replace(/[\s-]/g, ''));
 
   const isCreditError =
@@ -146,12 +138,13 @@ export function classifyDhruDispatchError(
       isCreditError: false,
       title: 'فشل الإرسال: رقم IMEI غير صالح',
       userFacingMsg: !isNumericImei
-        ? `القيمة المدخلة (${rawTarget}) هي سيريال تسلسلي وليست رقم IMEI مكون من 15 رقماً. خدمة المزود (${providerName || 'المزود'}) تتطلب رقم IMEI حصراً. يرجى الضغط على زر التعديل وإدخال رقم IMEI صحيح للجهاز ثم إعادة الإرسال.`
+        ? `رفض المزود (${providerName || 'المزود'}) حقل IMEI. تحقق من نوع الخدمة والحقول المطلوبة لدى المزود قبل تعديل الطلب وإعادة إرساله.`
         : `رقم IMEI غير مطابق لشروط المزود (${rawErrMsg}). يرجى التأكد من كتابة رقم IMEI صحيح للجهاز (15 رقماً) عبر زر التعديل ثم إعادة الإرسال.`
     };
   }
 
   const isFieldValidationError =
+    /validationerror/i.test(String(dhruResponse?.ERROR?.[0]?.MESSAGE || '')) ||
     responseStr.includes('validationerror') ||
     responseStr.includes('is required') ||
     responseStr.includes('required field') ||
@@ -167,19 +160,12 @@ export function classifyDhruDispatchError(
     };
   }
 
-  const isInvalidAction =
-    responseStr.includes('invalid action') ||
-    responseStr.includes('command not found') ||
-    responseStr.includes('action not found');
-
-  if (isInvalidAction) {
+  if (isActionUnsupported(dhruResponse)) {
     return {
       category: 'invalid_action',
       isCreditError: false,
       title: 'فشل الإرسال: نوع العملية غير مدعوم (Invalid Action)',
-      userFacingMsg: !isNumericImei
-        ? `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة). الخدمة لدى المزود تتطلب رقم IMEI حصراً بينما المدخل (${rawTarget}) هو سيريال. يرجى الضغط على زر التعديل وإدخال رقم IMEI الجهاز (15 رقماً) ثم إعادة الإرسال.`
-        : `رفض المزود الطلب (نوع العملية غير مدعوم لهذه الخدمة لدى المزود - Invalid Action). يُرجى التحقق من ربط كود الخدمة (Dhru Service ID: ${dhruId}) لدى المزود (${providerName || 'المزود'}).`
+      userFacingMsg: `رفض المزود عملية الإرسال لهذه الخدمة. تحقق من نوع الخدمة وربط كودها (${dhruId}) لدى المزود (${providerName || 'المزود'}).`
     };
   }
 
@@ -404,6 +390,14 @@ export async function dispatchOrderToProvider(
     };
   }
 
+  if (order.source === 'foxreload' || String(order.serviceId).startsWith('foxreload:')) {
+    return {
+      success: false,
+      statusCode: 400,
+      error: 'هذا طلب FoxReload. اعتمده من صفحة طلبات FoxReload في لوحة الإدارة.'
+    };
+  }
+
   // Atomic reservation to prevent double dispatch / concurrency races
   const reservation = await prisma.order.updateMany({
     where: {
@@ -438,7 +432,8 @@ export async function dispatchOrderToProvider(
     });
   }
 
-  if (!dhruService || !dhruService.dhruId) {
+  const remoteServiceId = dhruService?.dhruId ? getProviderRemoteServiceId(dhruService.dhruId).trim() : '';
+  if (!dhruService || !remoteServiceId) {
     await prisma.order.update({
       where: { id: orderId },
       data: { status: 'pending' }
@@ -446,7 +441,7 @@ export async function dispatchOrderToProvider(
     return {
       success: false,
       statusCode: 400,
-      error: 'عذراً، هذه الخدمة غير مربوطة بكود خدمة صحيح لدى المزود (Missing Dhru ID)'
+      error: 'الخدمة المرتبطة بهذا الطلب لا تحمل كود مزود صالحاً. راجع ربط الخدمة الأصلية بالمزود وكودها قبل إعادة الإرسال (Missing Dhru ID).'
     };
   }
 
@@ -461,7 +456,6 @@ export async function dispatchOrderToProvider(
   const usingEnvFallback = !dhruService.apiProvider;
   const providerName = dhruService.apiProvider?.name || 'إعدادات المزود الافتراضية (.env)';
   const providerHost = extractProviderHost(dhruService.apiProvider?.apiUrl) || 'غير محدد';
-  const remoteServiceId = getProviderRemoteServiceId(dhruService.dhruId);
   const dispatchQuantity = Math.max(1, Number(order.quantity) || 1);
   const unitCost = Number(dhruService.credit);
   const recordedOrderCost = Number.isFinite(unitCost)
@@ -497,49 +491,27 @@ export async function dispatchOrderToProvider(
   parsedNotes.dispatchServiceType = serviceType;
 
   let actualDispatchType = serviceType;
-  const rawTarget = rawImei ? String(rawImei).trim() : String(order.targetInput).trim();
-  const isNumericImei = /^\d{14,16}$/.test(rawTarget.replace(/[\s-]/g, ''));
+  const storedTarget = String(order.targetInput).trim();
+  // The storefront uses targetInput to display a summary when it submits custom
+  // fields. Send the fields individually, and only use a separately supplied ID.
+  const isFieldSummary = Object.entries(customFields).some(([key, value]) => {
+    const field = `${key}: ${value}`;
+    return storedTarget === field || storedTarget.startsWith(`${field} | `);
+  });
+  const providerTarget = String(rawImei || (isFieldSummary ? '' : storedTarget)).trim();
+  const isNumericImei = /^\d{14,16}$/.test(providerTarget.replace(/[\s-]/g, ''));
 
   try {
-    if (serviceType === 'imei') {
-      if (isNumericImei) {
-        actualDispatchType = 'imei';
-        dhruResponse = await placeImeiOrder(
-          getProviderRemoteServiceId(dhruService.dhruId),
-          rawTarget,
-          providerCustomFields,
-          providerConfig
-        );
-      } else {
-        actualDispatchType = 'server';
-        dhruResponse = await placeServerOrder(
-          getProviderRemoteServiceId(dhruService.dhruId),
-          order.quantity || 1,
-          providerCustomFields,
-          rawTarget,
-          providerConfig
-        );
-
-        if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
-          if (isActionUnsupported(dhruResponse) && isNumericImei) {
-            actualDispatchType = 'imei';
-            dhruResponse = await placeImeiOrder(
-              getProviderRemoteServiceId(dhruService.dhruId),
-              rawTarget,
-              providerCustomFields,
-              providerConfig
-            );
-          }
-        }
-      }
+    if (serviceType === 'imei' && isNumericImei) {
+      actualDispatchType = 'imei';
+      dhruResponse = await placeImeiOrder(remoteServiceId, providerTarget, providerCustomFields, providerConfig);
     } else {
       actualDispatchType = 'server';
-      const inputToSend = String(order.targetInput).trim();
       dhruResponse = await placeServerOrder(
-        getProviderRemoteServiceId(dhruService.dhruId),
-        order.quantity,
+        remoteServiceId,
+        dispatchQuantity,
         providerCustomFields,
-        inputToSend,
+        providerTarget,
         providerConfig
       );
     }
@@ -548,10 +520,10 @@ export async function dispatchOrderToProvider(
     dhruResponse = { ERROR: [{ MESSAGE: err?.message || 'تعذر الاتصال بسيرفر المزود الخارجي' }] };
   }
 
-  if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error) {
+  if (!dhruResponse || dhruResponse.SUCCESS === false || dhruResponse.ERROR || dhruResponse.Error || dhruResponse.error) {
     const initialClass = classifyDhruDispatchError(
       dhruResponse,
-      rawTarget,
+      providerTarget,
       providerName,
       dhruService.dhruId
     );
@@ -565,7 +537,6 @@ export async function dispatchOrderToProvider(
       liveCurrency: dhruService.apiProvider?.currency || 'USD'
     };
 
-    let liveAccountCheckError: string | undefined;
     if (initialClass.isCreditError) {
       try {
         const acctRes = await getAccountInfo(providerConfig);
@@ -582,13 +553,8 @@ export async function dispatchOrderToProvider(
               }
             }).catch(() => {});
           }
-        } else if (acctRes?.error || acctRes?.ERROR || acctRes?.Error) {
-          liveAccountCheckError =
-            cleanDhruErrorMessage(acctRes?.ERROR?.[0]?.MESSAGE || acctRes?.Error || acctRes?.error) || undefined;
         }
-      } catch (acctErr: any) {
-        liveAccountCheckError = acctErr?.message || 'accountinfo check failed';
-      }
+      } catch { /* The dispatch error still applies when accountinfo is unavailable. */ }
     }
 
     console.error('[Dispatch Provider Error]:', {
@@ -601,12 +567,11 @@ export async function dispatchOrderToProvider(
       recordedOrderCost,
       liveBalance: creditDiag.liveBalance,
       liveCurrency: creditDiag.liveCurrency,
-      ...(liveAccountCheckError ? { liveAccountCheckError } : {}),
-      dhruResponse
+      category: initialClass.category
     });
 
     const { isCreditError, title: classifiedTitle, userFacingMsg } = initialClass.isCreditError
-      ? classifyDhruDispatchError(dhruResponse, rawTarget, providerName, dhruService.dhruId, creditDiag)
+      ? classifyDhruDispatchError(dhruResponse, providerTarget, providerName, dhruService.dhruId, creditDiag)
       : initialClass;
 
     const now = new Date();
@@ -633,15 +598,8 @@ export async function dispatchOrderToProvider(
         typeof creditDiag.liveBalance === 'number' && Number.isFinite(creditDiag.liveBalance)
           ? creditDiag.liveBalance
           : null;
-      const hasSufficientLiveBalance =
-        liveBalance !== null &&
-        recordedOrderCost !== null &&
-        liveBalance >= recordedOrderCost;
-
       const alertTitle = isCreditError
-        ? hasSufficientLiveBalance
-          ? 'تنبيه الإدارة: المزود يرفض الطلب بالرصيد رغم وجود رصيد ظاهر'
-          : 'تنبيه عاجل للإدارة: نفاد رصيد المزود الخارجي'
+        ? 'تنبيه الإدارة: المزود رفض الطلب برسالة رصيد غير كافٍ'
         : (isAuto ? 'تنبيه الإدارة: تعذر الإرسال التلقائي للطلب للمزود' : 'تنبيه الإدارة: فشل إرسال الطلب للمزود');
 
       const hostBadge = usingEnvFallback ? `${providerHost} [.env]` : providerHost;

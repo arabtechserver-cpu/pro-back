@@ -1,5 +1,7 @@
 const assert = require('node:assert/strict');
 const { test, after } = require('node:test');
+const { EventEmitter } = require('node:events');
+const https = require('node:https');
 const axios = require('axios');
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'reliability-fixes-test-secret-123456';
@@ -26,6 +28,7 @@ const {
 } = require('./dist/services/orderDispatchService');
 const dhruApi = require('./dist/utils/dhru-api');
 const { extractProviderAccountInfo } = require('./dist/routes/providers');
+const providerRouter = require('./dist/routes/providers').default;
 const { computeFoxreloadRetryCooldownMs } = require('./dist/services/foxreloadService');
 const { createPayPalOrder } = require('./dist/services/paypalService');
 const { PayPalGatewayError } = require('./dist/utils/paypalError');
@@ -334,7 +337,70 @@ test('parseDhruAccountInfo handles DHRU AccoutInfo typo, creditraw, host helper,
   assert.equal(missingUrlRes.error, 'Missing or unconfigured provider API URL');
 });
 
-test('classifyDhruDispatchError distinguishes live balance vs upstream supplier exhaustion on CreditprocessError', () => {
+test('FoxReload balance uses the native endpoint and never overwrites a saved balance on lookup failure', async (t) => {
+  const calls = [];
+  const writes = [];
+  let balanceResponse = { status: 200, body: [
+    { currency: 'RUB', available: '900', reserved: '1', pending: '2' },
+    { currency: 'USD', available: '18.25', reserved: '200', pending: '300' }
+  ] };
+  const originalSetting = prisma.setting.findUnique;
+  const originalProvider = prisma.apiProvider.findUnique;
+  const originalUpdate = prisma.apiProvider.update;
+  t.after(() => {
+    prisma.setting.findUnique = originalSetting;
+    prisma.apiProvider.findUnique = originalProvider;
+    prisma.apiProvider.update = originalUpdate;
+  });
+  prisma.setting.findUnique = async () => ({ value: JSON.stringify({ apiKey: 'current-fox-key' }) });
+  prisma.apiProvider.findUnique = async () => ({
+    id: 'foxreload-provider', name: 'FoxReload', type: 'foxreload', currency: 'USD',
+    apiUrl: 'https://public-api.foxreload.com', apiKey: 'stale-provider-key'
+  });
+  prisma.apiProvider.update = async (args) => {
+    writes.push(args);
+    return { ...args.data, apiKey: 'stale-provider-key' };
+  };
+  t.mock.method(https, 'request', (options, callback) => {
+    calls.push(options);
+    assert.equal(options.method, 'GET');
+    assert.equal(options.hostname, 'public-api.foxreload.com');
+    assert.equal(options.headers['X-API-Key'], 'current-fox-key');
+    assert.ok(['/api/access/me', '/api/access/me/balances/'].includes(options.path));
+    const payload = options.path.endsWith('/balances/') ? balanceResponse : { status: 200, body: {} };
+    const request = new EventEmitter();
+    request.end = () => {
+      const response = Object.assign(new EventEmitter(), { statusCode: payload.status, headers: {} });
+      callback(response);
+      response.emit('data', JSON.stringify(payload.body));
+      response.emit('end');
+    };
+    return request;
+  });
+  const route = providerRouter.stack.find(({ route }) => route?.path === '/:id/balance' && route.methods.post).route;
+  const check = async () => {
+    const res = { statusCode: 200, status(code) { this.statusCode = code; return this; }, json(body) { return body; } };
+    const data = await route.stack[0].handle({ params: { id: 'foxreload-provider' } }, res);
+    return { status: res.statusCode, data };
+  };
+  const success = await check();
+  assert.equal(success.status, 200);
+  assert.equal(success.data.balance, 18.25);
+  assert.deepEqual(writes, [{ where: { id: 'foxreload-provider' }, data: { balance: 18.25, currency: 'USD' } }]);
+
+  for (const response of [
+    { status: 401, body: { detail: 'Unauthorized' } },
+    { status: 200, body: [{ currency: 'USD', reserved: '200', pending: '300' }] },
+    { status: 200, body: [{ currency: 'RUB', available: '900' }] }
+  ]) {
+    balanceResponse = response;
+    assert.equal((await check()).status, 400);
+  }
+  assert.equal(writes.length, 1);
+  assert.equal(calls.length, 8);
+});
+
+test('classifyDhruDispatchError reports balance without inferring the reason for a provider credit rejection', () => {
   const creditErr = {
     ERROR: [
       {
@@ -356,8 +422,8 @@ test('classifyDhruDispatchError distinguishes live balance vs upstream supplier 
   assert.equal(upstreamExhausted.isCreditError, true);
   assert.equal(upstreamExhausted.userFacingMsg.includes('supplier.example.com'), true);
   assert.equal(upstreamExhausted.userFacingMsg.includes('50.25 USD'), true);
-  assert.equal(upstreamExhausted.userFacingMsg.includes('5.83 USD'), true);
-  assert.equal(upstreamExhausted.userFacingMsg.includes('Upstream Supplier'), true);
+  assert.match(upstreamExhausted.userFacingMsg, /التكلفة المسجلة محلياً: 5\.83/);
+  assert.doesNotMatch(upstreamExhausted.userFacingMsg, /Upstream Supplier/);
 
   const insufficientDirect = classifyDhruDispatchError(creditErr, 'user@example.com', 'DHRU Main', '15800', {
     providerName: 'DHRU Main',
@@ -369,7 +435,7 @@ test('classifyDhruDispatchError distinguishes live balance vs upstream supplier 
   });
   assert.equal(insufficientDirect.category, 'credit');
   assert.equal(insufficientDirect.userFacingMsg.includes('1.5 USD'), true);
-  assert.equal(insufficientDirect.userFacingMsg.includes('5.83 USD'), true);
+  assert.match(insufficientDirect.userFacingMsg, /التكلفة المسجلة محلياً: 5\.83/);
   assert.equal(insufficientDirect.userFacingMsg.includes('Upstream Supplier'), false);
 
   const envFallbackUnknown = classifyDhruDispatchError(creditErr, 'user@example.com', '.env', '15800', {
@@ -385,7 +451,8 @@ test('classifyDhruDispatchError distinguishes live balance vs upstream supplier 
   assert.equal(envFallbackUnknown.userFacingMsg.includes('.env'), true);
 });
 
-test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, syncs provider balance, and classifies upstream vs low balance', async () => {
+test('dispatchOrderToProvider sends separate custom fields, syncs live balance, and keeps rejected orders pending', async (t) => {
+  t.mock.method(require('./dist/utils/telegramService'), 'sendTelegramPhotoNotification', async () => {});
   const origOrderFindUnique = prisma.order.findUnique;
   const origOrderUpdateMany = prisma.order.updateMany;
   const origOrderUpdate = prisma.order.update;
@@ -395,7 +462,8 @@ test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, 
   const origPlaceServerOrder = dhruApi.placeServerOrder;
   const origGetAccountInfo = dhruApi.getAccountInfo;
   const origConsoleError = console.error;
-  console.error = () => {};
+  const loggedFailures = [];
+  console.error = (message, data) => { if (message === '[Dispatch Provider Error]:') loggedFailures.push(data); };
 
   const providerUpdates = [];
   const orderUpdates = [];
@@ -408,13 +476,13 @@ test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, 
       userId: 'user-1',
       serviceId: 'srv-uuid-1',
       serviceName: 'Server Check Service',
-      targetInput: '+249912625971 | test@example.com',
+      targetInput: 'Email: test@example.com | Phone: 5550100',
       quantity: 1,
       price: 6.5,
       status: 'pending',
       notes: JSON.stringify({
         customFields: {
-          Email: 'test@example.com'
+          Email: 'test@example.com', Phone: '5550100'
         }
       }),
       user: { username: 'ARABPRO2', telegramChatId: null }
@@ -455,15 +523,20 @@ test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, 
       providerUpdates.push(args);
       return args.data;
     };
-    dhruApi.placeServerOrder = async () => ({
-      ERROR: [
-        {
+    dhruApi.placeServerOrder = async (serviceId, qty, fields, target) => {
+      assert.equal(serviceId, '15800');
+      assert.equal(qty, 1);
+      assert.equal(target, '');
+      assert.deepEqual(fields, { Email: 'test@example.com', Phone: '5550100', QNT: '1' });
+      return {
+        Email: 'test@example.com',
+        ERROR: [{
           MESSAGE: 'CreditprocessError',
           FULL_DESCRIPTION: 'error: <li>You have not enough credit</li>'
-        }
-      ],
-      apiversion: '2025.03'
-    });
+        }],
+        apiversion: '2025.03'
+      };
+    };
     dhruApi.getAccountInfo = async () => ({
       SUCCESS: [
         {
@@ -483,7 +556,9 @@ test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, 
     assert.equal(upstreamRes.statusCode, 400);
     assert.equal(upstreamRes.error.includes('primary-dhru.example.com'), true);
     assert.equal(upstreamRes.error.includes('50.25 USD'), true);
-    assert.equal(upstreamRes.error.includes('Upstream Supplier'), true);
+    assert.match(upstreamRes.error, /You have not enough credit/);
+    assert.equal(loggedFailures[0].category, 'credit');
+    assert.doesNotMatch(JSON.stringify(loggedFailures), /test@example\.com|5550100/);
     assert.equal(providerUpdates[0].where.id, 'prov-1');
     assert.deepEqual(providerUpdates[0].data, { balance: 50.25, currency: 'USD' });
     assert.equal(orderUpdates[0].data.status, 'pending');
@@ -494,7 +569,7 @@ test('dispatchOrderToProvider checks live getAccountInfo on CreditprocessError, 
     assert.equal(lowBalRes.statusCode, 400);
     assert.equal(lowBalRes.error.includes('primary-dhru.example.com'), true);
     assert.equal(lowBalRes.error.includes('2 USD'), true);
-    assert.equal(lowBalRes.error.includes('5.83 USD'), true);
+    assert.match(lowBalRes.error, /التكلفة المسجلة محلياً: 5\.83/);
     assert.equal(lowBalRes.error.includes('Upstream Supplier'), false);
     assert.deepEqual(providerUpdates[1].data, { balance: 2, currency: 'USD' });
   } finally {

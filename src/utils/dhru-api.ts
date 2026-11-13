@@ -398,7 +398,7 @@ export function dhruApiRequest(
             result = { error: rawText };
           }
           if ((res.statusCode || 200) >= 400 || (result && result.SUCCESS === false)) {
-            console.error(`[Dhru API Error] URL: ${targetUrl} | Status: ${res.statusCode} | Response:`, rawText);
+            console.error(`[Dhru API Error] Host: ${urlObj.hostname} | Action: ${action} | Status: ${res.statusCode}`);
           }
           resolve(result);
         });

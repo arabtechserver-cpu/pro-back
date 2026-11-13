@@ -4,6 +4,7 @@ import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
 import { getCatalogSection } from '../utils/catalog-section';
 import { fieldChoices } from '../utils/foxreload-contract';
+import { FOXRELOAD_PROVIDER_ID, getFoxreloadLiveBalance } from '../services/foxreloadService';
 import https from "https";
 import { withinDeadline } from "../utils/request-deadline";
 import http from "http";
@@ -116,6 +117,13 @@ function summarizeProviderApiFailure(responses: Array<{ data: any; raw: string }
     if (message) return message;
   }
   return "لم يرجع المزود بيانات قابلة للقراءة";
+}
+
+function describeProviderBalanceError(message: string): string {
+  if (/authentication failed|invalid (?:api[\s_-]*(?:access[\s_-]*)?key|credentials|username)|unauthorized/i.test(message)) {
+    return `رفض المزود المصادقة (${message}). راجع اسم مستخدم الـ API ومفتاحه في إعدادات المزود، وتأكد من السماح بعنوان IP لخادم الموقع إذا كان المزود يشترط ذلك.`;
+  }
+  return `خطأ من مزود الـ API: ${message}`;
 }
 
 // Strip HTML tags from strings
@@ -556,7 +564,7 @@ router.post("/test-connection", async (req, res) => {
     if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
       const errMsg = getProviderApiErrorMessage(apiRes.data) || stripHtml(apiRes.raw) || "فشل الاتصال أو خطأ غير معروف";
       return res.status(400).json({
-        error: `خطأ من مزود الـ API: ${errMsg}`
+        error: describeProviderBalanceError(errMsg)
       });
     }
 
@@ -720,16 +728,29 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
-    const apiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "accountinfo");
-
-    if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
-      const errMsg = getProviderApiErrorMessage(apiRes.data) || stripHtml(apiRes.raw) || "فشل الاتصال أو خطأ غير معروف";
-      return res.status(400).json({
-        error: `خطأ من مزود الـ API: ${errMsg}`
-      });
+    let accountInfo: { balance: number; currency: string } | null;
+    if (id === FOXRELOAD_PROVIDER_ID || provider.type?.toLowerCase() === 'foxreload') {
+      // The built-in provider uses the FoxReload settings as the source of truth.
+      // Its copy of the key in ApiProvider may be stale until the next catalog sync.
+      const live = await getFoxreloadLiveBalance(id === FOXRELOAD_PROVIDER_ID ? undefined : provider.apiKey);
+      if (!live.success) {
+        return res.status(400).json({ error: `تعذر تحديث رصيد FoxReload: ${live.error || 'لم يرجع المزود رصيداً صالحاً'}` });
+      }
+      const currency = String(provider.currency || 'USD').trim().toUpperCase();
+      const balance = live.balances.find(item => item.currency === currency);
+      if (!balance) {
+        return res.status(400).json({ error: `لم يرجع FoxReload رصيداً بعملة المزود (${currency}). راجع الأرصدة في إعدادات FoxReload.` });
+      }
+      accountInfo = { balance: balance.amount, currency: balance.currency };
+    } else {
+      const apiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "accountinfo");
+      if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
+        const errMsg = getProviderApiErrorMessage(apiRes.data) || stripHtml(apiRes.raw) || "فشل الاتصال أو خطأ غير معروف";
+        return res.status(400).json({ error: describeProviderBalanceError(errMsg) });
+      }
+      accountInfo = extractProviderAccountInfo(apiRes.data);
     }
 
-    const accountInfo = extractProviderAccountInfo(apiRes.data);
     if (!accountInfo) {
       return res.status(400).json({
         error: "المزود اتصل بنجاح لكن لم يرجع قيمة رصيد واضحة يمكن قراءتها"

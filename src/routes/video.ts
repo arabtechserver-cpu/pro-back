@@ -239,7 +239,7 @@ router.post('/tutorials', isAdmin, async (req, res) => {
       title: `درس وفيديو جديد: ${tutorial.titleAr || tutorial.titleEn}`,
       message: `تمت إضافة شرح تعليمي جديد: ${tutorial.titleAr || tutorial.titleEn}. تفضل بمشاهدة الفيديو والتطبيق العملي.`,
       category: "Tutorial",
-      actionUrl: `https://arabtechproserver.tech/ar/tutorials/${tutorial.id}`,
+      actionUrl: `https://arabproserver.com/ar/tutorials/${tutorial.id}`,
       actionText: "مشاهدة الفيديو"
     }).catch(() => {});
 

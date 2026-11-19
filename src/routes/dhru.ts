@@ -571,7 +571,7 @@ router.post('/services/notify', isAdmin, async (req, res) => {
       title,
       message,
       category: 'Service Update',
-      actionUrl: `https://arabtechproserver.tech/ar/pricing?search=${encodeURIComponent(service.name)}`,
+      actionUrl: `https://arabproserver.com/ar/pricing?search=${encodeURIComponent(service.name)}`,
       actionText: 'طلب الخدمة الآن'
     });
 

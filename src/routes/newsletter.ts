@@ -46,7 +46,7 @@ export async function broadcastNewItemToSubscribers({
 
     const subject = `[عرب تك برو] ${title}`;
     const broadcastCategory = category || "Service Update";
-    const url = actionUrl || "https://arabtechproserver.tech";
+    const url = actionUrl || "https://arabproserver.com";
     const text = actionText || "عرض التفاصيل الآن";
 
     // Save broadcast record

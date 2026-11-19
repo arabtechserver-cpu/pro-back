@@ -40,7 +40,7 @@ router.post('/create-order', authenticateToken, async (req: any, res) => {
     }
 
     const rawOrigin = typeof req.headers.origin === 'string' ? req.headers.origin : null;
-    const originHost = resolvePrimaryFrontendUrl(rawOrigin) || 'https://arabtechproserver.tech';
+    const originHost = resolvePrimaryFrontendUrl(rawOrigin) || 'https://arabproserver.com';
     const returnUrl = `${originHost}/ar/wallet?paypal=success`;
     const cancelUrl = `${originHost}/ar/wallet?paypal=cancel`;
 

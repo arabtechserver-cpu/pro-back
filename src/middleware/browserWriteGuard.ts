@@ -2,7 +2,7 @@ import { Request, Response, NextFunction } from 'express';
 
 export function getAllowedOrigins(): string[] {
   const configured = [
-    'https://arabtechproserver.tech', 'https://www.arabtechproserver.tech',
+    'https://arabproserver.com', 'https://www.arabproserver.com',
     'https://borai.store', 'https://www.borai.store',
     ...(process.env.FRONTEND_URL || '').split(','),
     ...(process.env.ADDITIONAL_ALLOWED_ORIGINS || '').split(',')

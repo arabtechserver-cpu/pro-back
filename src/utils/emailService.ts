@@ -2,7 +2,7 @@ import https from "https";
 
 // Resend Configuration (100% Resend Powered)
 const RESEND_API_KEY = process.env.RESEND_API_KEY || "";
-const RESEND_FROM = process.env.RESEND_FROM || "arabtechproserver.tech <arabtechproserver@arabtechproserver.tech>";
+const RESEND_FROM = process.env.RESEND_FROM || "arabproserver.com <arabtechproserver@arabproserver.com>";
 
 interface OtpPayload {
   code: string;
@@ -47,7 +47,7 @@ function generateLuxuryEmailHtml({
             ARAB TECH PRO SERVER
           </div>
           <h1 style="margin: 0; color: #ffffff; font-size: 24px; font-weight: 800; letter-spacing: 0.5px;">عرب تك برو سيرفر</h1>
-          <p style="margin: 5px 0 0 0; color: #bae6fd; font-size: 13px; font-family: monospace;">arabtechproserver.tech</p>
+          <p style="margin: 5px 0 0 0; color: #bae6fd; font-size: 13px; font-family: monospace;">arabproserver.com</p>
         </td>
       </tr>
 
@@ -140,7 +140,7 @@ export async function sendEmail({
         } else {
           console.warn(`[Resend Error] Email provider returned status ${res.statusCode}`);
           if (data && data.includes("domain is not verified")) {
-            console.warn(`[Resend Action Required] The domain arabtechproserver.tech is unverified in Resend. Please verify DNS records at https://resend.com/domains.`);
+            console.warn(`[Resend Action Required] The domain arabproserver.com is unverified in Resend. Please verify DNS records at https://resend.com/domains.`);
           }
           resolve(false);
         }
@@ -227,7 +227,7 @@ export const sendOtpEmail = async (email: string, payload: OtpPayload): Promise<
     message,
     badgeText: payload.code,
     actionText: payload.actionLabel || "تأكيد الحساب والدخول",
-    actionUrl: "https://arabtechproserver.tech/login"
+    actionUrl: "https://arabproserver.com/login"
   });
 
   const sent = await sendEmail({
@@ -265,7 +265,7 @@ export const sendWelcomeNewsletterEmail = async (email: string, name?: string): 
     username,
     message,
     actionText: "زيارة الموقع وتصفح الخدمات",
-    actionUrl: "https://arabtechproserver.tech"
+    actionUrl: "https://arabproserver.com"
   });
 
   return sendEmail({
@@ -294,7 +294,7 @@ export const sendNewsletterBroadcastEmail = async (
     username: "عزيزنا العميل",
     message: payload.message,
     actionText: payload.actionText || "عرض التفاصيل في الموقع",
-    actionUrl: payload.actionUrl || "https://arabtechproserver.tech"
+    actionUrl: payload.actionUrl || "https://arabproserver.com"
   });
 
   return sendEmail({
@@ -328,7 +328,7 @@ export const sendOrderConfirmationEmail = async (
     message,
     badgeText: `#${payload.orderId}`,
     actionText: "متابعة حالة الطلب في الموقع",
-    actionUrl: "https://arabtechproserver.tech/dashboard/orders"
+    actionUrl: "https://arabproserver.com/dashboard/orders"
   });
 
   return sendEmail({
@@ -360,7 +360,7 @@ export const sendDepositApprovalEmail = async (
     message,
     badgeText: `+$${payload.amount.toFixed(2)} USD`,
     actionText: "فتح المحفظة والطلب الآن",
-    actionUrl: "https://arabtechproserver.tech/dashboard/wallet"
+    actionUrl: "https://arabproserver.com/dashboard/wallet"
   });
 
   return sendEmail({
@@ -391,7 +391,7 @@ export const sendDepositPendingEmail = async (
     message,
     badgeText: `قيد المراجعة`,
     actionText: "متابعة حالة الطلب في الموقع",
-    actionUrl: "https://arabtechproserver.tech/dashboard/wallet"
+    actionUrl: "https://arabproserver.com/dashboard/wallet"
   });
 
   return sendEmail({

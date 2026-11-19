@@ -17,7 +17,7 @@ const aiChatLimiter = rateLimit({
 });
 
 const SYSTEM_PROMPT = `
-أنت "المساعد الذكي للدعم الفني وخدمة العملاء والتفاوض" لمنصة "عرب تك برو سيرفر - Arab Tech Pro Server" (arabtechproserver.tech).
+أنت "المساعد الذكي للدعم الفني وخدمة العملاء والتفاوض" لمنصة "عرب تك برو سيرفر - Arab Tech Pro Server" (arabproserver.com).
 أنت تتحدث بأسلوب بشري ذكي، لبق، متفهم، هادئ، واحترافي جداً.
 
 قواعدك الأساسية في الحوار:
@@ -31,7 +31,7 @@ const SYSTEM_PROMPT = `
    - بعد رفع التذكرة، أخبر العميل برقم التذكرة الناتج وطمئنه أن التذكرة والتفاصيل أُرسلت فوراً إلى إدارة السيرفر عبر تيليجرام وسيتواصلون معه.
 4. **بيانات المنصة الرسمية**:
    - اسم الموقع: عرب تك برو سيرفر (Arab Tech Pro Server).
-   - الدومين الرسمي: https://arabtechproserver.tech
+   - الدومين الرسمي: https://arabproserver.com
    - المطور والمدير: Mina Samir.
    - واتساب الدعم: https://wa.me/16728972935
    - تيليجرام الدعم: @ARABTECHSUPPURT2
@@ -250,7 +250,7 @@ async function executeToolCall(toolCall: any, userId?: string, guestInfo: any = 
           price: `$${Number(s.credit + (s.margin || 0)).toFixed(2)} USD`,
           time: s.time || 'فوري',
           group: s.groupName,
-          url: `https://arabtechproserver.tech/pricing?search=${encodeURIComponent(s.name)}`
+          url: `https://arabproserver.com/pricing?search=${encodeURIComponent(s.name)}`
         }))
       };
     }
@@ -305,9 +305,9 @@ async function buildLocalReply(message: string, userId?: string, guestInfo: any 
 
   // 5. Wallet balance
   if (/رصيد|محفظ|balance|wallet/.test(normalized)) {
-    if (!userId) return 'لعرض رصيدك والشحن، يرجى تسجيل الدخول: https://arabtechproserver.tech/login';
+    if (!userId) return 'لعرض رصيدك والشحن، يرجى تسجيل الدخول: https://arabproserver.com/login';
     const user = await prisma.user.findUnique({ where: { id: userId }, select: { balance: true } });
-    return `رصيد محفظتك الحالي: **$${Number(user?.balance || 0).toFixed(2)} USD**\nيمكنك شحن المحفظة من هنا: https://arabtechproserver.tech/dashboard/wallet`;
+    return `رصيد محفظتك الحالي: **$${Number(user?.balance || 0).toFixed(2)} USD**\nيمكنك شحن المحفظة من هنا: https://arabproserver.com/dashboard/wallet`;
   }
 
   // 6. Search Services
@@ -340,7 +340,7 @@ async function callOpenRouter(messages: any[]) {
     headers: {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
-      'HTTP-Referer': 'https://arabtechproserver.tech',
+      'HTTP-Referer': 'https://arabproserver.com',
       'X-Title': 'Arab Tech Pro Server'
     },
     signal: AbortSignal.timeout(20000),

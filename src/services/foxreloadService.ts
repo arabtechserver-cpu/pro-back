@@ -263,7 +263,7 @@ async function requestFoxreloadApi(
       'X-Language': lang,
       'X-Currency': currency.toLowerCase(),
       'Accept': 'application/json',
-      'User-Agent': 'ArabTechProServer/1.0 (+https://arabtechproserver.tech)',
+      'User-Agent': 'ArabTechProServer/1.0 (+https://arabproserver.com)',
     };
 
     if (bodyPayload && method === 'POST') {

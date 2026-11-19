@@ -54,14 +54,14 @@ test('upload decoder rejects signatures without real images, SVG, bad base64, mi
 });
 
 test('browser writes reject foreign/subdomain origins, cross-site forms and originless session cookies', () => {
-  for (const headers of [{ origin: 'https://attacker.example' }, { origin: 'https://evil.arabtechproserver.tech' },
+  for (const headers of [{ origin: 'https://attacker.example' }, { origin: 'https://evil.arabproserver.com' },
     { origin: 'http://localhost:3000' }, { origin: 'null' }, { 'sec-fetch-site': 'cross-site' },
     { cookie: 'admin_token=session' }, { cookie: 'other=x; user_token=session' }]) {
     const res = response(); let passed = false;
     browserWriteGuard({ method: 'POST', headers }, res, () => { passed = true; });
     assert.equal(passed, false); assert.equal(res.statusCode, 403);
   }
-  for (const headers of [{ origin: 'https://arabtechproserver.tech', cookie: 'admin_token=session' },
+  for (const headers of [{ origin: 'https://arabproserver.com', cookie: 'admin_token=session' },
     { authorization: 'Bearer server-client' }, {}]) {
     let passed = false;
     browserWriteGuard({ method: 'POST', headers }, response(), () => { passed = true; });
@@ -196,13 +196,13 @@ test('production Turnstile fails closed for disable flags, invalid secrets, fail
     for (const result of [
       { success: false, 'error-codes': ['hostname-mismatch'] },
       { success: false, 'error-codes': ['invalid-input-secret'] },
-      { success: true, hostname: 'attacker.example' }, { success: 'true', hostname: 'arabtechproserver.tech' },
-      { success: true, hostname: 'arabtechproserver.tech' }
+      { success: true, hostname: 'attacker.example' }, { success: 'true', hostname: 'arabproserver.com' },
+      { success: true, hostname: 'arabproserver.com' }
     ]) {
       global.fetch = async () => ({ ok: true, json: async () => result });
       const res = response(); let passed = false;
       await turnstileMiddleware({ body: { turnstileToken: 'valid-test-token' }, headers: {}, socket: {} }, res, () => { passed = true; });
-      assert.equal(passed, result.success === true && result.hostname === 'arabtechproserver.tech');
+      assert.equal(passed, result.success === true && result.hostname === 'arabproserver.com');
     }
     for (const key of ['DISABLE_TURNSTILE', 'DISABLE_CLOUDFLARE', 'NEXT_PUBLIC_DISABLE_TURNSTILE']) {
       process.env[key] = 'true'; let passed = false; const res = response();

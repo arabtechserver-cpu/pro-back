@@ -59,8 +59,8 @@ test('Telegram config resolves a single public frontend URL and strips invalid i
     'https://borai.store'
   );
   assert.equal(
-    resolvePrimaryFrontendUrl('https://arabtechproserver.tech/ , https://borai.store'),
-    'https://arabtechproserver.tech'
+    resolvePrimaryFrontendUrl('https://arabproserver.com/ , https://borai.store'),
+    'https://arabproserver.com'
   );
   assert.equal(isValidTelegramButtonUrl('https://borai.store/admin/transactions'), true);
   assert.equal(isValidTelegramButtonUrl('mailto:user@example.com'), false);

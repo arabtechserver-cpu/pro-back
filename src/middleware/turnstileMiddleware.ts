@@ -135,7 +135,7 @@ export async function turnstileMiddleware(req: Request, res: Response, next: Nex
       });
     }
 
-    const hostnames = (process.env.TURNSTILE_ALLOWED_HOSTNAMES || 'arabtechproserver.tech,www.arabtechproserver.tech,borai.store,www.borai.store')
+    const hostnames = (process.env.TURNSTILE_ALLOWED_HOSTNAMES || 'arabproserver.com,www.arabproserver.com,borai.store,www.borai.store')
       .split(',').map(host => host.trim().toLowerCase()).filter(Boolean);
     if (!isDev && (typeof result.hostname !== 'string' || !hostnames.includes(result.hostname.toLowerCase()))) {
       return res.status(403).json({ success: false, error: 'Security verification hostname mismatch', code: 'TURNSTILE_FAILED' });

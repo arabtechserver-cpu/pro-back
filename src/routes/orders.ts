@@ -5,7 +5,7 @@ import { getFoxreloadOrderDetails } from '../services/foxreloadService';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
 import { buildOrderFieldDetails, resolveOrderServiceType, parseOrderMetadata } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
-import { sendOrderConfirmationEmail } from '../utils/emailService';
+import { sendOrderConfirmationEmail, sendOrderStatusUpdateEmail } from '../utils/emailService';
 import { isAdmin, authenticateToken } from '../middleware/auth';
 import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { getServiceQuantityConfig } from '../utils/provider-quantity';
@@ -16,6 +16,7 @@ import { dispatchOrderToProvider, tryAutoDispatchOrder } from '../services/order
 import rateLimit from 'express-rate-limit';
 import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { roundCurrency } from '../utils/currency';
+import { getImeiLookupIdentifier, isImeiLookupDhruEndpoint, isImeiLookupIdentifier } from '../utils/imei-lookup-dhru';
 
 const dispatchProviderLimiter = rateLimit({
   store: new BoundedRateLimitStore(2000),
@@ -287,6 +288,14 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
       return res.status(404).json({ error: 'الخدمة المطلوبة غير متاحة حالياً' });
     }
 
+    let providerIdentifier = rawImei?.trim() || null;
+    if (isImeiLookupDhruEndpoint(dhruService.apiProvider?.apiUrl)) {
+      providerIdentifier = getImeiLookupIdentifier(rawImei, customFields, targetInput);
+      if (!isImeiLookupIdentifier(providerIdentifier)) {
+        return res.status(400).json({ error: 'يرجى إدخال معرّف الجهاز المطلوب للخدمة بدون مسافات أو فواصل.' });
+      }
+    }
+
     // Validate provider quantity limits
     const qtyConfig = getServiceQuantityConfig({
       ...dhruService,
@@ -404,7 +413,7 @@ router.post('/', authenticateToken, validateBody(createOrderSchema), async (req,
 
         const structuredNotes = JSON.stringify({
           userNote: notes ? String(notes).trim() : null,
-          rawImei: rawImei ? String(rawImei).trim() : null,
+          rawImei: providerIdentifier,
           customFields: Object.keys(mergedCustomFields).length > 0 ? mergedCustomFields : null,
           couponCode: appliedCoupon ? appliedCoupon.code : null,
           discountAmount: couponDiscountAmount,
@@ -635,7 +644,7 @@ router.post('/complete-manual', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'معرف الطلب مطلوب' });
     }
 
-    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
     if (!order) return res.status(404).json({ error: 'الطلب غير موجود' });
 
     let parsedNotes: any = {};
@@ -662,6 +671,17 @@ router.post('/complete-manual', isAdmin, async (req, res) => {
         notes: JSON.stringify(parsedNotes)
       }
     });
+
+    if (order.user?.email) {
+      sendOrderStatusUpdateEmail(order.user.email, {
+        orderId: updatedOrder.id.slice(-6),
+        serviceName: updatedOrder.serviceName,
+        targetInput: updatedOrder.targetInput,
+        status: 'completed',
+        reply: updatedOrder.reply || undefined,
+        username: order.user.fullName
+      }).catch(() => {});
+    }
 
     return res.json({
       success: true,
@@ -822,6 +842,18 @@ router.post('/refund', isAdmin, async (req, res) => {
       throw txError;
     }
 
+    if (order.user?.email) {
+      sendOrderStatusUpdateEmail(order.user.email, {
+        orderId: order.id.slice(-6),
+        serviceName: order.serviceName,
+        targetInput: order.targetInput,
+        status: 'rejected',
+        reply: cancelReason,
+        refundAmount,
+        username: order.user.fullName
+      }).catch(() => {});
+    }
+
     return res.json({
       success: true,
       message: `تم استرجاع $${refundAmount.toFixed(2)} USD بنجاح إلى محفظة العميل!`,
@@ -931,6 +963,18 @@ router.post('/cancel-provider', isAdmin, async (req, res) => {
       throw txError;
     }
 
+    if (order.user?.email) {
+      sendOrderStatusUpdateEmail(order.user.email, {
+        orderId: order.id.slice(-6),
+        serviceName: order.serviceName,
+        targetInput: order.targetInput,
+        status: 'rejected',
+        reply: cancelReason,
+        refundAmount,
+        username: order.user.fullName
+      }).catch(() => {});
+    }
+
     return res.json({
       success: true,
       message: `تم إلغاء الطلب من المزود واسترجاع $${refundAmount.toFixed(2)} USD للعميل بنجاح!`,
@@ -948,7 +992,7 @@ router.post('/check-status', isAdmin, async (req, res) => {
     const { orderId } = req.body;
     if (!orderId) return res.status(400).json({ error: 'معرف الطلب مطلوب' });
 
-    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
     if (!order) return res.status(404).json({ error: 'الطلب غير موجود' });
 
     if (!order.apiOrderId) {
@@ -977,6 +1021,17 @@ router.post('/check-status', isAdmin, async (req, res) => {
         where: { id: orderId },
         data: { status: nextStatus, reply }
       });
+
+      if ((nextStatus === 'completed' || nextStatus === 'rejected') && nextStatus !== order.status && order.user?.email) {
+        sendOrderStatusUpdateEmail(order.user.email, {
+          orderId: updatedOrder.id.slice(-6),
+          serviceName: updatedOrder.serviceName,
+          targetInput: updatedOrder.targetInput,
+          status: nextStatus,
+          reply: reply || undefined,
+          username: order.user.fullName
+        }).catch(() => {});
+      }
 
       return res.json({
         success: true,
@@ -1067,6 +1122,17 @@ router.post('/check-status', isAdmin, async (req, res) => {
         data: { status: nextStatus, reply }
       });
 
+      if (order.status !== 'completed' && order.user?.email) {
+        sendOrderStatusUpdateEmail(order.user.email, {
+          orderId: updatedOrder.id.slice(-6),
+          serviceName: updatedOrder.serviceName,
+          targetInput: updatedOrder.targetInput,
+          status: 'completed',
+          reply: reply || undefined,
+          username: order.user.fullName
+        }).catch(() => {});
+      }
+
       return res.json({
         success: true,
         message: `تم تحديث حالة الطلب من المزود: ${nextStatus}`,
@@ -1125,6 +1191,18 @@ router.post('/check-status', isAdmin, async (req, res) => {
           return await tx.order.findUnique({ where: { id: orderId } });
         });
 
+        if (order.status !== 'rejected' && order.user?.email) {
+          sendOrderStatusUpdateEmail(order.user.email, {
+            orderId: order.id.slice(-6),
+            serviceName: order.serviceName,
+            targetInput: order.targetInput,
+            status: 'rejected',
+            reply: reply || undefined,
+            refundAmount: order.price,
+            username: order.user.fullName
+          }).catch(() => {});
+        }
+
         return res.json({
           success: true,
           message: `تم التحقق من المزود: الطلب مرفوض، وتم استرجاع $${order.price.toFixed(2)} USD للمحفظة آلياً`,
@@ -1137,6 +1215,17 @@ router.post('/check-status', isAdmin, async (req, res) => {
           where: { id: orderId },
           data: { status: 'rejected', reply }
         });
+
+        if (order.status !== 'rejected' && order.user?.email) {
+          sendOrderStatusUpdateEmail(order.user.email, {
+            orderId: order.id.slice(-6),
+            serviceName: order.serviceName,
+            targetInput: order.targetInput,
+            status: 'rejected',
+            reply: reply || undefined,
+            username: order.user.fullName
+          }).catch(() => {});
+        }
 
         return res.json({
           success: true,
@@ -1176,6 +1265,11 @@ router.post('/update-status', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'معرف الطلب والحالة الجديدة مطلوبة' });
     }
 
+    const existingOrder = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
+    if (!existingOrder) {
+      return res.status(404).json({ error: 'الطلب غير موجود' });
+    }
+
     const updateData: any = { status: newStatus };
     if (reply !== undefined && reply !== null) {
       updateData.reply = String(reply).trim();
@@ -1185,6 +1279,17 @@ router.post('/update-status', isAdmin, async (req, res) => {
       where: { id: orderId },
       data: updateData
     });
+
+    if ((newStatus === 'completed' || newStatus === 'rejected') && existingOrder.status !== newStatus && existingOrder.user?.email) {
+      sendOrderStatusUpdateEmail(existingOrder.user.email, {
+        orderId: updatedOrder.id.slice(-6),
+        serviceName: updatedOrder.serviceName,
+        targetInput: updatedOrder.targetInput,
+        status: newStatus,
+        reply: updatedOrder.reply || undefined,
+        username: existingOrder.user.fullName
+      }).catch(() => {});
+    }
 
     return res.json({
       success: true,
@@ -1205,7 +1310,7 @@ router.post('/update-fields', isAdmin, async (req, res) => {
       return res.status(400).json({ error: 'معرف الطلب والبيانات مطلوبة' });
     }
 
-    const order = await prisma.order.findUnique({ where: { id: orderId } });
+    const order = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
     if (!order) return res.status(404).json({ error: 'الطلب غير موجود' });
 
     let parsedNotes: any = {};

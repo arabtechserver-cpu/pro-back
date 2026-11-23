@@ -8,6 +8,7 @@ import {
   BybitDepositRecord
 } from '../services/bybitService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
+import { sendDepositApprovalEmail } from '../utils/emailService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 
 const router = Router();
@@ -314,6 +315,15 @@ router.post('/verify-deposit', authenticateToken, async (req: any, res) => {
       ].join('\n');
 
       sendTelegramPhotoNotification({ caption }).catch(() => {});
+
+      if (updatedUser.email) {
+        sendDepositApprovalEmail(updatedUser.email, {
+          amount: paymentIntent.amount,
+          newBalance: updatedUser.balance,
+          username: updatedUser.fullName,
+          method: `Bybit (${depositRecord.chain || 'USDT'})`
+        }).catch(() => {});
+      }
 
       return res.json({
         success: true,

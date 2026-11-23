@@ -24,6 +24,7 @@ import {
 
 import { tryAutoDispatchOrder } from '../services/orderDispatchService';
 import { roundCurrency } from '../utils/currency';
+import { getImeiLookupIdentifier, isImeiLookupDhruEndpoint, isImeiLookupIdentifier } from '../utils/imei-lookup-dhru';
 
 const router = Router();
 
@@ -607,6 +608,14 @@ async function executeOrderPlacement(req: any, res: any, parsedParams: Record<st
   // ----------------------------------------------------
   if (!dhruService) {
     return res.json({ SUCCESS: [{ ERROR: "Service not found or inactive" }] });
+  }
+
+  if (isImeiLookupDhruEndpoint(dhruService.apiProvider?.apiUrl)) {
+    const identifier = getImeiLookupIdentifier(rawImei, customFieldsObj);
+    if (!isImeiLookupIdentifier(identifier)) {
+      return res.json({ SUCCESS: [{ ERROR: 'A device identifier without spaces or separators is required' }] });
+    }
+    finalTargetInput = identifier;
   }
 
   if (dhruService.supportsQty) {

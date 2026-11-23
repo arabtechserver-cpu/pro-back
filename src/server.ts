@@ -16,6 +16,7 @@ EventEmitter.defaultMaxListeners = 50;
 const app = express();
 app.use(compression());
 const PORT = Number(process.env.PORT) || 5000;
+const API_BIND_HOST = process.env.API_BIND_HOST || '0.0.0.0';
 const allowedOrigins = getAllowedOrigins();
 
 app.set('trust proxy', getTrustedProxies());
@@ -167,6 +168,7 @@ import couponsRoutes from './routes/coupons';
 import settingsRoutes from './routes/settings';
 import ipAccessRoutes from './routes/ipAccess';
 import foxreloadRoutes from './routes/foxreload';
+import mobileCashierRoutes from './routes/mobileCashier';
 
 app.use('/api/auth', authRoutes);
 app.use('/api/coupons', couponsRoutes);
@@ -180,6 +182,7 @@ app.use('/api/wallet', walletRoutes);
 app.use('/api/blog', blogRoutes);
 app.use('/api/dhru', dhruRoutes);
 app.use('/api/foxreload', foxreloadRoutes);
+app.use('/api/mobile-cashier', mobileCashierRoutes);
 app.use('/api/providers', providersRoutes);
 app.use('/api/api-providers', providersRoutes);
 app.use('/api/videos', videoRoutes);
@@ -251,8 +254,8 @@ async function runStartupTasks() {
 
 async function startServer() {
   try {
-    const server = app.listen(PORT, '0.0.0.0', () => {
-      console.log(`Backend server is running on http://0.0.0.0:${PORT}`);
+    const server = app.listen(PORT, API_BIND_HOST, () => {
+      console.log(`Backend server is running on http://${API_BIND_HOST}:${PORT}`);
       if (process.env.STARTUP_MAINTENANCE !== 'false' || process.env.BACKGROUND_JOBS_ENABLED !== 'false') {
         setImmediate(() => {
           void runStartupTasks();

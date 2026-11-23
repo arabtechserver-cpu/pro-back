@@ -5,6 +5,7 @@ export const registerSchema = z.object({
   email: z.string().trim().toLowerCase().email('البريد الإلكتروني غير صالح').max(254),
   username: z.string().trim().toLowerCase().min(3, 'اسم المستخدم يجب ألا يقل عن 3 أحرف').max(50).regex(/^[a-zA-Z0-9_.-]+$/, 'اسم المستخدم يجب أن يحتوي على أحرف وأرقام ورموز مسموحة فقط'),
   password: z.string().min(8, 'كلمة المرور يجب ألا تقل عن 8 أحرف').max(128),
+  otp: z.string().trim().regex(/^\d{6}$/, 'كود التحقق (OTP) المكون من 6 أرقام مطلوب لإتمام التسجيل'),
   phone: z.string().trim().max(30).optional().nullable(),
   country: z.string().trim().max(10).optional().default('EG')
 });

@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { prisma } from "../utils/prisma";
 import { createPayPalOrder, capturePayPalOrder, verifyPayPalWebhookSignature } from '../services/paypalService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
+import { sendDepositApprovalEmail } from '../utils/emailService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { authenticateToken } from '../middleware/auth';
 import { applyPayPalRefund, PayPalRefundError } from '../services/paypalRefunds';
@@ -245,6 +246,15 @@ router.post('/capture-order', authenticateToken, async (req: any, res) => {
 
       sendTelegramPhotoNotification({ caption }).catch(() => {});
 
+      if (updatedUser.email) {
+        sendDepositApprovalEmail(updatedUser.email, {
+          amount: capturedAmount,
+          newBalance: updatedUser.balance,
+          username: updatedUser.fullName,
+          method: 'PayPal'
+        }).catch(() => {});
+      }
+
       return res.json({
         success: true,
         message: `تم التحقق واستلام الدفعة وإضافة $${capturedAmount.toFixed(2)} USD إلى محفظتك بنجاح`,
@@ -329,14 +339,14 @@ router.post('/webhook', async (req, res) => {
 
       const refNo = `PAYPAL_${intent.id}_${captureId}`;
 
-      await prisma.$transaction(async (tx) => {
+      const webhookTxResult = await prisma.$transaction(async (tx) => {
         const updateRes = await tx.paymentIntent.updateMany({
           where: { id: intent.id, status: { in: ['created', 'pending'] } },
           data: { status: 'completed', captureId }
         });
 
         if (updateRes.count === 0) {
-          return;
+          return null;
         }
 
         await tx.transaction.create({
@@ -356,12 +366,22 @@ router.post('/webhook', async (req, res) => {
         });
         const roundedBalance = roundCurrency(incrementedUser.balance, 4);
         if (roundedBalance !== incrementedUser.balance) {
-          await tx.user.update({
+          return await tx.user.update({
             where: { id: intent.userId },
             data: { balance: roundedBalance }
           });
         }
+        return incrementedUser;
       });
+
+      if (webhookTxResult?.email) {
+        sendDepositApprovalEmail(webhookTxResult.email, {
+          amount: capturedAmount,
+          newBalance: webhookTxResult.balance,
+          username: webhookTxResult.fullName,
+          method: 'PayPal'
+        }).catch(() => {});
+      }
 
       console.log(`[PayPal Webhook] Successfully completed capture ${captureId} for user ${intent.userId}`);
     }

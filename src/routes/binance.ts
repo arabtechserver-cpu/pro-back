@@ -7,6 +7,7 @@ import {
   matchesBinancePayment
 } from '../services/binanceService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
+import { sendDepositApprovalEmail } from '../utils/emailService';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
 import { authenticateToken } from '../middleware/auth';
 
@@ -203,6 +204,15 @@ router.post('/check-order', authenticateToken, async (req: any, res) => {
 
       sendTelegramPhotoNotification({ caption }).catch(() => {});
 
+      if (updatedUser.email) {
+        sendDepositApprovalEmail(updatedUser.email, {
+          amount: paymentIntent.amount,
+          newBalance: updatedUser.balance,
+          username: updatedUser.fullName,
+          method: 'Binance Pay'
+        }).catch(() => {});
+      }
+
       return res.json({
         success: true,
         paid: true,
@@ -305,6 +315,15 @@ router.post('/webhook', async (req: any, res) => {
       ].join('\n');
 
       sendTelegramPhotoNotification({ caption }).catch(() => {});
+
+      if (updatedUser.email) {
+        sendDepositApprovalEmail(updatedUser.email, {
+          amount: creditedAmount,
+          newBalance: updatedUser.balance,
+          username: updatedUser.fullName,
+          method: 'Binance Pay'
+        }).catch(() => {});
+      }
     });
 
     await checkAndAutoUpgradeMembership(userId, creditedAmount).catch(() => {});

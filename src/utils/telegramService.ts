@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import bcrypt from 'bcryptjs';
 import { prisma } from "../utils/prisma";
-import { sendDepositApprovalEmail, sendOrderConfirmationEmail } from './emailService';
+import { sendDepositApprovalEmail, sendDepositRejectionEmail, sendOrderConfirmationEmail, sendOrderStatusUpdateEmail } from './emailService';
 import { checkAndAutoUpgradeMembership } from './membershipUpgrade';
 import { normalizeTelegramAdminChatIds, sanitizeTelegramReplyMarkup } from './telegram-config';
 import { roundCurrency } from './currency';
@@ -471,6 +471,19 @@ async function handleIncomingTelegramUpdate(update: any) {
         }
 
         await sendTelegramMessage(chatId, `[REJECTED] <b>تم رفض طلب الإيداع رقم #${txId.slice(-6)} بنجاح.</b>`);
+
+        const rejectedTx = await prisma.transaction.findUnique({
+          where: { id: txId },
+          include: { user: true }
+        });
+        if (rejectedTx?.user?.email) {
+          sendDepositRejectionEmail(rejectedTx.user.email, {
+            amount: rejectedTx.amount,
+            method: rejectedTx.method,
+            refNo: rejectedTx.refNo,
+            username: rejectedTx.user.fullName
+          }).catch(() => {});
+        }
         return;
       }
 
@@ -489,9 +502,19 @@ async function handleIncomingTelegramUpdate(update: any) {
           return;
         }
 
-        const updatedOrder = await prisma.order.findUnique({ where: { id: orderId } });
+        const updatedOrder = await prisma.order.findUnique({ where: { id: orderId }, include: { user: true } });
 
         await sendTelegramMessage(chatId, `[COMPLETED] <b>تم إكمال الطلب #${orderId.slice(-6)} بنجاح!</b> (${updatedOrder?.serviceName || ''})`);
+        if (updatedOrder?.user?.email) {
+          sendOrderStatusUpdateEmail(updatedOrder.user.email, {
+            orderId: updatedOrder.id.slice(-6),
+            serviceName: updatedOrder.serviceName,
+            targetInput: updatedOrder.targetInput,
+            status: 'completed',
+            reply: updatedOrder.reply || 'تم التنفيذ بنجاح',
+            username: updatedOrder.user.fullName
+          }).catch(() => {});
+        }
         return;
       }
 
@@ -558,6 +581,18 @@ async function handleIncomingTelegramUpdate(update: any) {
           chatId,
           `[REFUND] <b>تم إلغاء الطلب واسترجاع الرصيد بنجاح!</b>\n\n<b>رقم الطلب:</b> #${order.id.slice(-6)}\n<b>العميل:</b> ${refundedUser.fullName}\n<b>المبلغ المسترجع:</b> <code>+$${order.price.toFixed(2)} USD</code>\n<b>رصيد العميل الحالي:</b> <code>$${refundedUser.balance.toFixed(2)} USD</code>`
         );
+        if (refundedUser.email) {
+          sendOrderStatusUpdateEmail(refundedUser.email, {
+            orderId: order.id.slice(-6),
+            serviceName: order.serviceName,
+            targetInput: order.targetInput,
+            status: 'rejected',
+            reply: 'تم إلغاء الطلب وإرجاع الرصيد لمحفظتك',
+            refundAmount: order.price,
+            newBalance: refundedUser.balance,
+            username: refundedUser.fullName
+          }).catch(() => {});
+        }
         return;
       }
     } catch (err: any) {

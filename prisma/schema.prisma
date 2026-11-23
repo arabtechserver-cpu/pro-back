@@ -8,6 +8,103 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+model CashierPlan {
+  id              String           @id @default(uuid())
+  name            String
+  description     String           @default("")
+  amountMinor     Int
+  currency        String
+  durationDays    Int
+  discountPercent Int              @default(0)
+  promoAmountMinor Int?
+  discountUntil   DateTime?
+  active          Boolean          @default(true)
+  createdAt       DateTime         @default(now())
+  licenses        CashierLicense[]
+}
+
+model CashierDevice {
+  id             String                  @id @default(uuid())
+  machineHash    String                  @unique
+  proofHash      String
+  shopName       String
+  email          String
+  trialEndsAt    DateTime?
+  activeKeyId    String?                 @unique
+  activeKey      CashierLicense?         @relation("CashierActiveKey", fields: [activeKeyId], references: [id], onDelete: SetNull)
+  redeemedKeys   CashierLicense[]        @relation("CashierRedeemedKeys")
+  sessions       CashierSupportSession[]
+  createdAt      DateTime                @default(now())
+  lastSeenAt     DateTime                @default(now())
+}
+
+model CashierLicense {
+  id             String         @id @default(uuid())
+  keyHash        String         @unique
+  suffix         String
+  customerEmail  String
+  durationDays   Int
+  planId         String
+  plan           CashierPlan    @relation(fields: [planId], references: [id], onDelete: Restrict)
+  deviceId       String?
+  device         CashierDevice? @relation("CashierRedeemedKeys", fields: [deviceId], references: [id], onDelete: SetNull)
+  activeOn       CashierDevice? @relation("CashierActiveKey")
+  issuedBy       String
+  expiresAt      DateTime?
+  revokedAt      DateTime?
+  createdAt      DateTime       @default(now())
+  purchase       CashierPurchase?
+
+  @@index([deviceId])
+}
+
+model CashierPurchase {
+  id            String         @id @default(uuid())
+  buyerId       String
+  buyer         User           @relation(fields: [buyerId], references: [id], onDelete: Restrict)
+  requestId     String
+  planName      String
+  amountMinor   Int
+  licenseId     String         @unique
+  license       CashierLicense @relation(fields: [licenseId], references: [id], onDelete: Restrict)
+  transactionId String         @unique
+  transaction   Transaction    @relation(fields: [transactionId], references: [id], onDelete: Restrict)
+  createdAt     DateTime       @default(now())
+
+  @@unique([buyerId, requestId])
+  @@index([buyerId, createdAt])
+}
+
+model CashierSupportSession {
+  id          String        @id @default(uuid())
+  code        String        @unique
+  deviceId    String
+  device      CashierDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  mode        String
+  status      String        @default("REQUESTED")
+  notes       String
+  consentAt   DateTime      @default(now())
+  expiresAt   DateTime
+  operatorId  String?
+  acceptedAt  DateTime?
+  endedAt     DateTime?
+  endedBy     String?
+  messages    CashierSupportMessage[]
+
+  @@index([deviceId, consentAt])
+}
+
+model CashierSupportMessage {
+  id         String                @id @default(uuid())
+  sessionId  String
+  session    CashierSupportSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  author     String
+  body       String
+  createdAt  DateTime              @default(now())
+
+  @@index([sessionId, createdAt])
+}
+
 model AnalyticsEvent {
   id        String   @id @default(uuid())
   eventName String
@@ -154,6 +251,7 @@ model Transaction {
   createdAt    DateTime @default(now())
   updatedAt    DateTime @default(now()) @updatedAt
   user         User     @relation(fields: [userId], references: [id], onDelete: Restrict)
+  cashierPurchase CashierPurchase?
 
   @@index([refNo])
   @@index([createdAt])
@@ -225,6 +323,7 @@ model User {
   apiAllowedIps    String?
   apiDailyLimit    Float?
   couponUsages     CouponUsage[]
+  cashierPurchases CashierPurchase[]
 }
 
 model MembershipTier {

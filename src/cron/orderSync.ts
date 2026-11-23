@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { getImeiOrder, getServerOrder, getDhruApiErrorMessage, DHRU_API_URL } from '../utils/dhru-api';
 import { getFoxreloadOrderDetails } from '../services/foxreloadService';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
+import { sendOrderStatusUpdateEmail } from '../utils/emailService';
 import { resolveOrderServiceType } from '../utils/order-response';
 import { AUTO_REFUND_CUTOFF_DATE } from '../utils/order-refund-cutoff';
 import { pagedRows } from '../utils/paged-rows';
@@ -79,6 +80,19 @@ export function initOrderSyncCron() {
               });
               const msg = `تم اكتمال طلبك بنجاح\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
               sendTelegramPhotoNotification({ caption: msg }).catch(() => {});
+              if (order.userId) {
+                const orderUser = await prisma.user.findUnique({ where: { id: order.userId }, select: { email: true, fullName: true } });
+                if (orderUser?.email) {
+                  sendOrderStatusUpdateEmail(orderUser.email, {
+                    orderId: order.id.slice(-6),
+                    serviceName: order.serviceName,
+                    targetInput: order.targetInput,
+                    status: 'completed',
+                    reply: finalReply,
+                    username: orderUser.fullName
+                  }).catch(() => {});
+                }
+              }
               console.log(`[CRON] FoxReload Order #${order.id.slice(-6)} marked as COMPLETED.`);
               continue;
             }
@@ -129,6 +143,19 @@ export function initOrderSyncCron() {
 
                   const msg = `تم إلغاء طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
                   sendTelegramPhotoNotification({ caption: msg }).catch(() => {});
+                  const orderUser = await prisma.user.findUnique({ where: { id: targetUserId }, select: { email: true, fullName: true, balance: true } });
+                  if (orderUser?.email) {
+                    sendOrderStatusUpdateEmail(orderUser.email, {
+                      orderId: order.id.slice(-6),
+                      serviceName: order.serviceName,
+                      targetInput: order.targetInput,
+                      status: 'rejected',
+                      reply: rejectReason,
+                      refundAmount: order.price,
+                      newBalance: orderUser.balance,
+                      username: orderUser.fullName
+                    }).catch(() => {});
+                  }
                   console.log(`[CRON] FoxReload Order #${order.id.slice(-6)} marked as REJECTED and auto-refunded.`);
                 } catch (txErr) {
                   console.error(`[CRON] Transaction failed for rejected FoxReload order ${order.id}:`, txErr);
@@ -272,6 +299,19 @@ export function initOrderSyncCron() {
             // Notify User & Admin
             const msg = `تم اكتمال طلبك بنجاح\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
             sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
+            if (order.userId) {
+              const orderUser = await prisma.user.findUnique({ where: { id: order.userId }, select: { email: true, fullName: true } });
+              if (orderUser?.email) {
+                sendOrderStatusUpdateEmail(orderUser.email, {
+                  orderId: order.id.slice(-6),
+                  serviceName: order.serviceName,
+                  targetInput: order.targetInput,
+                  status: 'completed',
+                  reply: finalReply,
+                  username: orderUser.fullName
+                }).catch(() => {});
+              }
+            }
             console.log(`[CRON] Order #${order.id.slice(-6)} marked as COMPLETED.`);
           }
           else if (isRejected) {
@@ -324,6 +364,19 @@ export function initOrderSyncCron() {
                 // Notify User & Admin
                 const msg = `تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
                 sendTelegramPhotoNotification({ caption: msg }).catch(() => { });
+                const orderUser = await prisma.user.findUnique({ where: { id: targetUserId }, select: { email: true, fullName: true, balance: true } });
+                if (orderUser?.email) {
+                  sendOrderStatusUpdateEmail(orderUser.email, {
+                    orderId: order.id.slice(-6),
+                    serviceName: order.serviceName,
+                    targetInput: order.targetInput,
+                    status: 'rejected',
+                    reply: rejectReason,
+                    refundAmount: order.price,
+                    newBalance: orderUser.balance,
+                    username: orderUser.fullName
+                  }).catch(() => {});
+                }
                 console.log(`[CRON] Order #${order.id.slice(-6)} marked as REJECTED and auto-refunded.`);
               } catch (txErr) {
                 console.error(`[CRON] Transaction failed for rejected order ${order.id}:`, txErr);

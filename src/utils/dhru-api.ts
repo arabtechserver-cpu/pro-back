@@ -3,6 +3,7 @@ import { withinDeadline } from "./request-deadline";
 import http from "http";
 import dns from "dns";
 import { promisify } from "util";
+import { buildImeiLookupDhruForm, isImeiLookupDhruEndpoint, isImeiLookupIdentifier } from "./imei-lookup-dhru";
 
 const lookup = promisify(dns.lookup);
 
@@ -298,25 +299,30 @@ export function dhruApiRequest(
     const safePairs: Array<[string, string]> = [];
     const bracketPairs: Array<[string, string]> = [];
 
-    const data = new URLSearchParams();
-    if (username) data.append("username", username.trim());
-    data.append("key", apiKey);
-    data.append("apiaccesskey", apiKey);
-    data.append("action", action);
-    data.append("requestformat", "JSON");
+    const usesImeiLookup = isImeiLookupDhruEndpoint(targetUrl);
+    const data = usesImeiLookup
+      ? buildImeiLookupDhruForm(username, apiKey, action, parameters)
+      : new URLSearchParams();
+    if (!usesImeiLookup) {
+      if (username) data.append("username", username.trim());
+      data.append("key", apiKey);
+      data.append("apiaccesskey", apiKey);
+      data.append("action", action);
+      data.append("requestformat", "JSON");
 
-    Object.entries(parameters).forEach(([key, value]) => {
-      if (key.includes("[")) {
-        // Literal bracket key — must not go through URLSearchParams encoding.
-        bracketPairs.push([key, value]);
-      } else {
-        data.append(`parameters[${key}]`, value);
-        safePairs.push([key, value]);
-      }
-    });
+      Object.entries(parameters).forEach(([key, value]) => {
+        if (key.includes("[")) {
+          // Literal bracket key — must not go through URLSearchParams encoding.
+          bracketPairs.push([key, value]);
+        } else {
+          data.append(`parameters[${key}]`, value);
+          safePairs.push([key, value]);
+        }
+      });
 
-    // Append plain keys after the parameters[KEY] pairs.
-    safePairs.forEach(([key, value]) => data.append(key, value));
+      // Append plain keys after the parameters[KEY] pairs.
+      safePairs.forEach(([key, value]) => data.append(key, value));
+    }
 
     try {
       // Build final body: URLSearchParams-encoded fields + literal bracket fields.
@@ -533,6 +539,14 @@ export async function placeImeiOrder(
   customFields: Record<string, string> = {},
   provider?: ProviderConfig
 ) {
+  if (isImeiLookupDhruEndpoint(provider ? provider.apiUrl : DHRU_API_URL)) {
+    const identifier = imei.trim();
+    if (!isImeiLookupIdentifier(identifier)) {
+      return { ERROR: [{ MESSAGE: "Invalid IMEI or serial number" }] };
+    }
+    return dhruApiRequest("placeimeiorder", { ID: serviceId, IMEI: identifier }, provider);
+  }
+
   const isNumericImei = /^\d{14,16}$/.test((imei || "").replace(/[\s-]/g, ''));
   const params: Record<string, string> = {
     SERVICEID: serviceId,
@@ -724,6 +738,9 @@ export async function placeServerOrder(
 }
 
 export async function getImeiOrder(orderId: string, provider?: ProviderConfig) {
+  if (isImeiLookupDhruEndpoint(provider ? provider.apiUrl : DHRU_API_URL)) {
+    return dhruApiRequest("getimeiorder", { ID: orderId }, provider);
+  }
   const params = {
     ID: orderId,
     id: orderId,
@@ -742,6 +759,9 @@ export async function getImeiOrder(orderId: string, provider?: ProviderConfig) {
 }
 
 export async function getServerOrder(orderId: string, provider?: ProviderConfig) {
+  if (isImeiLookupDhruEndpoint(provider ? provider.apiUrl : DHRU_API_URL)) {
+    return getImeiOrder(orderId, provider);
+  }
   const params = {
     ID: orderId,
     id: orderId,

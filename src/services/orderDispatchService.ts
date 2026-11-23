@@ -12,6 +12,7 @@ import {
   isInvalidImeiError
 } from '../utils/dhru-api';
 import { getProviderRemoteServiceId } from '../utils/provider-service-id';
+import { isImeiLookupDhruEndpoint } from '../utils/imei-lookup-dhru';
 import { resolveOrderServiceType } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 
@@ -500,9 +501,10 @@ export async function dispatchOrderToProvider(
   });
   const providerTarget = String(rawImei || (isFieldSummary ? '' : storedTarget)).trim();
   const isNumericImei = /^\d{14,16}$/.test(providerTarget.replace(/[\s-]/g, ''));
+  const usesImeiLookup = isImeiLookupDhruEndpoint(providerConfig?.apiUrl);
 
   try {
-    if (serviceType === 'imei' && isNumericImei) {
+    if (serviceType === 'imei' && (isNumericImei || usesImeiLookup)) {
       actualDispatchType = 'imei';
       dhruResponse = await placeImeiOrder(remoteServiceId, providerTarget, providerCustomFields, providerConfig);
     } else {

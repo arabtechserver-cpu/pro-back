@@ -16,7 +16,7 @@ import { roundCurrency } from '../utils/currency';
 import { isAdmin, authenticateToken, optionalAuth } from '../middleware/auth';
 import { dashboardIpGuard } from '../middleware/dashboardIpGuard';
 import { checkAndAutoUpgradeMembership } from '../utils/membershipUpgrade';
-import { sendDepositApprovalEmail, sendDepositPendingEmail } from '../utils/emailService';
+import { sendDepositApprovalEmail, sendDepositPendingEmail, sendDepositRejectionEmail } from '../utils/emailService';
 import { buildAdminTransactionPageQuery, normalizeTransactionListQuery } from '../utils/transaction-query';
 import { getUploadDir, ensureUploadDir } from '../utils/uploads';
 import { validateBody } from '../middleware/validate';
@@ -583,6 +583,16 @@ router.post('/reject', isAdmin, async (req, res) => {
 
     if (updatedTx.count === 0) {
       return res.status(400).json({ error: 'العملية تمت معالجتها مسبقاً' });
+    }
+
+    const userObj = await prisma.user.findUnique({ where: { id: tx.userId } });
+    if (userObj?.email) {
+      sendDepositRejectionEmail(userObj.email, {
+        amount: tx.amount,
+        method: tx.method,
+        refNo: tx.refNo,
+        username: userObj.fullName
+      }).catch(() => {});
     }
 
     return res.json({

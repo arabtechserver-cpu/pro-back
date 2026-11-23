@@ -176,7 +176,7 @@ export const authenticateToken = async (req: AuthRequest, res: Response, next: N
         }
 
         if (user) {
-          if (user.status === 'suspended') {
+          if (user.status === 'suspended' || user.deletedAt) {
             return res.status(403).json({ error: 'Account is suspended' });
           }
           const expectedVersion = user.tokenVersion || 1;
@@ -228,7 +228,7 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
         }
 
         if (user) {
-          if (user.status === 'suspended') {
+          if (user.status === 'suspended' || user.deletedAt) {
             return res.status(403).json({ error: 'Account is suspended' });
           }
           const expectedVersion = user.tokenVersion || 1;

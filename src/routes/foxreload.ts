@@ -3,6 +3,7 @@ import { prisma } from '../utils/prisma';
 import { authenticateToken, isAdmin } from '../middleware/auth';
 import { validateFoxreloadOrder } from '../utils/foxreload-contract';
 import { roundCurrency } from '../utils/currency';
+import { sendOrderConfirmationEmail, sendOrderStatusUpdateEmail } from '../utils/emailService';
 import {
   getFoxreloadSettings,
   updateFoxreloadSettings,
@@ -226,6 +227,29 @@ router.post('/order', authenticateToken, async (req: any, res) => {
               reply: codesText || (dispatchResult.status === 'completed' ? 'تم الشحن والتفعيل بنجاح' : 'جاري التنفيذ لدى المزود'),
             },
           });
+          if (dbUser.email) {
+            const remainingBalance = Math.max(0, roundCurrency(dbUser.balance - cleanTotalPrice, 4));
+            if (updated.status === 'completed') {
+              sendOrderStatusUpdateEmail(dbUser.email, {
+                orderId: updated.id.slice(-6),
+                serviceName: updated.serviceName,
+                targetInput: updated.targetInput,
+                status: 'completed',
+                reply: updated.reply || undefined,
+                newBalance: remainingBalance,
+                username: dbUser.fullName
+              }).catch(() => {});
+            } else {
+              sendOrderConfirmationEmail(dbUser.email, {
+                orderId: updated.id.slice(-6),
+                serviceName: updated.serviceName,
+                targetInput: updated.targetInput,
+                price: cleanTotalPrice,
+                remainingBalance,
+                username: dbUser.fullName
+              }).catch(() => {});
+            }
+          }
           return res.json({
             success: true,
             orderId: updated.id,
@@ -238,6 +262,18 @@ router.post('/order', authenticateToken, async (req: any, res) => {
       } catch (dispatchErr: any) {
         console.error('Auto fulfill dispatch error:', dispatchErr);
       }
+    }
+
+    if (dbUser.email) {
+      const remainingBalance = Math.max(0, roundCurrency(dbUser.balance - cleanTotalPrice, 4));
+      sendOrderConfirmationEmail(dbUser.email, {
+        orderId: orderResult.id.slice(-6),
+        serviceName: orderResult.serviceName,
+        targetInput: orderResult.targetInput,
+        price: cleanTotalPrice,
+        remainingBalance,
+        username: dbUser.fullName
+      }).catch(() => {});
     }
 
     return res.json({
@@ -533,6 +569,20 @@ router.post('/admin/orders/:id/approve', async (req, res) => {
       },
     });
 
+    if (isCompleted && order.userId) {
+      const orderUser = await prisma.user.findUnique({ where: { id: order.userId }, select: { email: true, fullName: true } });
+      if (orderUser?.email) {
+        sendOrderStatusUpdateEmail(orderUser.email, {
+          orderId: updated.id.slice(-6),
+          serviceName: updated.serviceName,
+          targetInput: updated.targetInput,
+          status: 'completed',
+          reply: updated.reply || undefined,
+          username: orderUser.fullName
+        }).catch(() => {});
+      }
+    }
+
     return res.json({
       success: true,
       order: updated,
@@ -597,6 +647,25 @@ router.post('/admin/orders/:id/reject', async (req, res) => {
         },
       });
     });
+
+    if (order.userId) {
+      const orderUser = await prisma.user.findUnique({
+        where: { id: order.userId },
+        select: { email: true, fullName: true, balance: true }
+      });
+      if (orderUser?.email) {
+        sendOrderStatusUpdateEmail(orderUser.email, {
+          orderId: order.id.slice(-6),
+          serviceName: order.serviceName,
+          targetInput: order.targetInput,
+          status: 'rejected',
+          reply: reason,
+          refundAmount: order.price,
+          newBalance: orderUser.balance,
+          username: orderUser.fullName
+        }).catch(() => {});
+      }
+    }
 
     return res.json({ success: true, message: 'تم رفض الطلب واسترجاع المبلغ لمحفظة العميل' });
   } catch (error: any) {

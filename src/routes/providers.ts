@@ -3,6 +3,7 @@ import { prisma } from "../utils/prisma";
 import { cleanServiceName } from "../scripts/syncDhruServices";
 import { buildProviderServiceId } from "../utils/provider-service-id";
 import { getCatalogSection } from '../utils/catalog-section';
+import { buildImeiLookupDhruForm, isImeiLookupDhruEndpoint } from '../utils/imei-lookup-dhru';
 import { fieldChoices } from '../utils/foxreload-contract';
 import { FOXRELOAD_PROVIDER_ID, getFoxreloadLiveBalance } from '../services/foxreloadService';
 import https from "https";
@@ -397,16 +398,21 @@ export function makeProviderApiCall(
         });
       }
 
-      const data = new URLSearchParams();
-      if (username) data.append("username", username.trim());
-      data.append("key", apiKey.trim());
-      data.append("apiaccesskey", apiKey.trim());
-      data.append("action", action);
-      data.append("requestformat", "JSON");
+      const usesImeiLookup = isImeiLookupDhruEndpoint(targetUrl);
+      const data = usesImeiLookup
+        ? buildImeiLookupDhruForm(username?.trim() || "", apiKey.trim(), action, parameters)
+        : new URLSearchParams();
+      if (!usesImeiLookup) {
+        if (username) data.append("username", username.trim());
+        data.append("key", apiKey.trim());
+        data.append("apiaccesskey", apiKey.trim());
+        data.append("action", action);
+        data.append("requestformat", "JSON");
 
-      Object.entries(parameters).forEach(([k, v]) => {
-        data.append(`parameters[${k}]`, v);
-      });
+        Object.entries(parameters).forEach(([k, v]) => {
+          data.append(`parameters[${k}]`, v);
+        });
+      }
 
       const postData = data.toString();
 
@@ -825,9 +831,23 @@ export function getProviderServiceApiActions(types: ProviderServiceType[]) {
   return types.map((type) => ({ type, action: actions[type] }));
 }
 
+async function fetchProviderCatalog(provider: { apiUrl: string; username: string | null; apiKey: string }) {
+  const types: ProviderServiceType[] = isImeiLookupDhruEndpoint(provider.apiUrl) ? ["imei"] : [...PROVIDER_SERVICE_TYPES];
+  const results = await Promise.all(getProviderServiceApiActions(types).map(async ({ type, action }) => ({
+    type,
+    response: await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, action)
+  })));
+  return {
+    types,
+    responses: results.map(result => result.response),
+    byType: new Map(results.map(result => [result.type, result.response]))
+  };
+}
+
 // Helper: parse raw services list from provider responses
-export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes?: any) {
+export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes?: any, apiUrl?: string) {
   const extractedServices: any[] = [];
+  const usesImeiLookup = isImeiLookupDhruEndpoint(apiUrl);
 
   const processGroups = (groupData: any, type: "imei" | "server" | "remote") => {
     let groups: any[] = [];
@@ -871,13 +891,23 @@ export function parseAllProviderServices(imeiRes: any, serverRes: any, remoteRes
 
         const sCredit = parseFloat(s.CREDIT || s.credit || s.PRICE || s.price || "0") || 0;
         const sTime = String(s.TIME ?? s.time ?? "1-24 Hours");
-        const sInfo = String(s.INFO || s.info || "");
+        // IMEILookup's INFO is an example containing device data rather than storefront copy.
+        const sInfo = usesImeiLookup ? "" : String(s.INFO || s.info || "");
         const apiServiceType = normalizeProviderApiServiceType(
           s.SERVICETYPE ?? s.SERVICE_TYPE ?? s.serviceType ?? s.service_type ?? groupType,
           groupType
         );
 
-        if (apiServiceType === "imei") {
+        if (usesImeiLookup && apiServiceType === "imei" && normalizedFields.length === 0) {
+          const acceptsSerial = /\b(?:SN|serial number|MacBook|iMac)\b/i.test(sName);
+          normalizedFields.push(normalizeCustomField({
+            field_id: "IMEI",
+            name: "IMEI",
+            label: acceptsSerial ? "IMEI or Serial Number" : "IMEI",
+            type: "text",
+            required: true
+          }));
+        } else if (apiServiceType === "imei") {
           const hasHardwareId = normalizedFields.some((f: any) => {
             const lowerName = String(f.name || f.field_id || "").toLowerCase();
             return lowerName === "sn" || lowerName === "serial" || lowerName === "ecid" || lowerName === "udid" || lowerName.includes("serial");
@@ -970,20 +1000,14 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
-    const [imeiRes, serverRes, remoteRes] = await Promise.all([
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist"),
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
-    ]);
-
-    const responses = [imeiRes, serverRes, remoteRes];
+    const { responses, byType } = await fetchProviderCatalog(provider);
     if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
       return res.status(400).json({
         error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`
       });
     }
 
-    const services = parseAllProviderServices(imeiRes, serverRes, remoteRes);
+    const services = parseAllProviderServices(byType.get("imei"), byType.get("server"), byType.get("remote"), provider.apiUrl);
     const catalogWarning = getProviderCatalogWarning(responses);
 
     if (services.length === 0 && !catalogWarning) {
@@ -1043,21 +1067,20 @@ async function buildProviderExportData(provider: any, includeRaw = true) {
 
   if (provider.apiUrl && provider.apiKey) {
     try {
-      const [imeiRes, serverRes, remoteRes] = await Promise.all([
-        makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist"),
-        makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
-        makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
-      ]);
+      const { byType } = await fetchProviderCatalog(provider);
+      const imeiRes = byType.get("imei");
+      const serverRes = byType.get("server");
+      const remoteRes = byType.get("remote");
 
       if (includeRaw) {
         rawApiResponses = {
-          imeiservicelist: imeiRes.data,
-          serverservicelist: serverRes.data,
-          remoteservicelist: remoteRes.data
+          imeiservicelist: imeiRes?.data,
+          serverservicelist: serverRes?.data,
+          remoteservicelist: remoteRes?.data
         };
       }
 
-      remoteServices = parseAllProviderServices(imeiRes, serverRes, remoteRes);
+      remoteServices = parseAllProviderServices(imeiRes, serverRes, remoteRes, provider.apiUrl);
     } catch (apiErr) {
       console.warn(`Could not fetch live API services for provider ${provider.name}:`, apiErr);
     }
@@ -1291,12 +1314,10 @@ router.get("/:id/raw-data", async (req, res) => {
       return res.json(remoteRes.data);
     }
 
-    // Default "all" or "pure_dhru": Fetch all 3 lists simultaneously
-    const [imeiRes, serverRes, remoteRes] = await Promise.all([
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist"),
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "serverservicelist"),
-      makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "remoteservicelist")
-    ]);
+    const { byType } = await fetchProviderCatalog(provider);
+    const imeiRes = byType.get("imei");
+    const serverRes = byType.get("server");
+    const remoteRes = byType.get("remote");
 
     if (type === "pure_dhru") {
       const allOriginalGroups: any[] = [];
@@ -1316,9 +1337,9 @@ router.get("/:id/raw-data", async (req, res) => {
         }
       };
 
-      appendGroups(imeiRes.data);
-      appendGroups(serverRes.data);
-      appendGroups(remoteRes.data);
+      appendGroups(imeiRes?.data);
+      appendGroups(serverRes?.data);
+      appendGroups(remoteRes?.data);
 
       if (isDownload) {
         res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_Dhru_SUCCESS.json"`);
@@ -1339,9 +1360,9 @@ router.get("/:id/raw-data", async (req, res) => {
         balance: provider.balance,
         exportedAt: new Date().toISOString()
       },
-      imeiservicelist: imeiRes.data ?? null,
-      serverservicelist: serverRes.data ?? null,
-      remoteservicelist: remoteRes.data ?? null
+      imeiservicelist: imeiRes?.data ?? null,
+      serverservicelist: serverRes?.data ?? null,
+      remoteservicelist: remoteRes?.data ?? null
     };
 
     if (isDownload) {
@@ -1506,15 +1527,7 @@ router.post("/:id/sync", async (req, res) => {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
-    const requestedServiceTypes = [...PROVIDER_SERVICE_TYPES];
-
-    const fetchedResponses = await Promise.all(
-      getProviderServiceApiActions(requestedServiceTypes).map(async ({ type, action }) => ({
-        type,
-        response: await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, action)
-      }))
-    );
-    const responses = fetchedResponses.map(({ response }) => response);
+    const { types, responses, byType } = await fetchProviderCatalog(provider);
     const catalogWarning = getProviderCatalogWarning(responses);
     if (catalogWarning) return res.status(503).json({ error: catalogWarning, catalogComplete: false });
     if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
@@ -1523,11 +1536,7 @@ router.post("/:id/sync", async (req, res) => {
       });
     }
 
-    const responseByType = new Map(fetchedResponses.map(({ type, response }) => [type, response]));
-    const imeiRes = responseByType.get("imei");
-    const serverRes = responseByType.get("server");
-    const remoteRes = responseByType.get("remote");
-    const allServices = parseAllProviderServices(imeiRes, serverRes, remoteRes);
+    const allServices = parseAllProviderServices(byType.get("imei"), byType.get("server"), byType.get("remote"), provider.apiUrl);
 
     if (allServices.length === 0) {
       return res.status(400).json({
@@ -1544,8 +1553,8 @@ router.post("/:id/sync", async (req, res) => {
       success: true,
       count: allServices.length,
       totalCount: totalSynced,
-      serviceTypes: requestedServiceTypes,
-      message: `تمت المزامنة بنجاح! تم جلب قوائم IMEI وServer وRemote وتصنيف ${allServices.length} خدمة تلقائياً. إجمالي خدمات المزود: ${totalSynced}.`
+      serviceTypes: types,
+      message: `تمت المزامنة بنجاح! تم جلب وتصنيف ${allServices.length} خدمة. إجمالي خدمات المزود: ${totalSynced}.`
     });
   } catch (error: any) {
     console.error("Provider sync error:", error);

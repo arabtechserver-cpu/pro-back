@@ -40,6 +40,7 @@ router.get("/", isAdmin, async (req, res) => {
     const { q, status, apiOnly } = req.query;
 
     const whereClause: any = {
+      deletedAt: null,
       AND: []
     };
     
@@ -78,9 +79,9 @@ router.get("/", isAdmin, async (req, res) => {
       orderBy: { createdAt: "desc" }
     });
 
-    const totalUsers = await prisma.user.count({ where: { role: { not: 'admin' } } });
-    const activeUsers = await prisma.user.count({ where: { role: { not: 'admin' }, status: "active" } });
-    const suspendedUsers = await prisma.user.count({ where: { role: { not: 'admin' }, status: "suspended" } });
+    const totalUsers = await prisma.user.count({ where: { deletedAt: null, role: { not: 'admin' } } });
+    const activeUsers = await prisma.user.count({ where: { deletedAt: null, role: { not: 'admin' }, status: "active" } });
+    const suspendedUsers = await prisma.user.count({ where: { deletedAt: null, role: { not: 'admin' }, status: "suspended" } });
 
     return res.json({
       users,
@@ -110,14 +111,14 @@ router.get("/profile", authenticateToken, async (req: any, res) => {
 
       if (isAdminUser) {
         if (requestedId) {
-          u = await prisma.user.findUnique({ where: { id: requestedId }, select: safeUserSelect });
+          u = await prisma.user.findFirst({ where: { id: requestedId, deletedAt: null }, select: safeUserSelect });
         } else if (requestedEmail) {
-          u = await prisma.user.findUnique({ where: { email: requestedEmail }, select: safeUserSelect });
+          u = await prisma.user.findFirst({ where: { email: requestedEmail, deletedAt: null }, select: safeUserSelect });
         } else {
-          u = await prisma.user.findUnique({ where: { id: authUser.id }, select: { ...safeUserSelect, apiKey: true } });
+          u = await prisma.user.findFirst({ where: { id: authUser.id, deletedAt: null }, select: { ...safeUserSelect, apiKey: true } });
         }
       } else {
-        u = await prisma.user.findUnique({ where: { id: authUser.id }, select: { ...safeUserSelect, apiKey: true } });
+        u = await prisma.user.findFirst({ where: { id: authUser.id, deletedAt: null }, select: { ...safeUserSelect, apiKey: true } });
       }
 
       if (!u) {
@@ -253,7 +254,7 @@ router.post("/toggle-status", isAdmin, async (req: any, res) => {
     }
 
     const targetUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (!targetUser) {
+    if (!targetUser || targetUser.deletedAt) {
       return res.status(404).json({ success: false, error: "المستخدم غير موجود" });
     }
 
@@ -308,23 +309,49 @@ router.delete("/:id", isAdmin, async (req: any, res) => {
       }
     }
 
-    const hasFinancialRecords = await prisma.transaction.findFirst({ where: { userId: id as string } }) ||
-      await prisma.order.findFirst({ where: { userId: id as string } });
+    const [txRef, orderRef, intentRef, purchaseRef] = await Promise.all([
+      prisma.transaction.findFirst({ where: { userId: id as string }, select: { id: true } }),
+      prisma.order.findFirst({ where: { userId: id as string }, select: { id: true } }),
+      prisma.paymentIntent.findFirst({ where: { userId: id as string }, select: { id: true } }),
+      prisma.cashierPurchase.findFirst({ where: { buyerId: id as string }, select: { id: true } }),
+    ]);
+
+    const hasFinancialRecords = Boolean(txRef || orderRef || intentRef || purchaseRef);
 
     if (hasFinancialRecords) {
+      const archiveTag = `deleted_${targetUser.id.slice(0, 8)}_${Date.now().toString(36)}`;
+      const archivedEmail = targetUser.email.startsWith('deleted_')
+        ? targetUser.email
+        : `${archiveTag}__${targetUser.email}`;
+      const archivedUsername = targetUser.username.startsWith('deleted_')
+        ? targetUser.username
+        : `${archiveTag}__${targetUser.username}`;
+
       await prisma.user.update({
         where: { id: id as string },
         data: {
           status: 'suspended',
-          deletedAt: new Date(),
+          deletedAt: targetUser.deletedAt ?? new Date(),
+          email: archivedEmail,
+          username: archivedUsername,
+          googleSub: null,
+          apiEnabled: false,
+          apiKey: null,
           tokenVersion: { increment: 1 }
         }
       });
-      return res.json({ success: true, message: "تم إيقاف حساب المستخدم وأرشفته للحفاظ على السجلات المالية" });
+      return res.json({
+        success: true,
+        archived: true,
+        message: "تم حذف الحساب من قائمة المستخدمين وأرشفة سجلاته المالية بنجاح"
+      });
     }
 
-    await prisma.user.delete({ where: { id: id as string } });
-    return res.json({ success: true, message: "تم حذف المستخدم بنجاح" });
+    await prisma.$transaction(async (tx) => {
+      await tx.walletTransaction.deleteMany({ where: { userId: id as string } });
+      await tx.user.delete({ where: { id: id as string } });
+    });
+    return res.json({ success: true, archived: false, message: "تم حذف الحساب نهائياً بنجاح" });
   } catch (error: any) {
     console.error("Error deleting user:", error);
     return res.status(500).json({ error: "Failed to delete user" });
@@ -347,7 +374,7 @@ router.post("/change-password", isAdmin, async (req: any, res) => {
     }
 
     const targetUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (!targetUser) {
+    if (!targetUser || targetUser.deletedAt) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
 
@@ -396,7 +423,7 @@ router.post("/update-balance", isAdmin, async (req: any, res) => {
     }
 
     const existingUser = await prisma.user.findUnique({ where: { id: userId } });
-    if (!existingUser) {
+    if (!existingUser || existingUser.deletedAt) {
       return res.status(404).json({ error: "المستخدم غير موجود" });
     }
 
@@ -479,7 +506,7 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
       : undefined;
 
     const updatedUser = await prisma.user.update({
-      where: { id: userId },
+      where: { id: userId, deletedAt: null },
       data: {
         apiEnabled: Boolean(apiEnabled),
         apiSiteName: apiSiteName !== undefined ? (apiSiteName ? String(apiSiteName).trim() : null) : undefined,
@@ -497,6 +524,9 @@ router.post("/update-api-settings", isAdmin, async (req: any, res) => {
       user: updatedUser
     });
   } catch (error: any) {
+    if (error?.code === 'P2025') {
+      return res.status(404).json({ error: "المستخدم غير موجود" });
+    }
     console.error("Error updating API settings:", error);
     return res.status(500).json({ error: "حدث خطأ أثناء تحديث إعدادات API" });
   }

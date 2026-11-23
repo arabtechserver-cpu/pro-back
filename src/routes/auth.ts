@@ -5,7 +5,7 @@ import { digestOtp, matchesOtp } from '../utils/otp-security';
 import { prisma } from "../utils/prisma";
 import { generateToken, authenticateToken } from '../middleware/auth';
 import { isAdminRole, USER_IDLE_TIMEOUT_MS } from '../utils/userSessionPolicy';
-import { sendOtpEmailViaLoops, addContactToLoops } from '../utils/emailService';
+import { sendOtpEmailViaLoops, addContactToLoops, sendWelcomeRegistrationEmail } from '../utils/emailService';
 import {
   sendTelegramAlert,
   sendTelegramAdminOtp,
@@ -160,13 +160,13 @@ setInterval(() => {
   }
 }, 60 * 1000).unref();
 
-// POST /api/auth/register - Direct & Fast Registration with Cloudflare Turnstile Protection
+// POST /api/auth/register - Registration with Mandatory Email OTP & Cloudflare Turnstile Protection
 router.post('/register', turnstileMiddleware, validateBody(registerSchema), async (req, res) => {
   try {
-    const { fullName, email, username, password, country, phone } = req.body;
+    const { fullName, email, username, password, otp, country, phone } = req.body;
 
-    if (!fullName || !email || !username || !password) {
-      return res.status(200).json({ success: false, error: 'الرجاء تعبئة جميع الحقول المطلوبة' });
+    if (!fullName || !email || !username || !password || !otp) {
+      return res.status(200).json({ success: false, error: 'الرجاء تعبئة جميع الحقول المطلوبة وإدخال كود التحقق' });
     }
 
     if (password.length < 8) {
@@ -176,6 +176,30 @@ router.post('/register', turnstileMiddleware, validateBody(registerSchema), asyn
     const cleanEmail = email.trim().toLowerCase();
     const cleanUsername = username.trim().toLowerCase();
     const cleanPhone = phone ? String(phone).trim() : null;
+
+    const otpRecord = otpStore.get(cleanEmail);
+    if (!otpRecord || otpRecord.purpose !== 'registration' || Date.now() > otpRecord.expiresAt) {
+      if (otpRecord && Date.now() > otpRecord.expiresAt) otpStore.delete(cleanEmail);
+      return res.status(200).json({ success: false, error: 'كود التحقق (OTP) غير صحيح أو منتهي الصلاحية. يرجى طلب كود جديد.' });
+    }
+
+    if (otpRecord.attempts >= 5) {
+      otpStore.delete(cleanEmail);
+      return res.status(200).json({ success: false, error: 'تم تجاوز الحد الأقصى للمحاولات الخاطئة. الرجاء طلب كود جديد.' });
+    }
+
+    if (!matchesOtp(`${cleanEmail}:registration`, otp, otpRecord.codeDigest)) {
+      otpRecord.attempts += 1;
+      const remaining = 5 - otpRecord.attempts;
+      if (remaining <= 0) {
+        otpStore.delete(cleanEmail);
+        return res.status(200).json({ success: false, error: 'تم تجاوز الحد الأقصى للمحاولات الخاطئة. الرجاء طلب كود جديد.' });
+      }
+      return res.status(200).json({ success: false, error: `كود التحقق (OTP) غير صحيح. المحاولات المتبقية: ${remaining}` });
+    }
+
+    // Consume synchronously before any await to prevent concurrent reuse.
+    otpStore.delete(cleanEmail);
 
     const existingEmail = await prisma.user.findUnique({ where: { email: cleanEmail } });
     if (existingEmail) {
@@ -205,6 +229,10 @@ router.post('/register', turnstileMiddleware, validateBody(registerSchema), asyn
     });
 
     addContactToLoops(cleanEmail, fullName.trim()).catch(() => {});
+    sendWelcomeRegistrationEmail(cleanEmail, {
+      fullName: newUser.fullName,
+      username: newUser.username
+    }).catch(() => {});
 
     // Notify Telegram Admins of new user registration
     const newRegMsg = `
@@ -261,8 +289,20 @@ router.post('/send-otp', turnstileMiddleware, async (req, res) => {
     const cleanEmail = email.trim().toLowerCase();
     if (type === 'forgot_password') {
       const userObj = await prisma.user.findUnique({ where: { email: cleanEmail } });
-      if (!userObj) {
+      if (!userObj || userObj.deletedAt) {
         return res.status(200).json({ success: false, error: 'لم يتم العثور على حساب مرتبط بهذا البريد الإلكتروني!' });
+      }
+    } else {
+      const existingEmail = await prisma.user.findUnique({ where: { email: cleanEmail } });
+      if (existingEmail && typeof existingEmail.email === 'string' && existingEmail.email.toLowerCase() === cleanEmail) {
+        return res.status(200).json({ success: false, error: 'البريد الإلكتروني مسجل بالفعل في الموقع!' });
+      }
+      if (typeof username === 'string' && username.trim().length >= 3) {
+        const cleanUsername = username.trim().toLowerCase();
+        const existingUsername = await prisma.user.findUnique({ where: { username: cleanUsername } });
+        if (existingUsername && typeof existingUsername.username === 'string' && existingUsername.username.toLowerCase() === cleanUsername) {
+          return res.status(200).json({ success: false, error: 'اسم المستخدم مسجل بالفعل! اختر اسم آخر.' });
+        }
       }
     }
     // Admission and reservation are synchronous after the database lookup.
@@ -342,7 +382,7 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
     // Consume synchronously before any await to prevent concurrent reuse.
     otpStore.delete(cleanEmail);
     const userObj = await prisma.user.findUnique({ where: { email: cleanEmail } });
-    if (!userObj) {
+    if (!userObj || userObj.deletedAt) {
       return res.status(200).json({ success: false, error: 'لم يتم العثور على حساب بهذا البريد الإلكتروني' });
     }
 
@@ -396,6 +436,7 @@ router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req
     // Check DB for registered user by email or username (case-insensitive for reliability)
     const dbUser = await prisma.user.findFirst({
       where: {
+        deletedAt: null,
         OR: [
           { email: { equals: inputStr, mode: 'insensitive' } },
           { username: { equals: inputStr, mode: 'insensitive' } }
@@ -406,7 +447,7 @@ router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req
       }
     });
 
-    if (!dbUser) {
+    if (!dbUser || dbUser.deletedAt) {
       return res.status(200).json({ success: false, error: 'بيانات الدخول غير صحيحة!' });
     }
 
@@ -532,7 +573,7 @@ const handleAdminOtpVerification = async (req: any, res: any) => {
       return res.status(200).json({ success: false, error: 'ليس لديك صلاحيات الدخول للوحة التحكم' });
     }
 
-    if (dbUser.status === 'suspended') {
+    if (dbUser.status === 'suspended' || dbUser.deletedAt) {
       return res.status(200).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً' });
     }
 
@@ -830,6 +871,7 @@ router.post('/google', async (req, res) => {
     // Check if user already exists
     let user = await prisma.user.findFirst({
       where: {
+        deletedAt: null,
         OR: [
           { googleSub: String(googleId) },
           { email: cleanEmail }

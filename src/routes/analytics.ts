@@ -303,9 +303,9 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
       recentUsers,
       activeProvider
     ] = await Promise.all([
-      prisma.user.count({ where: { role: { not: 'admin' } } }),
-      prisma.user.count({ where: { role: { not: 'admin' }, status: 'active' } }),
-      prisma.user.count({ where: { role: { not: 'admin' }, status: 'suspended' } }),
+      prisma.user.count({ where: { deletedAt: null, role: { not: 'admin' } } }),
+      prisma.user.count({ where: { deletedAt: null, role: { not: 'admin' }, status: 'active' } }),
+      prisma.user.count({ where: { deletedAt: null, role: { not: 'admin' }, status: 'suspended' } }),
       prisma.order.count(),
       prisma.order.count({ where: { status: 'completed' } }),
       prisma.order.count({ where: { status: 'pending' } }),
@@ -314,7 +314,7 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
       prisma.transaction.count({ where: { status: 'pending' } }),
       prisma.transaction.count({ where: { status: 'completed' } }),
       prisma.user.aggregate({
-        where: { role: { not: 'admin' } },
+        where: { deletedAt: null, role: { not: 'admin' } },
         _sum: { balance: true }
       }),
       prisma.dhruCategory.count(),
@@ -352,7 +352,7 @@ router.get('/dashboard-stats', isAdmin, async (req, res) => {
         }
       }),
       prisma.user.findMany({
-        where: { role: { not: 'admin' } },
+        where: { deletedAt: null, role: { not: 'admin' } },
         take: 6,
         orderBy: { createdAt: 'desc' },
         select: { id: true, fullName: true, email: true, username: true, phone: true, balance: true, country: true, status: true, createdAt: true }

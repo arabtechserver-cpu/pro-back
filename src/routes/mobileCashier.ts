@@ -1,7 +1,7 @@
 import { createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import { Prisma, type CashierDevice, type CashierLicense, type CashierSupportSession } from '@prisma/client';
+import { Prisma, type CashierDevice, type CashierLicense, type CashierRepairTrack, type CashierSupportSession } from '@prisma/client';
 import { Router, type Request, type RequestHandler } from 'express';
 import rateLimit from 'express-rate-limit';
 import { z } from 'zod';
@@ -9,6 +9,7 @@ import { authenticateToken, isAdmin, type AuthRequest } from '../middleware/auth
 import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { prisma } from '../utils/prisma';
 import { roundCurrency } from '../utils/currency';
+import { resolvePrimaryFrontendUrl } from '../utils/telegram-config';
 
 const router = Router();
 const day = 86_400_000;
@@ -624,6 +625,243 @@ router.post('/support/:id/input', route(async (req, res) => {
   inputQueue.delete(session.id);
   const now = Date.now();
   res.json(commands.filter((item) => item.expires > now).map((item) => item.input));
+}));
+
+const trackingLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
+  windowMs: 60_000,
+  limit: 60,
+  message: { error: 'محاولات كثيرة. حاول بعد دقيقة.', code: 'TRY_LATER' },
+  validate: { xForwardedForHeader: false },
+});
+
+const timelineStepSchema = z.object({
+  toStatus: z.string().trim().min(1).max(60),
+  createdAt: z.string().trim().min(1).max(60),
+});
+
+const publishTrackingSchema = z.object({
+  localRepairId: z.string().trim().min(1).max(120),
+  orderNumber: z.string().trim().min(1).max(80),
+  shopName: z.string().trim().min(1).max(120),
+  shopPhone: z.string().trim().max(40).nullable().optional(),
+  deviceType: z.string().trim().min(1).max(40).default('PHONE'),
+  brand: z.string().trim().min(1).max(80),
+  model: z.string().trim().min(1).max(120),
+  status: z.string().trim().min(1).max(40),
+  quoteApprovalStatus: z.enum(['NOT_REQUIRED', 'PENDING', 'APPROVED', 'REJECTED']).default('NOT_REQUIRED'),
+  estimatedPrice: z.number().min(0).max(100_000_000),
+  paidAmount: z.number().min(0).max(100_000_000).default(0),
+  remainingAmount: z.number().min(0).max(100_000_000).default(0),
+  currency: z.string().trim().min(2).max(8).default('EGP'),
+  warrantyDays: z.number().int().min(0).max(1095).default(30),
+  dueAt: z.string().trim().max(60).nullable().optional(),
+  deliveredAt: z.string().trim().max(60).nullable().optional(),
+  orderCreatedAt: z.string().trim().min(1).max(60),
+  timeline: z.array(timelineStepSchema).max(50).default([]),
+  rotateToken: z.boolean().default(false),
+});
+
+const quoteResponseSchema = z.object({
+  decision: z.enum(['APPROVED', 'REJECTED']),
+  note: z.string().trim().max(300).optional(),
+});
+
+function parseOptionalDate(val: string | null | undefined): Date | null {
+  if (!val) return null;
+  const ts = Date.parse(val);
+  return Number.isNaN(ts) ? null : new Date(ts);
+}
+
+function publicTrackingBaseUrl(): string {
+  return resolvePrimaryFrontendUrl(null, process.env.FRONTEND_URL, process.env.NEXT_PUBLIC_SITE_URL) || 'https://arabproserver.com';
+}
+
+function parseTimeline(raw: string): Array<{ toStatus: string; createdAt: string }> {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+function publicTrackDto(track: CashierRepairTrack) {
+  return {
+    shopName: track.shopName,
+    shopPhone: track.shopPhone,
+    orderNumber: track.orderNumber,
+    deviceType: track.deviceType,
+    brand: track.brand,
+    model: track.model,
+    status: track.status,
+    quoteApprovalStatus: track.quoteApprovalStatus,
+    quoteNote: track.quoteNote,
+    quoteRespondedAt: track.quoteRespondedAt,
+    estimatedPrice: track.estimatedPrice,
+    paidAmount: track.paidAmount,
+    remainingAmount: track.remainingAmount,
+    currency: track.currency,
+    warrantyDays: track.warrantyDays,
+    dueAt: track.dueAt,
+    deliveredAt: track.deliveredAt,
+    createdAt: track.orderCreatedAt,
+    updatedAt: track.updatedAt,
+    timeline: parseTimeline(track.timelineJson),
+  };
+}
+
+router.post('/tracking/publish', route(async (req, res) => {
+  const device = await licensed(req);
+  const input = publishTrackingSchema.parse(req.body);
+  const existing = await prisma.cashierRepairTrack.findUnique({
+    where: { deviceId_localRepairId: { deviceId: device.id, localRepairId: input.localRepairId } },
+  });
+
+  const preserveDecision = existing &&
+    ['APPROVED', 'REJECTED'].includes(existing.quoteApprovalStatus) &&
+    input.quoteApprovalStatus === 'PENDING';
+
+  const nextQuoteStatus = preserveDecision ? existing.quoteApprovalStatus : input.quoteApprovalStatus;
+  const nextQuoteNote = preserveDecision ? existing.quoteNote : (existing?.quoteApprovalStatus === input.quoteApprovalStatus ? existing.quoteNote : null);
+  const nextQuoteRespondedAt = preserveDecision ? existing.quoteRespondedAt : (existing?.quoteApprovalStatus === input.quoteApprovalStatus ? existing.quoteRespondedAt : null);
+
+  let nextTimeline = input.timeline;
+  if (preserveDecision) {
+    const existingTimeline = parseTimeline(existing.timelineJson);
+    const customerSteps = existingTimeline.filter((s) => s.toStatus === 'QUOTE_APPROVED' || s.toStatus === 'QUOTE_REJECTED');
+    if (customerSteps.length) {
+      const seen = new Set(nextTimeline.map((s) => `${s.toStatus}:${s.createdAt}`));
+      nextTimeline = [
+        ...nextTimeline,
+        ...customerSteps.filter((s) => !seen.has(`${s.toStatus}:${s.createdAt}`)),
+      ];
+    }
+  }
+
+  const orderCreatedAt = parseOptionalDate(input.orderCreatedAt) ?? new Date();
+  const baseData = {
+    shopName: input.shopName,
+    shopPhone: input.shopPhone ?? null,
+    orderNumber: input.orderNumber,
+    deviceType: input.deviceType,
+    brand: input.brand,
+    model: input.model,
+    status: input.status,
+    quoteApprovalStatus: nextQuoteStatus,
+    quoteNote: nextQuoteNote,
+    quoteRespondedAt: nextQuoteRespondedAt,
+    estimatedPrice: input.estimatedPrice,
+    paidAmount: input.paidAmount,
+    remainingAmount: input.remainingAmount,
+    currency: input.currency,
+    warrantyDays: input.warrantyDays,
+    dueAt: parseOptionalDate(input.dueAt),
+    deliveredAt: parseOptionalDate(input.deliveredAt),
+    orderCreatedAt,
+    timelineJson: JSON.stringify(nextTimeline),
+  };
+
+  if (existing && !existing.revokedAt && !input.rotateToken) {
+    const updated = await prisma.cashierRepairTrack.update({
+      where: { id: existing.id },
+      data: baseData,
+    });
+    return res.json({
+      synced: true,
+      quoteApprovalStatus: updated.quoteApprovalStatus,
+      quoteNote: updated.quoteNote,
+      quoteRespondedAt: updated.quoteRespondedAt,
+    });
+  }
+
+  const token = randomBytes(24).toString('base64url');
+  const tokenHash = sha256(token);
+  const saved = await prisma.cashierRepairTrack.upsert({
+    where: { deviceId_localRepairId: { deviceId: device.id, localRepairId: input.localRepairId } },
+    update: {
+      ...baseData,
+      tokenHash,
+      revokedAt: null,
+    },
+    create: {
+      deviceId: device.id,
+      localRepairId: input.localRepairId,
+      tokenHash,
+      ...baseData,
+    },
+  });
+
+  res.json({
+    synced: true,
+    token,
+    trackingUrl: `${publicTrackingBaseUrl()}/ar/track/${token}`,
+    quoteApprovalStatus: saved.quoteApprovalStatus,
+    quoteNote: saved.quoteNote,
+    quoteRespondedAt: saved.quoteRespondedAt,
+  });
+}));
+
+router.post('/tracking/revoke', route(async (req, res) => {
+  const device = await licensed(req);
+  const { localRepairId } = z.object({ localRepairId: z.string().trim().min(1).max(120) }).parse(req.body);
+  const { count } = await prisma.cashierRepairTrack.updateMany({
+    where: { deviceId: device.id, localRepairId, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  res.json({ revoked: count > 0 });
+}));
+
+router.get('/public/track/:token', trackingLimiter, route(async (req, res) => {
+  const token = String(req.params.token ?? '').trim();
+  if (!token || token.length < 16 || token.length > 128) {
+    fail(404, 'TRACKING_NOT_FOUND', 'رابط التتبع غير صالح أو تم إلغاؤه.');
+  }
+  const track = await prisma.cashierRepairTrack.findFirst({
+    where: { tokenHash: sha256(token), revokedAt: null },
+  });
+  if (!track) {
+    fail(404, 'TRACKING_NOT_FOUND', 'رابط التتبع غير صالح أو تم إلغاؤه.');
+  }
+  res.json(publicTrackDto(track));
+}));
+
+router.post('/public/track/:token/quote-response', trackingLimiter, route(async (req, res) => {
+  const token = String(req.params.token ?? '').trim();
+  if (!token || token.length < 16 || token.length > 128) {
+    fail(404, 'TRACKING_NOT_FOUND', 'رابط التتبع غير صالح أو تم إلغاؤه.');
+  }
+  const { decision, note } = quoteResponseSchema.parse(req.body);
+  const track = await prisma.cashierRepairTrack.findFirst({
+    where: { tokenHash: sha256(token), revokedAt: null },
+  });
+  if (!track) {
+    fail(404, 'TRACKING_NOT_FOUND', 'رابط التتبع غير صالح أو تم إلغاؤه.');
+  }
+  if (track.status === 'DELIVERED' || track.status === 'CANCELLED') {
+    fail(400, 'ORDER_CLOSED', 'الطلب مغلق بالفعل ولا يمكن تعديل عرض السعر.');
+  }
+  if (track.quoteApprovalStatus !== 'PENDING') {
+    fail(409, 'QUOTE_ALREADY_DECIDED', 'تم تسجيل رد عرض السعر مسبقاً.');
+  }
+
+  const now = new Date();
+  const timeline = parseTimeline(track.timelineJson);
+  timeline.push({
+    toStatus: decision === 'APPROVED' ? 'QUOTE_APPROVED' : 'QUOTE_REJECTED',
+    createdAt: now.toISOString(),
+  });
+
+  const updated = await prisma.cashierRepairTrack.update({
+    where: { id: track.id },
+    data: {
+      quoteApprovalStatus: decision,
+      quoteNote: note || null,
+      quoteRespondedAt: now,
+      timelineJson: JSON.stringify(timeline),
+    },
+  });
+  res.json(publicTrackDto(updated));
 }));
 
 export default router;

@@ -34,8 +34,42 @@ model CashierDevice {
   activeKey      CashierLicense?         @relation("CashierActiveKey", fields: [activeKeyId], references: [id], onDelete: SetNull)
   redeemedKeys   CashierLicense[]        @relation("CashierRedeemedKeys")
   sessions       CashierSupportSession[]
+  repairTracks   CashierRepairTrack[]
   createdAt      DateTime                @default(now())
   lastSeenAt     DateTime                @default(now())
+}
+
+model CashierRepairTrack {
+  id                  String        @id @default(uuid())
+  deviceId            String
+  device              CashierDevice @relation(fields: [deviceId], references: [id], onDelete: Cascade)
+  localRepairId       String
+  tokenHash           String        @unique
+  shopName            String
+  shopPhone           String?
+  orderNumber         String
+  deviceType          String
+  brand               String
+  model               String
+  status              String
+  quoteApprovalStatus String        @default("NOT_REQUIRED")
+  quoteNote           String?
+  quoteRespondedAt    DateTime?
+  estimatedPrice      Float         @default(0)
+  paidAmount          Float         @default(0)
+  remainingAmount     Float         @default(0)
+  currency            String        @default("EGP")
+  warrantyDays        Int           @default(30)
+  dueAt               DateTime?
+  deliveredAt         DateTime?
+  orderCreatedAt      DateTime
+  timelineJson        String        @db.Text
+  revokedAt           DateTime?
+  createdAt           DateTime      @default(now())
+  updatedAt           DateTime      @default(now()) @updatedAt
+
+  @@unique([deviceId, localRepairId])
+  @@index([deviceId, updatedAt])
 }
 
 model CashierLicense {

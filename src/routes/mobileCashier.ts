@@ -15,7 +15,7 @@ import { getCashierSigningKeyInfo, signCashierEntitlement, type CashierEntitleme
 const router = Router();
 const day = 86_400_000;
 const technician = 'عرب تيك';
-const defaultDownloadUrl = 'https://www.mediafire.com/file/7b68gzjgaiy1v9d/ar-pro-Setup-1.2.8.exe/file';
+const defaultDownloadUrl = 'https://www.mediafire.com/file/wetjzat18yjxrrz/gold.rar/file';
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 const uuid = z.uuid();
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254));

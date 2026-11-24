@@ -5,7 +5,7 @@ import { buildProviderServiceId } from "../utils/provider-service-id";
 import { getCatalogSection } from '../utils/catalog-section';
 import { buildImeiLookupDhruForm, isImeiLookupDhruEndpoint } from '../utils/imei-lookup-dhru';
 import { fieldChoices } from '../utils/foxreload-contract';
-import { FOXRELOAD_PROVIDER_ID, getFoxreloadLiveBalance } from '../services/foxreloadService';
+import { FOXRELOAD_PROVIDER_ID, buildFoxreloadProviderServices, getAvailableFoxreloadCatalog, getFoxreloadAllProducts, getFoxreloadFullCatalog, getFoxreloadLiveBalance, getFoxreloadSettings, syncFoxreloadCatalog, updateFoxreloadSettings } from '../services/foxreloadService';
 import https from "https";
 import { withinDeadline } from "../utils/request-deadline";
 import http from "http";
@@ -54,6 +54,97 @@ export function sanitizeProvider(provider: any) {
 const router = Router();
 
 router.use(isAdmin);
+
+export function isFoxreloadUrl(rawUrl?: string | null): boolean {
+  const trimmed = String(rawUrl || "").trim();
+  if (!trimmed) return false;
+  try {
+    const candidate = /^https?:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
+    const host = new URL(candidate).hostname.toLowerCase();
+    return host === "foxreload.com" || host.endsWith(".foxreload.com");
+  } catch {
+    return false;
+  }
+}
+
+export function isFoxreloadProvider(provider: { id?: string | null; type?: string | null; apiUrl?: string | null }): boolean {
+  return (
+    provider.id === FOXRELOAD_PROVIDER_ID ||
+    String(provider.type || "").trim().toLowerCase() === "foxreload" ||
+    isFoxreloadUrl(provider.apiUrl)
+  );
+}
+
+export function normalizeFoxreloadApiUrl(rawUrl: string): string {
+  let url = (rawUrl || "").trim();
+  if (!url) return "https://public-api.foxreload.com";
+  if (url.startsWith("http://")) {
+    throw new Error("Insecure HTTP provider URLs are prohibited. HTTPS is strictly required.");
+  }
+  if (!url.startsWith("https://")) {
+    url = "https://" + url;
+  }
+  const urlObj = new URL(url);
+  urlObj.username = "";
+  urlObj.password = "";
+  const cleanedPath = urlObj.pathname.replace(/\/api\/index\.php$/i, "").replace(/\/+$/, "");
+  urlObj.pathname = cleanedPath || "/";
+  return urlObj.toString().replace(/\/$/, "");
+}
+
+function selectFoxreloadBalance(
+  balances: Array<{ currency: string; amount: number }>,
+  preferredCurrency = "USD"
+): { balance: number; currency: string } | null {
+  const target = String(preferredCurrency || "USD").trim().toUpperCase();
+  const matched = balances.find(item => item.currency === target) || balances[0];
+  return matched ? { balance: matched.amount, currency: matched.currency } : null;
+}
+
+async function loadFoxreloadProviderCatalogServices(forceSyncIfEmpty = false) {
+  const settings = await getFoxreloadSettings();
+  let catalog = await getFoxreloadFullCatalog(false);
+  if ((!catalog?.isSynced || !Object.keys(catalog?.sections || {}).length) && forceSyncIfEmpty && settings.apiKey) {
+    catalog = await syncFoxreloadCatalog();
+  }
+  const available = await getAvailableFoxreloadCatalog();
+  const effectiveCatalog = Object.keys(available.catalog?.sections || {}).length ? available.catalog : catalog;
+  const services = buildFoxreloadProviderServices(settings, effectiveCatalog, available.products || []);
+  const warning = !available.complete
+    ? "الخدمات والباقات الأساسية ظاهرة الآن، ويجري استكمال تحميل باقي منتجات FoxReload في الخلفية."
+    : null;
+  return { settings, catalog: effectiveCatalog, available, services, warning };
+}
+
+function collectFoxreloadGroupTargetIds(groupNames: string[], catalog: any, services: any[]): string[] {
+  const groupSet = new Set(groupNames.map(g => String(g || "").trim()).filter(Boolean));
+  const ids = new Set<string>();
+  for (const srv of services) {
+    if (groupSet.has(String(srv.groupName || "").trim())) {
+      ids.add(String(srv.id));
+    }
+  }
+  const sections = catalog?.sections || {};
+  for (const sec of Object.values(sections) as any[]) {
+    if (!sec || typeof sec !== "object") continue;
+    const secName = sec.nameAr || sec.nameEn || "";
+    for (const bundle of sec.bundles || []) {
+      const bName = String(bundle.name || "").trim();
+      if (groupSet.has(bName) || groupSet.has(secName)) {
+        if (bundle.id) ids.add(String(bundle.id));
+        if (bundle.slug) ids.add(String(bundle.slug));
+      }
+      for (const region of bundle.regions || []) {
+        const combined = region.name && region.name !== "Global" ? `${bName} / ${region.name}` : bName;
+        if (groupSet.has(combined) || groupSet.has(bName)) {
+          if (region.id) ids.add(String(region.id));
+          if (region.slug) ids.add(String(region.slug));
+        }
+      }
+    }
+  }
+  return Array.from(ids);
+}
 
 export function normalizeApiUrl(rawUrl: string): string {
   let url = (rawUrl || "").trim();
@@ -551,14 +642,37 @@ router.post("/test-connection", async (req, res) => {
   try {
     const apiUrl = (req.body.apiUrl || req.body.api_url || "").trim();
     const username = (req.body.username || "").trim() || null;
-    let apiKey = (req.body.apiKey || req.body.api_key || "").trim();
+    const incomingApiKey = (req.body.apiKey || req.body.api_key || "").trim();
     const providerId = req.body.providerId || req.body.id;
+    const incomingType = (req.body.type || req.body.provider_type || "").trim();
 
-    if (providerId && (isMaskedApiKey(apiKey) || !apiKey)) {
-      const existing = await prisma.apiProvider.findUnique({ where: { id: String(providerId) } });
-      if (existing) {
-        apiKey = existing.apiKey;
+    let existingProvider: any = null;
+    if (providerId) {
+      existingProvider = await prisma.apiProvider.findUnique({ where: { id: String(providerId) } });
+    }
+
+    const useExistingKey = Boolean(existingProvider && (isMaskedApiKey(incomingApiKey, existingProvider.apiKey) || !incomingApiKey));
+    const apiKey = useExistingKey ? existingProvider.apiKey : incomingApiKey;
+
+    if (isFoxreloadProvider({ id: providerId ? String(providerId) : null, type: incomingType || existingProvider?.type, apiUrl })) {
+      const explicitKey = useExistingKey ? undefined : apiKey;
+      const live = await getFoxreloadLiveBalance(explicitKey, existingProvider?.apiKey);
+      if (!live.success) {
+        return res.status(400).json({
+          error: live.error || "فشل الاتصال بـ FoxReload API"
+        });
       }
+      const selected = selectFoxreloadBalance(live.balances, existingProvider?.currency || "USD");
+      if (!selected) {
+        return res.status(400).json({ error: "لم يرجع FoxReload قيمة رصيد واضحة يمكن قراءتها" });
+      }
+      return res.json({
+        success: true,
+        balance: selected.balance,
+        currency: selected.currency,
+        balances: live.balances,
+        message: `الاتصال بـ FoxReload ناجح! الرصيد المتاح: ${selected.balance.toFixed(2)} ${selected.currency}`
+      });
     }
 
     if (!apiUrl || !apiKey) {
@@ -600,7 +714,7 @@ router.post("/", async (req, res) => {
     const apiUrl = (req.body.apiUrl || req.body.api_url || "").trim();
     const username = (req.body.username || "").trim() || null;
     const apiKey = (req.body.apiKey || req.body.api_key || "").trim();
-    const type = req.body.type || req.body.provider_type || "dhru";
+    const rawType = req.body.type || req.body.provider_type || "dhru";
     const isActive = req.body.isActive !== undefined ? Boolean(req.body.isActive) : (req.body.is_active !== undefined ? Boolean(req.body.is_active) : true);
     const mappingRules = req.body.mappingRules || req.body.mapping_rules || null;
 
@@ -608,14 +722,26 @@ router.post("/", async (req, res) => {
       return res.status(400).json({ error: "اسم المزود، رابط الـ API، ومفتاح API كلها حقول مطلوبة" });
     }
 
-    const normalizedApiUrl = normalizeApiUrl(apiUrl);
-    const balRes = await makeProviderApiCall(normalizedApiUrl, username, apiKey, "accountinfo");
-    if (!balRes.ok || !isProviderApiSuccess(balRes.data)) {
-      const errMsg = getProviderApiErrorMessage(balRes.data) || stripHtml(balRes.raw) || "فشل التحقق من بيانات المزود";
-      return res.status(400).json({ error: "فشل التحقق من الرصيد عند إضافة المزود: " + errMsg });
+    const isFox = isFoxreloadProvider({ type: rawType, apiUrl });
+    const type = isFox ? "foxreload" : rawType;
+    const normalizedApiUrl = isFox ? normalizeFoxreloadApiUrl(apiUrl) : normalizeApiUrl(apiUrl);
+
+    let accountInfo: { balance: number; currency: string } | null = null;
+    if (isFox) {
+      const live = await getFoxreloadLiveBalance(apiKey);
+      if (!live.success) {
+        return res.status(400).json({ error: "فشل التحقق من رصيد FoxReload عند إضافة المزود: " + (live.error || "خطأ غير معروف") });
+      }
+      accountInfo = selectFoxreloadBalance(live.balances, "USD");
+    } else {
+      const balRes = await makeProviderApiCall(normalizedApiUrl, username, apiKey, "accountinfo");
+      if (!balRes.ok || !isProviderApiSuccess(balRes.data)) {
+        const errMsg = getProviderApiErrorMessage(balRes.data) || stripHtml(balRes.raw) || "فشل التحقق من بيانات المزود";
+        return res.status(400).json({ error: "فشل التحقق من الرصيد عند إضافة المزود: " + errMsg });
+      }
+      accountInfo = extractProviderAccountInfo(balRes.data);
     }
 
-    const accountInfo = extractProviderAccountInfo(balRes.data);
     if (!accountInfo) {
       return res.status(400).json({ error: "تم الاتصال بالمزود لكن لم يتم العثور على رصيد واضح في الرد" });
     }
@@ -655,7 +781,17 @@ router.put("/:id", async (req, res) => {
     }
 
     const name = req.body.name !== undefined ? req.body.name.trim() : existing.name;
-    const apiUrl = (req.body.apiUrl || req.body.api_url) !== undefined ? normalizeApiUrl((req.body.apiUrl || req.body.api_url).trim()) : existing.apiUrl;
+    const rawIncomingUrl = req.body.apiUrl !== undefined ? req.body.apiUrl : req.body.api_url;
+    const incomingType = (req.body.type || req.body.provider_type) !== undefined ? (req.body.type || req.body.provider_type) : existing.type;
+    const isFox = isFoxreloadProvider({
+      id,
+      type: incomingType,
+      apiUrl: rawIncomingUrl !== undefined ? String(rawIncomingUrl) : existing.apiUrl
+    });
+
+    const apiUrl = rawIncomingUrl !== undefined
+      ? (isFox ? normalizeFoxreloadApiUrl(String(rawIncomingUrl).trim()) : normalizeApiUrl(String(rawIncomingUrl).trim()))
+      : (isFox ? normalizeFoxreloadApiUrl(existing.apiUrl) : existing.apiUrl);
     const username = req.body.username !== undefined ? (req.body.username ? req.body.username.trim() : null) : existing.username;
     
     const incomingApiKey = req.body.apiKey || req.body.api_key;
@@ -667,7 +803,7 @@ router.put("/:id", async (req, res) => {
 
     const apiKey = shouldKeepExistingKey ? existing.apiKey : incomingApiKey.trim();
 
-    const type = (req.body.type || req.body.provider_type) !== undefined ? (req.body.type || req.body.provider_type) : existing.type;
+    const type = isFox ? "foxreload" : incomingType;
     const isActive = req.body.isActive !== undefined ? Boolean(req.body.isActive) : (req.body.is_active !== undefined ? Boolean(req.body.is_active) : existing.isActive);
     const balance = req.body.balance !== undefined ? parseFloat(req.body.balance) : existing.balance;
     const mappingRules = req.body.mappingRules || req.body.mapping_rules;
@@ -685,6 +821,13 @@ router.put("/:id", async (req, res) => {
         ...(mappingRules !== undefined ? { mappingRules: mappingRules ? (typeof mappingRules === "string" ? mappingRules : JSON.stringify(mappingRules)) : null } : {})
       }
     });
+
+    if (id === FOXRELOAD_PROVIDER_ID) {
+      await updateFoxreloadSettings({
+        ...(shouldKeepExistingKey ? {} : { apiKey }),
+        isEnabled: isActive
+      }).catch(() => {});
+    }
 
     invalidateDhruServicesCache();
     return res.json({
@@ -735,10 +878,10 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
     }
 
     let accountInfo: { balance: number; currency: string } | null;
-    if (id === FOXRELOAD_PROVIDER_ID || provider.type?.toLowerCase() === 'foxreload') {
-      // The built-in provider uses the FoxReload settings as the source of truth.
-      // Its copy of the key in ApiProvider may be stale until the next catalog sync.
-      const live = await getFoxreloadLiveBalance(id === FOXRELOAD_PROVIDER_ID ? undefined : provider.apiKey);
+    if (isFoxreloadProvider(provider)) {
+      // The built-in provider uses the FoxReload settings as the source of truth,
+      // while falling back to the provider record key when settings/env are unset.
+      const live = await getFoxreloadLiveBalance(id === FOXRELOAD_PROVIDER_ID ? undefined : provider.apiKey, provider.apiKey);
       if (!live.success) {
         return res.status(400).json({ error: `تعذر تحديث رصيد FoxReload: ${live.error || 'لم يرجع المزود رصيداً صالحاً'}` });
       }
@@ -1000,6 +1143,22 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
+    if (isFoxreloadProvider(provider)) {
+      const { services, warning } = await loadFoxreloadProviderCatalogServices(true);
+      if (services.length === 0) {
+        return res.status(400).json({
+          error: "لم يتم العثور على خدمات FoxReload. تأكد من إدخال مفتاح API وحفظه ثم مزامنة الكتالوج."
+        });
+      }
+      return res.json({
+        success: true,
+        services,
+        servicesCount: services.length,
+        count: services.length,
+        ...(warning ? { catalogComplete: false, warning } : {})
+      });
+    }
+
     const { responses, byType } = await fetchProviderCatalog(provider);
     if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
       return res.status(400).json({
@@ -1055,6 +1214,36 @@ router.post("/:id/fetch-services", fetchRemoteServicesHandler);
 
 // Helper to build comprehensive provider export JSON
 async function buildProviderExportData(provider: any, includeRaw = true) {
+  if (isFoxreloadProvider(provider)) {
+    const { catalog, available, services } = await loadFoxreloadProviderCatalogServices(false);
+    const packagesMap: Record<string, any[]> = {};
+    for (const s of services) {
+      const pkg = s.groupName || s.group_name || "FoxReload";
+      if (!packagesMap[pkg]) packagesMap[pkg] = [];
+      packagesMap[pkg].push(s);
+    }
+    const packages = Object.entries(packagesMap).map(([packageName, srvs]) => ({
+      packageName,
+      servicesCount: srvs.length,
+      serviceTypes: ["server"],
+      services: srvs
+    }));
+    return {
+      provider: sanitizeProvider(provider),
+      metadata: {
+        exportedAt: new Date().toISOString(),
+        system: "Arab Tech Pro Server",
+        totalServices: services.length,
+        totalPackages: packages.length,
+        servicesByType: { imei: 0, server: services.length, remote: 0 }
+      },
+      packages,
+      services,
+      databaseServices: [],
+      ...(includeRaw ? { rawApiResponses: { catalog, productsCount: available.products.length } } : {})
+    };
+  }
+
   // 1. Fetch DB services
   const dbServices = await prisma.dhruService.findMany({
     where: { providerId: provider.id },
@@ -1286,6 +1475,21 @@ router.get("/:id/raw-data", async (req, res) => {
     const type = String(req.query.type || "all").toLowerCase();
     const isDownload = req.query.download === "true" || req.query.download === "1";
     const cleanName = (provider.name || "provider").replace(/[^a-zA-Z0-9_\u0600-\u06FF]/g, "_");
+
+    if (isFoxreloadProvider(provider)) {
+      const { catalog, available } = await loadFoxreloadProviderCatalogServices(false);
+      const rawFoxPayload = {
+        provider: sanitizeProvider(provider),
+        catalog,
+        products: available.products,
+        exportedAt: new Date().toISOString()
+      };
+      if (isDownload) {
+        res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_Original_Full.json"`);
+        res.setHeader("Content-Type", "application/json");
+      }
+      return res.json(rawFoxPayload);
+    }
 
     if (type === "imei") {
       const imeiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "imeiservicelist");
@@ -1527,6 +1731,32 @@ router.post("/:id/sync", async (req, res) => {
       return res.status(404).json({ error: "المزود غير موجود" });
     }
 
+    const markupPercent = parseFloat(req.body.markupPercent ?? req.body.markup_percent) || 0;
+    const exchangeRate = parseFloat(req.body.exchangeRate ?? req.body.exchange_rate) || 1;
+
+    if (isFoxreloadProvider(provider)) {
+      if (markupPercent > 0) {
+        await updateFoxreloadSettings({ defaultProfitMarginPercent: markupPercent });
+      }
+      const syncedCatalog = await syncFoxreloadCatalog();
+      // Warm product walk in background without blocking the HTTP response.
+      getFoxreloadAllProducts(true, 10000).catch(() => {});
+      const { services } = await loadFoxreloadProviderCatalogServices(false);
+      const count = services.length || syncedCatalog.totalBundlesCount || 0;
+      await prisma.apiProvider.update({
+        where: { id },
+        data: { servicesCount: count, updatedAt: new Date() }
+      }).catch(() => {});
+
+      return res.json({
+        success: true,
+        count,
+        totalCount: count,
+        serviceTypes: ["server"],
+        message: `تمت مزامنة FoxReload بنجاح! إجمالي الباقات والخدمات المتاحة: ${count}.`
+      });
+    }
+
     const { types, responses, byType } = await fetchProviderCatalog(provider);
     const catalogWarning = getProviderCatalogWarning(responses);
     if (catalogWarning) return res.status(503).json({ error: catalogWarning, catalogComplete: false });
@@ -1543,9 +1773,6 @@ router.post("/:id/sync", async (req, res) => {
         error: "لم يتم العثور على خدمات في رد المزود. تأكد من صحة الرابط ومفتاح الـ API واسم المستخدم وتصريح الـ IP."
       });
     }
-
-    const markupPercent = parseFloat(req.body.markupPercent ?? req.body.markup_percent) || 0;
-    const exchangeRate = parseFloat(req.body.exchangeRate ?? req.body.exchange_rate) || 1;
 
     const totalSynced = await persistProviderServicesList(provider, allServices, markupPercent, exchangeRate);
 
@@ -1577,6 +1804,29 @@ router.post("/:id/import-services", async (req, res) => {
     const provider = await prisma.apiProvider.findUnique({ where: { id } });
     if (!provider) {
       return res.status(404).json({ error: "المزود غير موجود" });
+    }
+
+    if (isFoxreloadProvider(provider)) {
+      const settings = await getFoxreloadSettings();
+      const hidden = new Set(settings.hiddenItems);
+      let count = 0;
+      for (const s of services) {
+        const sid = String(s.id || s.service_id || "").trim();
+        if (!sid) continue;
+        hidden.delete(sid);
+        count++;
+      }
+      const markup = parseFloat(markup_percent) || 0;
+      await updateFoxreloadSettings({
+        hiddenItems: Array.from(hidden),
+        ...(markup > 0 ? { defaultProfitMarginPercent: markup } : {})
+      });
+      return res.json({
+        success: true,
+        count,
+        totalCount: count,
+        message: `تم تفعيل واستيراد ${count} خدمة FoxReload بنجاح!`
+      });
     }
 
     const markup = parseFloat(markup_percent) || 0;
@@ -1688,6 +1938,16 @@ router.get("/:id/services", async (req, res) => {
     const { id } = req.params;
     const includeInfo = req.query.include_info === "true" || req.query.includeInfo === "true";
 
+    const provider = await prisma.apiProvider.findUnique({ where: { id } });
+    if (provider && isFoxreloadProvider(provider)) {
+      const { services, warning } = await loadFoxreloadProviderCatalogServices(false);
+      return res.json({
+        success: true,
+        services,
+        ...(warning ? { warning } : {})
+      });
+    }
+
     const providerServiceCount = await prisma.dhruService.count({
       where: { providerId: id }
     });
@@ -1756,6 +2016,25 @@ router.post("/:id/toggle-packages", async (req, res) => {
 
     const nextActive = typeof isActive === "boolean" ? isActive : true;
 
+    const provider = await prisma.apiProvider.findUnique({ where: { id } });
+    if (provider && isFoxreloadProvider(provider)) {
+      const { settings, catalog, services } = await loadFoxreloadProviderCatalogServices(false);
+      const targetIds = collectFoxreloadGroupTargetIds(groupNames, catalog, services);
+      const hidden = new Set(settings.hiddenItems);
+      for (const targetId of targetIds) {
+        if (nextActive) hidden.delete(targetId);
+        else hidden.add(targetId);
+      }
+      await updateFoxreloadSettings({ hiddenItems: Array.from(hidden) });
+      return res.json({
+        success: true,
+        count: targetIds.length,
+        message: nextActive
+          ? `تم إظهار وتفعيل ${targetIds.length} عنصر ضمن (${groupNames.length} باقة) للعملاء بنجاح!`
+          : `تم إخفاء ${targetIds.length} عنصر ضمن (${groupNames.length} باقة) عن العملاء بنجاح.`
+      });
+    }
+
     const providerServiceCount = await prisma.dhruService.count({
       where: { providerId: id }
     });
@@ -1791,6 +2070,25 @@ router.post("/:id/toggle-all", async (req, res) => {
     const { id } = req.params;
     const { isActive } = req.body;
     const nextActive = typeof isActive === "boolean" ? isActive : true;
+
+    const provider = await prisma.apiProvider.findUnique({ where: { id } });
+    if (provider && isFoxreloadProvider(provider)) {
+      await updateFoxreloadSettings({
+        isEnabled: nextActive,
+        ...(nextActive ? { hiddenItems: [] } : {})
+      });
+      await prisma.apiProvider.update({
+        where: { id },
+        data: { isActive: nextActive }
+      }).catch(() => {});
+      return res.json({
+        success: true,
+        count: provider.servicesCount || 0,
+        message: nextActive
+          ? "تم تفعيل وإظهار كافة خدمات FoxReload في المتجر بنجاح!"
+          : "تم إخفاء كافة خدمات FoxReload عن المتجر."
+      });
+    }
 
     const providerServiceCount = await prisma.dhruService.count({
       where: { providerId: id }
@@ -1831,6 +2129,21 @@ router.post("/:id/toggle-service", async (req, res) => {
     }
 
     const cleanServiceId = String(serviceId).trim();
+
+    const provider = await prisma.apiProvider.findUnique({ where: { id: providerId } });
+    if (provider && isFoxreloadProvider(provider)) {
+      const settings = await getFoxreloadSettings();
+      const hidden = new Set(settings.hiddenItems);
+      const nextActive = Boolean(isActive);
+      if (nextActive) hidden.delete(cleanServiceId);
+      else hidden.add(cleanServiceId);
+      await updateFoxreloadSettings({ hiddenItems: Array.from(hidden) });
+      return res.json({
+        success: true,
+        service: { id: cleanServiceId, isActive: nextActive },
+        message: nextActive ? "تم إظهار الخدمة للعملاء بنجاح" : "تم إخفاء الخدمة عن العملاء بنجاح"
+      });
+    }
 
     // Look up service by database UUID, dhruId, or scoped provider::dhruId
     const existing = await prisma.dhruService.findFirst({

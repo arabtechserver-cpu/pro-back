@@ -10,6 +10,7 @@ import { BoundedRateLimitStore } from '../utils/bounded-rate-limit-store';
 import { prisma } from '../utils/prisma';
 import { roundCurrency } from '../utils/currency';
 import { resolvePrimaryFrontendUrl } from '../utils/telegram-config';
+import { getCashierSigningKeyInfo, signCashierEntitlement, type CashierEntitlementStatus } from '../utils/cashier-license-signer';
 
 const router = Router();
 const day = 86_400_000;
@@ -68,6 +69,29 @@ const licenseLimiter = rateLimit({
   validate: { xForwardedForHeader: false },
 });
 
+const entitlementLimiter = rateLimit({
+  store: new BoundedRateLimitStore(),
+  windowMs: 300_000,
+  limit: 180,
+  message: { error: 'طلبات تحقق كثيرة. حاول بعد دقائق.', code: 'TRY_LATER' },
+  validate: { xForwardedForHeader: false },
+});
+
+function readRequestNonce(req: Request): string {
+  const raw = req.get('x-cashier-nonce')?.trim();
+  if (!raw) return '';
+  if (!/^[a-f0-9]{32,64}$/.test(raw)) {
+    fail(400, 'INVALID_NONCE', 'رمز التحقق الأمني غير صالح.');
+  }
+  return raw;
+}
+
+function extractBearerMachine(req: Request): string {
+  const match = /^Bearer Cashier\.([a-f0-9]{64})\.([a-f0-9]{64})$/.exec(req.get('authorization') ?? '');
+  if (!match) fail(401, 'DEVICE_REQUIRED', 'التطبيق يحتاج إلى التسجيل على هذا الجهاز.');
+  return match[1];
+}
+
 function planPrice(plan: { amountMinor: number; discountUntil: Date | null; promoAmountMinor: number | null; discountPercent: number }, now: Date) {
   const offerActive = plan.discountUntil !== null && plan.discountUntil > now;
   return {
@@ -76,14 +100,15 @@ function planPrice(plan: { amountMinor: number; discountUntil: Date | null; prom
   };
 }
 
-function entitlement(device: Device) {
+function entitlement(device: Device): { status: CashierEntitlementStatus; until: Date | null; shopName: string; email: string } {
   if (device.activeKey) {
     const until = device.activeKey.expiresAt;
-    const status = device.activeKey.revokedAt ? 'REVOKED' : until && until.getTime() > Date.now() ? 'ACTIVE' : 'EXPIRED';
+    const status: CashierEntitlementStatus = device.activeKey.revokedAt ? 'REVOKED' : until && until.getTime() > Date.now() ? 'ACTIVE' : 'EXPIRED';
     return { status, until, shopName: device.shopName, email: device.email };
   }
   const until = device.trialEndsAt;
-  return { status: until && until.getTime() > Date.now() ? 'TRIAL' : 'EXPIRED', until, shopName: device.shopName, email: device.email };
+  const status: CashierEntitlementStatus = until && until.getTime() > Date.now() ? 'TRIAL' : 'EXPIRED';
+  return { status, until, shopName: device.shopName, email: device.email };
 }
 
 async function authenticate(req: Request): Promise<Device> {
@@ -120,6 +145,15 @@ async function enroll(input: z.infer<typeof enrollment>) {
           fail(403, 'INVALID_KEY', 'المفتاح غير صالح لهذا البريد أو تم استخدامه على جهاز آخر.');
         }
         if (!device) {
+          if (!input.key) {
+            const priorTrial = await tx.cashierDevice.findFirst({
+              where: { email: input.email },
+              select: { id: true },
+            });
+            if (priorTrial) {
+              fail(409, 'TRIAL_ALREADY_USED', 'تم استخدام الفترة التجريبية لهذا البريد الإلكتروني مسبقاً. يرجى إدخال مفتاح اشتراك.');
+            }
+          }
           device = await tx.cashierDevice.create({
             data: { machineHash, proofHash, email: input.email, shopName: input.shopName, trialEndsAt: key ? null : new Date(Date.now() + 3 * day) },
             include: { activeKey: true },
@@ -349,15 +383,20 @@ router.get('/checkout/:id/key', authenticateToken, route(async (req, res) => {
 }));
 
 router.post('/enroll', licenseLimiter, route(async (req, res) => {
-  res.json(entitlement(await enroll(enrollment.parse(req.body))));
+  const nonce = readRequestNonce(req);
+  const input = enrollment.parse(req.body);
+  const device = await enroll(input);
+  res.json(signCashierEntitlement({ machine: input.machine, ...entitlement(device), nonce }));
 }));
 
-router.get('/entitlement', route(async (req, res) => {
+router.get('/entitlement', entitlementLimiter, route(async (req, res) => {
+  const nonce = readRequestNonce(req);
+  const machine = extractBearerMachine(req);
   const device = await authenticate(req);
   if (Date.now() - device.lastSeenAt.getTime() > 300_000) {
     await prisma.cashierDevice.update({ where: { id: device.id }, data: { lastSeenAt: new Date() } });
   }
-  res.json(entitlement(device));
+  res.json(signCashierEntitlement({ machine, ...entitlement(device), nonce }));
 }));
 
 const planInput = z.object({
@@ -399,6 +438,9 @@ router.use('/admin', (req, _res, next) => {
 }, isAdmin);
 router.get('/admin/plans', route(async (_req, res) => {
   res.json(await prisma.cashierPlan.findMany({ orderBy: { createdAt: 'desc' } }));
+}));
+router.get('/admin/signing-key', route(async (_req, res) => {
+  res.json(getCashierSigningKeyInfo());
 }));
 router.post('/admin/plans', route(async (req, res) => {
   res.status(201).json(await prisma.cashierPlan.create({ data: planData(req.body) }));

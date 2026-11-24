@@ -6,6 +6,7 @@ import { BoundedCache } from '../utils/bounded-cache';
 import { AsyncGate } from '../utils/async-gate';
 import { createHash } from 'crypto';
 import { providerCatalogSnapshotPath, loadProviderCatalogSnapshot, saveProviderCatalogSnapshot } from '../utils/provider-catalog-snapshot';
+import { foxreloadCustomFields } from '../utils/foxreload-contract';
 const providerReads = new AsyncGate(12, 64, 22000);
 const providerWrites = new AsyncGate(2, 12, 3000);
 
@@ -89,6 +90,19 @@ export async function updateFoxreloadSettings(updates: Partial<FoxreloadSettings
       value: JSON.stringify(updated),
     },
   });
+
+  try {
+    await prisma.apiProvider.updateMany({
+      where: { id: FOXRELOAD_PROVIDER_ID },
+      data: {
+        isActive: updated.isEnabled,
+        apiKey: updated.apiKey || getEnvApiKey(),
+        updatedAt: new Date(),
+      },
+    });
+  } catch {
+    // Non-blocking sync when provider row or mock client lacks updateMany.
+  }
 
   clearCatalogCache();
   return updated;
@@ -384,7 +398,10 @@ async function requestFoxreloadApi(
   });
 }
 
-export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
+export async function getFoxreloadLiveBalance(
+  customApiKey?: string,
+  fallbackApiKey?: string
+): Promise<{
   success: boolean;
   email?: string;
   balances: Array<{ currency: string; amount: number }>;
@@ -394,7 +411,7 @@ export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
 }> {
   try {
     const settings = await getFoxreloadSettings();
-    const effectiveKey = (customApiKey || settings.apiKey || getEnvApiKey()).trim();
+    const effectiveKey = (customApiKey || settings.apiKey || getEnvApiKey() || fallbackApiKey || '').trim();
     if (!effectiveKey) {
       return {
         success: false,
@@ -403,17 +420,35 @@ export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
       };
     }
 
-    const [accountRes, balancesRes] = await Promise.all([
+    const [accountRes, initialBalancesRes] = await Promise.all([
       callFoxreloadApi('/api/access/me', 'GET', undefined, 'en', 'usd', effectiveKey),
       callFoxreloadApi('/api/access/me/balances/', 'GET', undefined, 'en', 'usd', effectiveKey),
     ]);
 
+    let balancesRes = initialBalancesRes;
+    if (!balancesRes.ok && (balancesRes.status === 404 || balancesRes.status === 405)) {
+      balancesRes = await callFoxreloadApi('/api/access/me/balances', 'GET', undefined, 'en', 'usd', effectiveKey);
+    }
+
     if (!balancesRes.ok) {
-      const errorMsg =
+      let errorMsg =
         balancesRes.data?.error ||
         balancesRes.data?.detail ||
-        balancesRes.data?.message ||
-        (balancesRes.status === 401 ? 'مفتاح الربط (API Key) غير صالح أو منتهي الصلاحية لدى FoxReload (401)' : `فشل قراءة رصيد FoxReload (كود الخطأ: ${balancesRes.status})`);
+        balancesRes.data?.message;
+
+      if (!errorMsg) {
+        if (balancesRes.status === 401) {
+          errorMsg = 'مفتاح الربط (API Key) غير صالح أو منتهي الصلاحية لدى FoxReload (401)';
+        } else if (balancesRes.status === 403) {
+          errorMsg = 'تم رفض الطلب من حماية FoxReload (Cloudflare/WAF 403) أو أن عنوان IP الخادم غير مصرح له';
+        } else if (balancesRes.status === 429) {
+          errorMsg = 'تم تجاوز حد الطلبات لدى FoxReload (429). حاول بعد قليل';
+        } else if (balancesRes.status === 504) {
+          errorMsg = 'انتهت مهلة الاتصال بخادم FoxReload (504)';
+        } else {
+          errorMsg = `فشل قراءة رصيد FoxReload (كود الخطأ: ${balancesRes.status})`;
+        }
+      }
 
       return {
         success: false,
@@ -428,9 +463,19 @@ export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
       };
     }
 
+    const rawItems = Array.isArray(balancesRes.data)
+      ? balancesRes.data
+      : Array.isArray(balancesRes.data?.items)
+        ? balancesRes.data.items
+        : Array.isArray(balancesRes.data?.balances)
+          ? balancesRes.data.balances
+          : Array.isArray(balancesRes.data?.data)
+            ? balancesRes.data.data
+            : null;
+
     const balancesList: Array<{ currency: string; amount: number }> = [];
-    if (Array.isArray(balancesRes.data)) {
-      for (const item of balancesRes.data) {
+    if (rawItems) {
+      for (const item of rawItems) {
         const currency = String(item?.currency ?? '').trim().toUpperCase();
         const rawAmount = item?.available ?? item?.amount ?? item?.balance;
         if (!currency || (typeof rawAmount !== 'number' &&
@@ -438,6 +483,16 @@ export async function getFoxreloadLiveBalance(customApiKey?: string): Promise<{
         const amount = Number(rawAmount);
         if (Number.isFinite(amount)) balancesList.push({ currency, amount });
       }
+    }
+
+    if (
+      balancesList.length === 0 &&
+      rawItems &&
+      rawItems.length === 0 &&
+      accountRes.ok &&
+      (accountRes.data?.email || accountRes.data?.id)
+    ) {
+      balancesList.push({ currency: 'USD', amount: 0 });
     }
 
     if (balancesList.length === 0) {
@@ -1527,4 +1582,124 @@ export async function getFoxreloadOrderDetails(orderId: string | number): Promis
       error: err.message || 'Exception while checking FoxReload order',
     };
   }
+}
+
+export function buildFoxreloadProviderServices(
+  settings: FoxreloadSettings,
+  catalog: any,
+  products: FoxreloadProduct[] = []
+): any[] {
+  const hiddenSet = new Set(settings.hiddenItems || []);
+  const sections = catalog?.sections || {};
+  const sectionEntries: Array<{ key: string; sec: any }> = [
+    { key: 'topups', sec: sections.topups },
+    { key: 'app-stores', sec: sections.appStores },
+    { key: 'game-currency', sec: sections.gameCurrency },
+    { key: 'subscriptions', sec: sections.subscriptions },
+    { key: 'esim', sec: sections.esim },
+    { key: 'rewarble', sec: sections.rewarble },
+  ];
+
+  const categoryMeta = new Map<string, { sectionId: string; groupName: string; bundleHidden: boolean }>();
+  for (const { key, sec } of sectionEntries) {
+    for (const bundle of sec?.bundles || []) {
+      const bHidden = Boolean(bundle.isHidden) || hiddenSet.has(bundle.id) || hiddenSet.has(bundle.slug);
+      categoryMeta.set(bundle.id, { sectionId: key, groupName: bundle.name || sec.nameEn || key, bundleHidden: bHidden });
+      for (const region of bundle.regions || []) {
+        const rName = region.name && region.name !== 'Global' ? `${bundle.name} / ${region.name}` : bundle.name;
+        categoryMeta.set(region.id, {
+          sectionId: key,
+          groupName: rName || bundle.name || key,
+          bundleHidden: bHidden || hiddenSet.has(region.id) || hiddenSet.has(region.slug),
+        });
+      }
+    }
+  }
+
+  if (products.length > 0) {
+    const seen = new Set<string>();
+    const list: any[] = [];
+    for (const p of products) {
+      if (!p?.id || seen.has(p.id)) continue;
+      seen.add(p.id);
+      const meta = categoryMeta.get(p.categoryId);
+      const sectionId = meta?.sectionId || (p.categorySlug === 'esim' ? 'esim' : 'topups');
+      const groupName = meta?.groupName || p.categorySlug || 'FoxReload';
+      const customFields = foxreloadCustomFields(p);
+      const isHidden = Boolean(meta?.bundleHidden || p.isHidden || hiddenSet.has(p.id) || hiddenSet.has(p.slug));
+      list.push({
+        id: p.id,
+        service_id: p.id,
+        dhruId: p.id,
+        name: p.name,
+        originalName: p.name,
+        groupName,
+        group_name: groupName,
+        category_name: 'Server Service',
+        service_type: 'server',
+        api_service_type: 'server',
+        section_id: sectionId,
+        category_key: sectionId,
+        credit: p.costPrice,
+        price: p.costPrice,
+        providerPrice: p.costPrice,
+        margin: p.marginAmount,
+        time: p.deliveryType === 'code' ? 'Instant' : 'Manual / 1-15m',
+        info: p.description || p.userGuide || '',
+        customFields,
+        requiresCustom: customFields.length > 0 ? JSON.stringify(customFields) : null,
+        supportsQty: !p.maxQty || p.maxQty > 1,
+        supports_quantity: !p.maxQty || p.maxQty > 1,
+        minQty: p.minQty || 1,
+        maxQty: p.maxQty ?? 0,
+        min_quantity: p.minQty || 1,
+        max_quantity: p.maxQty ?? 0,
+        isActive: settings.isEnabled && !isHidden,
+        isImported: true,
+      });
+    }
+    return list;
+  }
+
+  const fallbackList: any[] = [];
+  const seenBundles = new Set<string>();
+  for (const { key, sec } of sectionEntries) {
+    for (const bundle of sec?.bundles || []) {
+      if (!bundle?.id || seenBundles.has(bundle.id)) continue;
+      seenBundles.add(bundle.id);
+      const isHidden = Boolean(bundle.isHidden) || hiddenSet.has(bundle.id) || hiddenSet.has(bundle.slug);
+      const bestPrice = parseFloat(String(bundle.bestOfferPrice || '0')) || 0;
+      fallbackList.push({
+        id: bundle.id,
+        service_id: bundle.id,
+        dhruId: bundle.id,
+        name: bundle.name,
+        originalName: bundle.name,
+        groupName: sec?.nameAr || key,
+        group_name: sec?.nameAr || key,
+        category_name: 'Server Service',
+        service_type: 'server',
+        api_service_type: 'server',
+        section_id: key,
+        category_key: key,
+        credit: bestPrice,
+        price: bestPrice,
+        providerPrice: bestPrice,
+        margin: 0,
+        time: 'Instant',
+        info: '',
+        customFields: [],
+        requiresCustom: null,
+        supportsQty: true,
+        supports_quantity: true,
+        minQty: 1,
+        maxQty: 0,
+        min_quantity: 1,
+        max_quantity: 0,
+        isActive: settings.isEnabled && !isHidden,
+        isImported: true,
+      });
+    }
+  }
+  return fallbackList;
 }

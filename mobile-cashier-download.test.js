@@ -98,6 +98,14 @@ test('GET /product downloadUrl resolution and GET /download streaming', async ()
     await getRouteHandler(router, 'GET', '/download')({}, res, () => {});
     assert.equal(res.statusCode, 404);
     assert.equal(res.body.code, 'INSTALLER_UNAVAILABLE');
+
+    // 6. Falls back to permanent default MediaFire URL when MOBILE_CASHIER_DOWNLOAD_URL is unset
+    delete process.env.MOBILE_CASHIER_DOWNLOAD_URL;
+    router = loadRouter();
+    res = makeRes();
+    await getRouteHandler(router, 'GET', '/product')({}, res, () => {});
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.body.downloadUrl, 'https://www.mediafire.com/file/rtet2dxrja5i241/ar-pro-Setup-1.2.7.exe/file');
   } finally {
     prisma.cashierPlan.findMany = origFindMany;
     if (origUrl === undefined) delete process.env.MOBILE_CASHIER_DOWNLOAD_URL;

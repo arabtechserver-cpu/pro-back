@@ -14,6 +14,7 @@ import { resolvePrimaryFrontendUrl } from '../utils/telegram-config';
 const router = Router();
 const day = 86_400_000;
 const technician = 'عرب تيك';
+const defaultDownloadUrl = 'https://www.mediafire.com/file/rtet2dxrja5i241/ar-pro-Setup-1.2.7.exe/file';
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 const uuid = z.uuid();
 const email = z.string().trim().toLowerCase().pipe(z.email().max(254));
@@ -202,11 +203,16 @@ router.get('/product', route(async (_req, res) => {
   const plans = await prisma.cashierPlan.findMany({ where: { active: true }, orderBy: { amountMinor: 'asc' } });
   const now = new Date();
   const configuredUrl = process.env.MOBILE_CASHIER_DOWNLOAD_URL?.trim();
-  const downloadUrl = configuredUrl?.startsWith('https://')
-    ? configuredUrl
-    : resolveLocalInstaller()
-      ? '/api/mobile-cashier/download'
-      : null;
+  let downloadUrl: string | null;
+  if (configuredUrl) {
+    downloadUrl = configuredUrl.startsWith('https://')
+      ? configuredUrl
+      : resolveLocalInstaller()
+        ? '/api/mobile-cashier/download'
+        : null;
+  } else {
+    downloadUrl = resolveLocalInstaller() ? '/api/mobile-cashier/download' : defaultDownloadUrl;
+  }
   res.json({
     trialDays: 3,
     technician,

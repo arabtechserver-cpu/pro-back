@@ -78,7 +78,12 @@ const entitlementLimiter = rateLimit({
 });
 
 function readRequestNonce(req: Request): string {
-  const raw = req.get('x-cashier-nonce')?.trim();
+  const fromHeader = req.get('x-cashier-nonce')?.trim();
+  const fromQuery = typeof req.query?.nonce === 'string' ? req.query.nonce.trim() : '';
+  const fromBody = req.body && typeof req.body === 'object' && typeof req.body.nonce === 'string'
+    ? req.body.nonce.trim()
+    : '';
+  const raw = fromHeader || fromQuery || fromBody;
   if (!raw) return '';
   if (!/^[a-f0-9]{32,64}$/.test(raw)) {
     fail(400, 'INVALID_NONCE', 'رمز التحقق الأمني غير صالح.');

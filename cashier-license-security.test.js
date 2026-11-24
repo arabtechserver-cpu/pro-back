@@ -164,4 +164,34 @@ test('POST /enroll blocks repeated free trials on the same email and GET /entitl
     verifyCashierEntitlement({ machine, ...entRes.body }, publicKeyPem),
     true,
   );
+
+  // 3. GET /entitlement accepts nonce from query fallback and rejects malformed nonces
+  const queryNonce = crypto.randomBytes(24).toString('hex');
+  const queryRes = makeRes();
+  await entitlementHandler(
+    {
+      query: { nonce: queryNonce },
+      get: (h) => (h.toLowerCase() === 'authorization' ? `Bearer Cashier.${machine}.${proof}` : undefined),
+    },
+    queryRes,
+    () => {},
+  );
+  assert.equal(queryRes.statusCode, 200);
+  assert.equal(queryRes.body.nonce, queryNonce);
+  assert.equal(
+    verifyCashierEntitlement({ machine, ...queryRes.body }, publicKeyPem),
+    true,
+  );
+
+  const badRes = makeRes();
+  await entitlementHandler(
+    {
+      query: { nonce: 'not-valid-hex!' },
+      get: (h) => (h.toLowerCase() === 'authorization' ? `Bearer Cashier.${machine}.${proof}` : undefined),
+    },
+    badRes,
+    () => {},
+  );
+  assert.equal(badRes.statusCode, 400);
+  assert.equal(badRes.body.code, 'INVALID_NONCE');
 });

@@ -105,7 +105,7 @@ test('GET /product downloadUrl resolution and GET /download streaming', async ()
     res = makeRes();
     await getRouteHandler(router, 'GET', '/product')({}, res, () => {});
     assert.equal(res.statusCode, 200);
-    assert.equal(res.body.downloadUrl, 'https://www.mediafire.com/file/rtet2dxrja5i241/ar-pro-Setup-1.2.7.exe/file');
+    assert.equal(res.body.downloadUrl, 'https://www.mediafire.com/file/7b68gzjgaiy1v9d/ar-pro-Setup-1.2.8.exe/file');
   } finally {
     prisma.cashierPlan.findMany = origFindMany;
     if (origUrl === undefined) delete process.env.MOBILE_CASHIER_DOWNLOAD_URL;

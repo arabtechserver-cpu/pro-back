@@ -356,14 +356,18 @@ router.post('/checkout', authenticateToken, route(async (req, res) => {
         if (balance !== buyer.balance) await tx.user.update({ where: { id: buyerId }, data: { balance } });
 
         const id = randomUUID();
-        const debit = await tx.transaction.create({ data: {
-          userId: buyerId, type: `خصم اشتراك ar-pro - ${plan.name}`, amount, method: 'رصيد المحفظة', status: 'completed',
-          refNo: 'ARPRO-' + id.replaceAll('-', '').slice(0, 16).toUpperCase(),
-        } });
-        await tx.cashierLicense.create({ data: {
-          id: licenseId, keyHash: sha256(key), suffix: key.slice(-6), customerEmail: input.customerEmail,
-          planId: plan.id, durationDays: plan.durationDays, issuedBy: buyerId,
-        } });
+        const debit = await tx.transaction.create({
+          data: {
+            userId: buyerId, type: `خصم اشتراك ar-pro - ${plan.name}`, amount, method: 'رصيد المحفظة', status: 'completed',
+            refNo: 'ARPRO-' + id.replaceAll('-', '').slice(0, 16).toUpperCase(),
+          }
+        });
+        await tx.cashierLicense.create({
+          data: {
+            id: licenseId, keyHash: sha256(key), suffix: key.slice(-6), customerEmail: input.customerEmail,
+            planId: plan.id, durationDays: plan.durationDays, issuedBy: buyerId,
+          }
+        });
         const purchase = await tx.cashierPurchase.create({
           data: { id, buyerId, requestId: input.requestId, planName: plan.name, amountMinor, licenseId, transactionId: debit.id },
           include: purchaseDetails,

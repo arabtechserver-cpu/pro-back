@@ -965,8 +965,14 @@ async function fetchParentTree(
 
   const rawList = res.data?.items || (Array.isArray(res.data) ? res.data : []);
   if (!res.ok) {
+    if (res.status === 404) {
+      if (revision === foxCatalogRevision) treeCache.set(parentSlug, { timestamp: now, data: [] });
+      return [];
+    }
     if (cached) return cached.data;
-    throw new Error('FoxReload category tree is temporarily unavailable');
+    const err = new Error(`FoxReload category tree (${parentSlug}) is temporarily unavailable (HTTP ${res.status})`);
+    (err as any).statusCode = res.status;
+    throw err;
   }
   const bundles: FoxreloadBundle[] = rawList
     .map((c: any) => {
@@ -1121,11 +1127,35 @@ export async function syncFoxreloadCatalog(): Promise<any> {
     return syncedCatalog;
   })();
 
-  syncInFlight = work.finally(() => {
-    if (syncInFlight === work) syncInFlight = null;
+  const pending = work.finally(() => {
+    if (syncInFlight === pending) syncInFlight = null;
   });
+  syncInFlight = pending;
 
-  return work;
+  return pending;
+}
+
+async function fetchSectionTreeWithFallback(
+  slugs: string[],
+  sectionId: string,
+  settings: FoxreloadSettings,
+  hiddenSet: Set<string>,
+  revision: number
+): Promise<FoxreloadBundle[]> {
+  for (const slug of slugs) {
+    const bundles = await fetchParentTree(slug, sectionId, settings, hiddenSet, revision);
+    if (bundles.length > 0) return bundles;
+  }
+  return [];
+}
+
+function formatSyncFailureMessage(err: any): string {
+  const statusCode = err?.statusCode;
+  if (statusCode === 401) return 'مفتاح الربط (API Key) غير صالح أو منتهي الصلاحية لدى FoxReload (401)';
+  if (statusCode === 403) return 'تم رفض الطلب من حماية FoxReload (Cloudflare/WAF 403) أو أن عنوان IP الخادم غير مصرح له';
+  if (statusCode === 429) return 'تم تجاوز حد الطلبات لدى FoxReload (429). حاول بعد قليل';
+  if (statusCode === 504) return 'انتهت مهلة الاتصال بخادم FoxReload (504)';
+  return `فشل سحب بيانات الكتالوج من FoxReload (HTTP ${statusCode || 502})`;
 }
 
 async function fetchRemoteFoxreloadCatalog(): Promise<any> {
@@ -1137,6 +1167,33 @@ async function fetchRemoteFoxreloadCatalog(): Promise<any> {
   }
   const hiddenSet = new Set(settings.hiddenItems);
 
+  const batch1 = await Promise.allSettled([
+    fetchParentTree('topups', 'topups', settings, hiddenSet, revision),
+    fetchParentTree('app-stores', 'app-stores', settings, hiddenSet, revision),
+    fetchParentTree('game-currency', 'game-currency', settings, hiddenSet, revision),
+  ]);
+
+  const batch2 = await Promise.allSettled([
+    fetchParentTree('subscriptions', 'subscriptions', settings, hiddenSet, revision),
+    fetchParentTree('esim', 'esim', settings, hiddenSet, revision),
+    fetchSectionTreeWithFallback(['rewarble', 'prepaid-finance'], 'rewarble', settings, hiddenSet, revision),
+  ]);
+
+  const sectionNames = ['topups', 'app-stores', 'game-currency', 'subscriptions', 'esim', 'rewarble'];
+  const allResults = [...batch1, ...batch2];
+  const succeededCount = allResults.filter((r) => r.status === 'fulfilled').length;
+
+  if (succeededCount === 0) {
+    const firstRejected = allResults.find((r): r is PromiseRejectedResult => r.status === 'rejected');
+    throw new Error(formatSyncFailureMessage(firstRejected?.reason));
+  }
+
+  const unwrapSection = (result: PromiseSettledResult<FoxreloadBundle[]>, label: string): FoxreloadBundle[] => {
+    if (result.status === 'fulfilled') return result.value;
+    console.warn(`[FoxReload Sync] Section "${label}" failed:`, result.reason?.message || result.reason);
+    return [];
+  };
+
   const [
     topupsBundles,
     appStoresBundles,
@@ -1144,16 +1201,7 @@ async function fetchRemoteFoxreloadCatalog(): Promise<any> {
     subscriptionsBundles,
     esimBundles,
     rewarbleBundles,
-    popularLegacyItems,
-  ] = await Promise.all([
-    fetchParentTree('topups', 'topups', settings, hiddenSet, revision),
-    fetchParentTree('app-stores', 'app-stores', settings, hiddenSet, revision),
-    fetchParentTree('game-currency', 'game-currency', settings, hiddenSet, revision),
-    fetchParentTree('subscriptions', 'subscriptions', settings, hiddenSet, revision),
-    fetchParentTree('esim', 'esim', settings, hiddenSet, revision),
-    fetchParentTree('rewarble', 'rewarble', settings, hiddenSet, revision),
-    fetchPopularCatalogItems(settings, hiddenSet).catch(() => []),
-  ]);
+  ] = allResults.map((result, idx) => unwrapSection(result, sectionNames[idx]));
 
   const popularKeywords = [
     'free fire',
@@ -1191,7 +1239,7 @@ async function fetchRemoteFoxreloadCatalog(): Promise<any> {
         nameAr: 'الأكثر شعبية',
         nameEn: 'Most Popular',
         bundles: popularBundles,
-        items: popularLegacyItems,
+        items: [],
       },
       topups: {
         id: 'topups',
@@ -1199,7 +1247,7 @@ async function fetchRemoteFoxreloadCatalog(): Promise<any> {
         nameEn: 'In-Game Top-Ups',
         icon: 'sports_esports',
         bundles: topupsBundles,
-        items: popularLegacyItems.slice(0, 10),
+        items: [],
       },
       appStores: {
         id: 'app-stores',
@@ -1300,134 +1348,6 @@ function isValidProduct(item: any): boolean {
     item.stock > 0 &&
     !item.isHidden
   );
-}
-
-async function fetchSearchBatch(query: string, limit: number = 25): Promise<any[]> {
-  const res = await callFoxreloadApi(`/api/products/search?query=${encodeURIComponent(query)}&limit=${limit}`);
-  return Array.isArray(res.data) ? res.data : [];
-}
-
-async function fetchCategoryBatch(categoryId: string, limit: number = 50): Promise<any[]> {
-  const res = await callFoxreloadApi(`/api/products/?categoryId=${categoryId}&limit=${limit}`);
-  return Array.isArray(res.data?.items) ? res.data.items : [];
-}
-
-async function fetchTelegramCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const raw = await fetchSearchBatch('telegram', 30);
-  return raw
-    .map((p) => mapProductItem(p, settings, hiddenSet, 'telegram'))
-    .filter(isValidProduct);
-}
-
-async function fetchSteamCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const raw = await fetchSearchBatch('steam', 30);
-  return raw
-    .map((p) => mapProductItem(p, settings, hiddenSet, 'steam'))
-    .filter(isValidProduct);
-}
-
-async function fetchRewarbleCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const searchItems = await fetchSearchBatch('rewarble', 30);
-  if (searchItems.length > 0) {
-    return searchItems
-      .map((p) => mapProductItem(p, settings, hiddenSet, 'rewarble'))
-      .filter(isValidProduct);
-  }
-  const categoryItems = await fetchCategoryBatch('019e111c-aefa-7680-9944-a8449cb42886', 30);
-  return categoryItems
-    .map((p) => mapProductItem(p, settings, hiddenSet, 'rewarble'))
-    .filter(isValidProduct);
-}
-
-async function fetchEsimCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const [categoryItems, searchItems] = await Promise.all([
-    fetchCategoryBatch('019d1fd6-08bb-76b2-bdc0-7eda9b480555', 30),
-    fetchSearchBatch('esim', 20)
-  ]);
-  const combined = [...categoryItems, ...searchItems];
-  const seen = new Set<string>();
-  const unique = combined.filter((item) => {
-    if (!item?.id || seen.has(item.id)) return false;
-    seen.add(item.id);
-    const title = String(item.name || '').toLowerCase();
-    const isRealEsim = title.includes('esim') || item.categoryId === '019d1fd6-08bb-76b2-bdc0-7eda9b480555';
-    return isRealEsim;
-  });
-
-  return unique
-    .map((p) => mapProductItem(p, settings, hiddenSet, 'esim'))
-    .filter(isValidProduct);
-}
-
-async function fetchGamesCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const [pubg, freefire, roblox, valorant, ml, playstation, xbox] = await Promise.all([
-    fetchSearchBatch('pubg', 15),
-    fetchSearchBatch('free fire', 15),
-    fetchSearchBatch('roblox', 12),
-    fetchSearchBatch('valorant', 10),
-    fetchSearchBatch('mobile legends', 12),
-    fetchSearchBatch('playstation', 12),
-    fetchSearchBatch('xbox', 10),
-  ]);
-
-  const all = [...pubg, ...freefire, ...roblox, ...valorant, ...ml, ...playstation, ...xbox];
-  const seen = new Set<string>();
-  const unique = all.filter((item) => {
-    if (!item?.id || seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
-
-  return unique
-    .map((p) => mapProductItem(p, settings, hiddenSet, 'games'))
-    .filter(isValidProduct);
-}
-
-async function fetchServicesCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const [googleplay, itunes, apple, spotify, razer] = await Promise.all([
-    fetchSearchBatch('google play', 15),
-    fetchSearchBatch('itunes', 12),
-    fetchSearchBatch('apple', 12),
-    fetchSearchBatch('spotify', 10),
-    fetchSearchBatch('razer', 10),
-  ]);
-
-  const all = [...googleplay, ...itunes, ...apple, ...spotify, ...razer];
-  const seen = new Set<string>();
-  const unique = all.filter((item) => {
-    if (!item?.id || seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
-
-  return unique
-    .map((p) => mapProductItem(p, settings, hiddenSet, 'services'))
-    .filter(isValidProduct);
-}
-
-async function fetchPopularCatalogItems(settings: FoxreloadSettings, hiddenSet: Set<string>) {
-  const [telegram, games, services, steam] = await Promise.all([
-    fetchTelegramCatalogItems(settings, hiddenSet),
-    fetchGamesCatalogItems(settings, hiddenSet),
-    fetchServicesCatalogItems(settings, hiddenSet),
-    fetchSteamCatalogItems(settings, hiddenSet),
-  ]);
-
-  const popularCandidates = [
-    ...(telegram.slice(0, 4)),
-    ...(games.slice(0, 8)),
-    ...(services.slice(0, 4)),
-    ...(steam.slice(0, 4)),
-  ];
-
-  const seen = new Set<string>();
-  const unique = popularCandidates.filter((item) => {
-    if (!item?.id || seen.has(item.id)) return false;
-    seen.add(item.id);
-    return true;
-  });
-
-  return unique;
 }
 
 export async function createAndDispatchFoxreloadOrder(params: {

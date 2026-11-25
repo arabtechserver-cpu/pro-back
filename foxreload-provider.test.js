@@ -271,3 +271,93 @@ test('GET /:id/services and POST /:id/toggle-all handle foxreload-provider witho
   assert.equal(togRes.statusCode, 200);
   assert.equal(savedSettings.isEnabled, false);
 });
+
+test('syncFoxreloadCatalog falls back when rewarble returns 404 and clears syncInFlight lock on success and failure', async (t) => {
+  const { syncFoxreloadCatalog } = require('./dist/services/foxreloadService');
+  const origSettingFind = prisma.setting.findUnique;
+  const origSettingUpsert = prisma.setting.upsert;
+  const origProviderUpsert = prisma.apiProvider.upsert;
+
+  let savedCatalog = null;
+  let mode = 'fallback-404';
+
+  t.after(() => {
+    prisma.setting.findUnique = origSettingFind;
+    prisma.setting.upsert = origSettingUpsert;
+    prisma.apiProvider.upsert = origProviderUpsert;
+  });
+
+  prisma.setting.findUnique = async ({ where }) => {
+    if (where.key === 'foxreload_settings') {
+      return { value: JSON.stringify({ apiKey: 'fox-test-key', isEnabled: true, defaultProfitMarginPercent: 10, hiddenItems: [] }) };
+    }
+    return null;
+  };
+  prisma.setting.upsert = async (args) => {
+    if (args.where.key === 'foxreload_catalog') {
+      savedCatalog = JSON.parse(args.create.value);
+    }
+    return args.create;
+  };
+  prisma.apiProvider.upsert = async (args) => args.create;
+
+  t.mock.method(https, 'request', (options, callback) => {
+    const req = new EventEmitter();
+    req.end = () => {
+      const url = new URL(`https://public-api.foxreload.com${options.path}`);
+      const parentId = url.searchParams.get('parentId');
+
+      if (mode === 'all-fail') {
+        const res = Object.assign(new EventEmitter(), { statusCode: 401, headers: {} });
+        callback(res);
+        res.emit('data', JSON.stringify({ detail: 'Invalid API key' }));
+        res.emit('end');
+        return;
+      }
+
+      if (parentId === 'rewarble') {
+        const res = Object.assign(new EventEmitter(), { statusCode: 404, headers: {} });
+        callback(res);
+        res.emit('data', JSON.stringify({ detail: 'Requested resource not found', code: 'NOT_FOUND' }));
+        res.emit('end');
+        return;
+      }
+
+      const payload = {
+        items: [
+          {
+            id: `cat-${parentId}`,
+            slug: `${parentId}-item`,
+            name: parentId === 'prepaid-finance' ? 'AstroPay' : `${parentId} Bundle`,
+            parentId: null,
+            hasProducts: true,
+            inStockCount: 3,
+            bestOfferPrice: '1.50',
+            children: [],
+          },
+        ],
+      };
+      const res = Object.assign(new EventEmitter(), { statusCode: 200, headers: {} });
+      callback(res);
+      res.emit('data', JSON.stringify(payload));
+      res.emit('end');
+    };
+    return req;
+  });
+
+  // 1. Succeeds cleanly when rewarble returns 404 and falls back to prepaid-finance
+  const firstCatalog = await syncFoxreloadCatalog();
+  assert.equal(firstCatalog.isSynced, true);
+  assert.equal(firstCatalog.sections.rewarble.bundles.length, 1);
+  assert.equal(firstCatalog.sections.rewarble.bundles[0].id, 'cat-prepaid-finance');
+  assert.equal(savedCatalog.totalBundlesCount, 6);
+
+  // 2. Clears syncInFlight lock after failure so a subsequent sync recovers
+  mode = 'all-fail';
+  await assert.rejects(() => syncFoxreloadCatalog(), /401/);
+
+  mode = 'fallback-404';
+  const recoveredCatalog = await syncFoxreloadCatalog();
+  assert.equal(recoveredCatalog.isSynced, true);
+  assert.equal(recoveredCatalog.totalBundlesCount, 6);
+});

@@ -25,6 +25,16 @@ import {
   formatProviderConnectionError,
   parseDhruAccountInfo
 } from "../utils/dhru-api";
+import {
+  isDhruFusionProProvider,
+  normalizeDhruFusionProUrl,
+  getFusionProAccountInfo,
+  fetchFusionProCatalog,
+  verifyFusionProCallbackToken
+} from "../utils/dhru-fusion-pro";
+import { roundCurrency } from "../utils/currency";
+import { sendOrderStatusUpdateEmail } from "../utils/emailService";
+import { sendTelegramPhotoNotification } from "../utils/telegramService";
 
 const dnsLookup = promisify(dns.lookup);
 
@@ -52,6 +62,145 @@ export function sanitizeProvider(provider: any) {
 }
 
 const router = Router();
+
+// Signed webhook receiver for Dhru Fusion Pro workspaces without polling support.
+router.post("/fusion-pro/callback", async (req, res) => {
+  try {
+    const orderId = String(req.query.orderId || "").trim();
+    const token = String(req.query.token || "").trim();
+    if (!orderId || !verifyFusionProCallbackToken(orderId, token)) {
+      return res.status(401).json({ accepted: false, message: "Invalid callback signature." });
+    }
+
+    const payload = req.body;
+    if (!payload || Array.isArray(payload) || typeof payload !== "object") {
+      return res.status(400).json({ accepted: false, message: "Invalid callback body." });
+    }
+
+    const callbackOrderUuid = String(payload.order_id || "").trim();
+    const callbackStatus = String(payload.status || "").trim().toLowerCase();
+    const rawReplay = typeof payload.replay === "string" ? payload.replay.trim() : "";
+
+    if (!callbackOrderUuid || !["success", "rejected"].includes(callbackStatus)) {
+      return res.status(400).json({ accepted: false, message: "Invalid callback fields." });
+    }
+
+    const order = await prisma.order.findUnique({
+      where: { id: orderId },
+      include: { user: { select: { id: true, email: true, fullName: true, balance: true } } }
+    });
+    if (!order) {
+      return res.status(404).json({ accepted: false, message: "Order not found." });
+    }
+    if (order.apiOrderId && String(order.apiOrderId).trim() !== callbackOrderUuid) {
+      return res.status(403).json({ accepted: false, message: "Order identifier mismatch." });
+    }
+
+    const currentStatus = String(order.status || "").toLowerCase();
+    if (["completed", "rejected", "refunded"].includes(currentStatus)) {
+      return res.json({ accepted: true });
+    }
+
+    let decodedReplay = "";
+    if (rawReplay) {
+      try {
+        decodedReplay = Buffer.from(rawReplay, "base64").toString("utf8").trim();
+      } catch {
+        decodedReplay = rawReplay;
+      }
+    }
+
+    if (callbackStatus === "success") {
+      const finalReply = decodedReplay || "تم بنجاح من المزود";
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { status: "completed", reply: finalReply }
+      });
+
+      const msg = `تم اكتمال طلبك بنجاح\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالكود/الرد: ${finalReply}`;
+      sendTelegramPhotoNotification({ caption: msg }).catch(() => {});
+      if (order.user?.email) {
+        sendOrderStatusUpdateEmail(order.user.email, {
+          orderId: order.id.slice(-6),
+          serviceName: order.serviceName,
+          targetInput: order.targetInput,
+          status: "completed",
+          reply: finalReply,
+          username: order.user.fullName
+        }).catch(() => {});
+      }
+      return res.json({ accepted: true });
+    }
+
+    const rejectReason = decodedReplay || "مرفوض من المزود";
+    const refundRef = `REF-FP-${order.id.slice(0, 8).toUpperCase()}-${Date.now().toString(36).toUpperCase()}`;
+
+    if (order.userId && order.price > 0) {
+      await prisma.$transaction(async (tx) => {
+        const updateRes = await tx.order.updateMany({
+          where: { id: orderId, refundedAt: null },
+          data: {
+            status: "rejected",
+            reply: rejectReason,
+            refundedAt: new Date(),
+            refundRefNo: refundRef
+          }
+        });
+        if (updateRes.count === 0) return;
+
+        const cleanRefund = roundCurrency(order.price);
+        const refundedUser = await tx.user.update({
+          where: { id: order.userId! },
+          data: { balance: { increment: cleanRefund } }
+        });
+        const roundedBalance = roundCurrency(refundedUser.balance, 4);
+        if (roundedBalance !== refundedUser.balance) {
+          await tx.user.update({ where: { id: order.userId! }, data: { balance: roundedBalance } });
+        }
+
+        await tx.transaction.create({
+          data: {
+            userId: order.userId!,
+            type: `استرجاع رصيد (طلب مرفوض من المزود): ${order.serviceName.slice(0, 30)}`,
+            amount: cleanRefund,
+            method: "استرجاع تلقائي",
+            refNo: refundRef,
+            status: "completed"
+          }
+        });
+      });
+
+      const msg = `تم رفض طلبك من المزود وإرجاع الرصيد لمحفظتك.\nرقم الطلب: #${order.id.slice(-6)}\nالخدمة: ${order.serviceName}\nالسبب: ${rejectReason}\nالمبلغ المرتجع: $${order.price.toFixed(2)}`;
+      sendTelegramPhotoNotification({ caption: msg }).catch(() => {});
+      const refreshedUser = await prisma.user.findUnique({
+        where: { id: order.userId },
+        select: { email: true, fullName: true, balance: true }
+      });
+      if (refreshedUser?.email) {
+        sendOrderStatusUpdateEmail(refreshedUser.email, {
+          orderId: order.id.slice(-6),
+          serviceName: order.serviceName,
+          targetInput: order.targetInput,
+          status: "rejected",
+          reply: rejectReason,
+          refundAmount: order.price,
+          newBalance: refreshedUser.balance,
+          username: refreshedUser.fullName
+        }).catch(() => {});
+      }
+    } else {
+      await prisma.order.update({
+        where: { id: orderId },
+        data: { status: "rejected", reply: rejectReason }
+      });
+    }
+
+    return res.json({ accepted: true });
+  } catch (error: any) {
+    console.error("Fusion Pro callback error:", error);
+    return res.status(500).json({ accepted: false, message: "Internal error processing callback." });
+  }
+});
 
 router.use(isAdmin);
 
@@ -679,6 +828,24 @@ router.post("/test-connection", async (req, res) => {
       return res.status(400).json({ error: "رابط الـ API ومفتاح الـ API مطلوبان لاختبار الاتصال" });
     }
 
+    if (isDhruFusionProProvider({ type: incomingType || existingProvider?.type, apiUrl, apiKey })) {
+      const fusionRes = await getFusionProAccountInfo(apiUrl, apiKey);
+      if (!fusionRes || fusionRes.SUCCESS === false) {
+        const errMsg = getProviderApiErrorMessage(fusionRes) || "فشل الاتصال بواجهة Dhru Fusion Pro";
+        return res.status(400).json({ error: describeProviderBalanceError(errMsg) });
+      }
+      const accountInfo = extractProviderAccountInfo(fusionRes);
+      if (!accountInfo) {
+        return res.status(400).json({ error: "المزود اتصل بنجاح لكن لم يرجع قيمة رصيد واضحة يمكن قراءتها" });
+      }
+      return res.json({
+        success: true,
+        balance: accountInfo.balance,
+        currency: accountInfo.currency,
+        message: `الاتصال بـ Dhru Fusion Pro ناجح! الرصيد المتاح: ${accountInfo.balance.toFixed(2)} ${accountInfo.currency}`
+      });
+    }
+
     const apiRes = await makeProviderApiCall(apiUrl, username, apiKey, "accountinfo");
 
     if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
@@ -723,8 +890,11 @@ router.post("/", async (req, res) => {
     }
 
     const isFox = isFoxreloadProvider({ type: rawType, apiUrl });
-    const type = isFox ? "foxreload" : rawType;
-    const normalizedApiUrl = isFox ? normalizeFoxreloadApiUrl(apiUrl) : normalizeApiUrl(apiUrl);
+    const isFusionPro = !isFox && isDhruFusionProProvider({ type: rawType, apiUrl, apiKey });
+    const type = isFox ? "foxreload" : (isFusionPro ? "dhru_fusion_pro" : rawType);
+    const normalizedApiUrl = isFox
+      ? normalizeFoxreloadApiUrl(apiUrl)
+      : (isFusionPro ? normalizeDhruFusionProUrl(apiUrl) : normalizeApiUrl(apiUrl));
 
     let accountInfo: { balance: number; currency: string } | null = null;
     if (isFox) {
@@ -733,6 +903,13 @@ router.post("/", async (req, res) => {
         return res.status(400).json({ error: "فشل التحقق من رصيد FoxReload عند إضافة المزود: " + (live.error || "خطأ غير معروف") });
       }
       accountInfo = selectFoxreloadBalance(live.balances, "USD");
+    } else if (isFusionPro) {
+      const fusionRes = await getFusionProAccountInfo(normalizedApiUrl, apiKey);
+      if (!fusionRes || fusionRes.SUCCESS === false) {
+        const errMsg = getProviderApiErrorMessage(fusionRes) || "فشل التحقق من بيانات Dhru Fusion Pro";
+        return res.status(400).json({ error: "فشل التحقق من الرصيد عند إضافة المزود: " + errMsg });
+      }
+      accountInfo = extractProviderAccountInfo(fusionRes);
     } else {
       const balRes = await makeProviderApiCall(normalizedApiUrl, username, apiKey, "accountinfo");
       if (!balRes.ok || !isProviderApiSuccess(balRes.data)) {
@@ -789,11 +966,6 @@ router.put("/:id", async (req, res) => {
       apiUrl: rawIncomingUrl !== undefined ? String(rawIncomingUrl) : existing.apiUrl
     });
 
-    const apiUrl = rawIncomingUrl !== undefined
-      ? (isFox ? normalizeFoxreloadApiUrl(String(rawIncomingUrl).trim()) : normalizeApiUrl(String(rawIncomingUrl).trim()))
-      : (isFox ? normalizeFoxreloadApiUrl(existing.apiUrl) : existing.apiUrl);
-    const username = req.body.username !== undefined ? (req.body.username ? req.body.username.trim() : null) : existing.username;
-    
     const incomingApiKey = req.body.apiKey || req.body.api_key;
     const shouldKeepExistingKey = incomingApiKey === undefined ||
       incomingApiKey === null ||
@@ -803,7 +975,23 @@ router.put("/:id", async (req, res) => {
 
     const apiKey = shouldKeepExistingKey ? existing.apiKey : incomingApiKey.trim();
 
-    const type = isFox ? "foxreload" : incomingType;
+    const isFusionPro = !isFox && isDhruFusionProProvider({
+      id,
+      type: incomingType,
+      apiUrl: rawIncomingUrl !== undefined ? String(rawIncomingUrl) : existing.apiUrl,
+      apiKey
+    });
+
+    const apiUrl = rawIncomingUrl !== undefined
+      ? (isFox
+          ? normalizeFoxreloadApiUrl(String(rawIncomingUrl).trim())
+          : (isFusionPro ? normalizeDhruFusionProUrl(String(rawIncomingUrl).trim()) : normalizeApiUrl(String(rawIncomingUrl).trim())))
+      : (isFox
+          ? normalizeFoxreloadApiUrl(existing.apiUrl)
+          : (isFusionPro ? normalizeDhruFusionProUrl(existing.apiUrl) : existing.apiUrl));
+    const username = req.body.username !== undefined ? (req.body.username ? req.body.username.trim() : null) : existing.username;
+
+    const type = isFox ? "foxreload" : (isFusionPro ? "dhru_fusion_pro" : incomingType);
     const isActive = req.body.isActive !== undefined ? Boolean(req.body.isActive) : (req.body.is_active !== undefined ? Boolean(req.body.is_active) : existing.isActive);
     const balance = req.body.balance !== undefined ? parseFloat(req.body.balance) : existing.balance;
     const mappingRules = req.body.mappingRules || req.body.mapping_rules;
@@ -891,6 +1079,13 @@ async function checkAndUpdateProviderBalance(id: string, res: any) {
         return res.status(400).json({ error: `لم يرجع FoxReload رصيداً بعملة المزود (${currency}). راجع الأرصدة في إعدادات FoxReload.` });
       }
       accountInfo = { balance: balance.amount, currency: balance.currency };
+    } else if (isDhruFusionProProvider(provider)) {
+      const fusionRes = await getFusionProAccountInfo(provider.apiUrl, provider.apiKey);
+      if (!fusionRes || fusionRes.SUCCESS === false) {
+        const errMsg = getProviderApiErrorMessage(fusionRes) || "فشل الاتصال بـ Dhru Fusion Pro";
+        return res.status(400).json({ error: describeProviderBalanceError(errMsg) });
+      }
+      accountInfo = extractProviderAccountInfo(fusionRes);
     } else {
       const apiRes = await makeProviderApiCall(provider.apiUrl, provider.username, provider.apiKey, "accountinfo");
       if (!apiRes.ok || !isProviderApiSuccess(apiRes.data)) {
@@ -1159,20 +1354,38 @@ const fetchRemoteServicesHandler = async (req: any, res: any) => {
       });
     }
 
-    const { responses, byType } = await fetchProviderCatalog(provider);
-    if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
-      return res.status(400).json({
-        error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`
-      });
-    }
+    let services: any[] = [];
+    let catalogWarning: string | null = null;
 
-    const services = parseAllProviderServices(byType.get("imei"), byType.get("server"), byType.get("remote"), provider.apiUrl);
-    const catalogWarning = getProviderCatalogWarning(responses);
+    if (isDhruFusionProProvider(provider)) {
+      const fusionCatalog = await fetchFusionProCatalog(provider.apiUrl, provider.apiKey);
+      if (!fusionCatalog.ok) {
+        return res.status(400).json({
+          error: `فشل جلب الخدمات من Dhru Fusion Pro: ${fusionCatalog.error || "خطأ غير معروف"}`
+        });
+      }
+      services = fusionCatalog.services;
+      if (services.length === 0) {
+        return res.status(400).json({
+          error: "اتصلنا بالمزود لكن لم يتم العثور على خدمات متاحة في الكتالوج"
+        });
+      }
+    } else {
+      const { responses, byType } = await fetchProviderCatalog(provider);
+      if (responses.every((response) => !response.ok || getProviderApiErrorMessage(response.data))) {
+        return res.status(400).json({
+          error: `فشل جلب الخدمات من المزود: ${summarizeProviderApiFailure(responses)}`
+        });
+      }
 
-    if (services.length === 0 && !catalogWarning) {
-      return res.status(400).json({
-        error: "اتصلنا بالمزود لكن لم يتم العثور على خدمات قابلة للقراءة في الرد"
-      });
+      services = parseAllProviderServices(byType.get("imei"), byType.get("server"), byType.get("remote"), provider.apiUrl);
+      catalogWarning = getProviderCatalogWarning(responses);
+
+      if (services.length === 0 && !catalogWarning) {
+        return res.status(400).json({
+          error: "اتصلنا بالمزود لكن لم يتم العثور على خدمات قابلة للقراءة في الرد"
+        });
+      }
     }
 
     // Cross-reference with existing database services to mark which ones are already imported and active
@@ -1256,20 +1469,30 @@ async function buildProviderExportData(provider: any, includeRaw = true) {
 
   if (provider.apiUrl && provider.apiKey) {
     try {
-      const { byType } = await fetchProviderCatalog(provider);
-      const imeiRes = byType.get("imei");
-      const serverRes = byType.get("server");
-      const remoteRes = byType.get("remote");
+      if (isDhruFusionProProvider(provider)) {
+        const fusionCatalog = await fetchFusionProCatalog(provider.apiUrl, provider.apiKey);
+        if (fusionCatalog.ok) {
+          remoteServices = fusionCatalog.services;
+          if (includeRaw) {
+            rawApiResponses = { products: fusionCatalog.rawData };
+          }
+        }
+      } else {
+        const { byType } = await fetchProviderCatalog(provider);
+        const imeiRes = byType.get("imei");
+        const serverRes = byType.get("server");
+        const remoteRes = byType.get("remote");
 
-      if (includeRaw) {
-        rawApiResponses = {
-          imeiservicelist: imeiRes?.data,
-          serverservicelist: serverRes?.data,
-          remoteservicelist: remoteRes?.data
-        };
+        if (includeRaw) {
+          rawApiResponses = {
+            imeiservicelist: imeiRes?.data,
+            serverservicelist: serverRes?.data,
+            remoteservicelist: remoteRes?.data
+          };
+        }
+
+        remoteServices = parseAllProviderServices(imeiRes, serverRes, remoteRes, provider.apiUrl);
       }
-
-      remoteServices = parseAllProviderServices(imeiRes, serverRes, remoteRes, provider.apiUrl);
     } catch (apiErr) {
       console.warn(`Could not fetch live API services for provider ${provider.name}:`, apiErr);
     }
@@ -1489,6 +1712,23 @@ router.get("/:id/raw-data", async (req, res) => {
         res.setHeader("Content-Type", "application/json");
       }
       return res.json(rawFoxPayload);
+    }
+
+    if (isDhruFusionProProvider(provider)) {
+      const fusionCatalog = await fetchFusionProCatalog(provider.apiUrl, provider.apiKey);
+      if (!fusionCatalog.ok) {
+        return res.status(400).json({ error: fusionCatalog.error || "فشل جلب الداتا الأصلية من Dhru Fusion Pro" });
+      }
+      const rawFusionPayload = {
+        provider: sanitizeProvider(provider),
+        productsResponse: fusionCatalog.rawData,
+        exportedAt: new Date().toISOString()
+      };
+      if (isDownload) {
+        res.setHeader("Content-Disposition", `attachment; filename="${cleanName}_RAW_FusionPro_Full.json"`);
+        res.setHeader("Content-Type", "application/json");
+      }
+      return res.json(rawFusionPayload);
     }
 
     if (type === "imei") {
@@ -1754,6 +1994,29 @@ router.post("/:id/sync", async (req, res) => {
         totalCount: count,
         serviceTypes: ["server"],
         message: `تمت مزامنة FoxReload بنجاح! إجمالي الباقات والخدمات المتاحة: ${count}.`
+      });
+    }
+
+    if (isDhruFusionProProvider(provider)) {
+      const fusionCatalog = await fetchFusionProCatalog(provider.apiUrl, provider.apiKey);
+      if (!fusionCatalog.ok) {
+        return res.status(400).json({
+          error: `فشل جلب الخدمات من Dhru Fusion Pro: ${fusionCatalog.error || "خطأ غير معروف"}`
+        });
+      }
+      if (fusionCatalog.services.length === 0) {
+        return res.status(400).json({
+          error: "اتصلنا بمزود Dhru Fusion Pro لكن لم يتم العثور على خدمات متاحة في الرد."
+        });
+      }
+      const totalSynced = await persistProviderServicesList(provider, fusionCatalog.services, markupPercent, exchangeRate);
+      const detectedTypes = Array.from(new Set(fusionCatalog.services.map((s) => s.api_service_type)));
+      return res.json({
+        success: true,
+        count: fusionCatalog.services.length,
+        totalCount: totalSynced,
+        serviceTypes: detectedTypes,
+        message: `تمت مزامنة Dhru Fusion Pro بنجاح! تم جلب وتصنيف ${fusionCatalog.services.length} خدمة. إجمالي خدمات المزود: ${totalSynced}.`
       });
     }
 

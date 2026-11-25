@@ -100,6 +100,8 @@ export function classifyDhruDispatchError(
     responseStr.includes('creditprocesserror') ||
     responseStr.includes('not enough credit') ||
     responseStr.includes('insufficient credit') ||
+    responseStr.includes('insufficient balance') ||
+    responseStr.includes('insufficient funds') ||
     responseStr.includes('low credit');
 
   if (isCreditError) {
@@ -450,7 +452,10 @@ export async function dispatchOrderToProvider(
     ? {
       apiUrl: dhruService.apiProvider.apiUrl,
       username: dhruService.apiProvider.username,
-      apiKey: dhruService.apiProvider.apiKey
+      apiKey: dhruService.apiProvider.apiKey,
+      type: dhruService.apiProvider.type,
+      requiresCustom: dhruService.requiresCustom,
+      orderId: order.id
     }
     : undefined;
 

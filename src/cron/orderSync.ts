@@ -198,7 +198,8 @@ export function initOrderSyncCron() {
             ? {
                 apiUrl: provider.apiUrl,
                 username: provider.username,
-                apiKey: provider.apiKey
+                apiKey: provider.apiKey,
+                type: provider.type
               }
             : undefined;
 

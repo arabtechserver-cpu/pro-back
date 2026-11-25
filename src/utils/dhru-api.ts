@@ -4,6 +4,12 @@ import http from "http";
 import dns from "dns";
 import { promisify } from "util";
 import { buildImeiLookupDhruForm, isImeiLookupDhruEndpoint, isImeiLookupIdentifier } from "./imei-lookup-dhru";
+import {
+  isDhruFusionProProvider,
+  getFusionProAccountInfo,
+  placeFusionProOrder,
+  getFusionProOrderStatus
+} from "./dhru-fusion-pro";
 
 const lookup = promisify(dns.lookup);
 
@@ -74,6 +80,9 @@ export interface ProviderConfig {
   apiUrl?: string;
   username?: string | null;
   apiKey?: string;
+  type?: string | null;
+  requiresCustom?: string | null;
+  orderId?: string;
 }
 
 // Per-hostname TLS failure cooldown — prevents hammering a provider with a broken cert
@@ -437,6 +446,9 @@ export function dhruApiRequest(
 }
 
 export async function getAccountInfo(provider?: ProviderConfig) {
+  if (provider && isDhruFusionProProvider(provider)) {
+    return getFusionProAccountInfo(provider.apiUrl || "", provider.apiKey || "");
+  }
   return dhruApiRequest("accountinfo", {}, provider);
 }
 
@@ -539,6 +551,18 @@ export async function placeImeiOrder(
   customFields: Record<string, string> = {},
   provider?: ProviderConfig
 ) {
+  if (provider && isDhruFusionProProvider(provider)) {
+    return placeFusionProOrder({
+      apiUrl: provider.apiUrl || "",
+      apiKey: provider.apiKey || "",
+      serviceId,
+      targetInput: imei,
+      quantity: 1,
+      customFields,
+      requiresCustom: provider.requiresCustom,
+      orderId: provider.orderId
+    });
+  }
   if (isImeiLookupDhruEndpoint(provider ? provider.apiUrl : DHRU_API_URL)) {
     const identifier = imei.trim();
     if (!isImeiLookupIdentifier(identifier)) {
@@ -643,6 +667,18 @@ export async function placeServerOrder(
   imei?: string,
   provider?: ProviderConfig
 ) {
+  if (provider && isDhruFusionProProvider(provider)) {
+    return placeFusionProOrder({
+      apiUrl: provider.apiUrl || "",
+      apiKey: provider.apiKey || "",
+      serviceId,
+      targetInput: imei,
+      quantity,
+      customFields,
+      requiresCustom: provider.requiresCustom,
+      orderId: provider.orderId
+    });
+  }
   const finalQty = quantity > 0 ? quantity : 1;
   const params: Record<string, string> = {
     SERVICEID: serviceId,
@@ -738,6 +774,9 @@ export async function placeServerOrder(
 }
 
 export async function getImeiOrder(orderId: string, provider?: ProviderConfig) {
+  if (provider && isDhruFusionProProvider(provider)) {
+    return getFusionProOrderStatus(provider.apiUrl || "", provider.apiKey || "", orderId);
+  }
   if (isImeiLookupDhruEndpoint(provider ? provider.apiUrl : DHRU_API_URL)) {
     return dhruApiRequest("getimeiorder", { ID: orderId }, provider);
   }
@@ -759,6 +798,9 @@ export async function getImeiOrder(orderId: string, provider?: ProviderConfig) {
 }
 
 export async function getServerOrder(orderId: string, provider?: ProviderConfig) {
+  if (provider && isDhruFusionProProvider(provider)) {
+    return getFusionProOrderStatus(provider.apiUrl || "", provider.apiKey || "", orderId);
+  }
   if (isImeiLookupDhruEndpoint(provider ? provider.apiUrl : DHRU_API_URL)) {
     return getImeiOrder(orderId, provider);
   }

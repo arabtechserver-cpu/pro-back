@@ -736,7 +736,8 @@ router.post('/refund', isAdmin, async (req, res) => {
           ? {
             apiUrl: dhruService.apiProvider.apiUrl,
             username: dhruService.apiProvider.username,
-            apiKey: dhruService.apiProvider.apiKey
+            apiKey: dhruService.apiProvider.apiKey,
+            type: dhruService.apiProvider.type
           }
           : undefined;
 
@@ -1051,7 +1052,8 @@ router.post('/check-status', isAdmin, async (req, res) => {
       ? {
         apiUrl: dhruService.apiProvider.apiUrl,
         username: dhruService.apiProvider.username,
-        apiKey: dhruService.apiProvider.apiKey
+        apiKey: dhruService.apiProvider.apiKey,
+        type: dhruService.apiProvider.type
       }
       : undefined;
 

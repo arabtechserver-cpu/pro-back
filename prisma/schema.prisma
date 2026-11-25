@@ -356,8 +356,12 @@ model User {
   apiMargin        Float           @default(0.0)
   apiAllowedIps    String?
   apiDailyLimit    Float?
-  couponUsages     CouponUsage[]
-  cashierPurchases CashierPurchase[]
+  couponUsages         CouponUsage[]
+  cashierPurchases     CashierPurchase[]
+  twoFactorEnabled     Boolean         @default(false)
+  twoFactorSecret      String?
+  twoFactorBackupCodes String?
+  twoFactorEnabledAt   DateTime?
 }
 
 model MembershipTier {

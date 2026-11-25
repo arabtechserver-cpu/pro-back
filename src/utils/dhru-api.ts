@@ -232,6 +232,8 @@ export function isActionUnsupported(response: any): boolean {
   ).toLowerCase();
   return (
     raw.includes("invalid action") ||
+    raw.includes("unsupported action") ||
+    raw.includes("unsupported command") ||
     raw.includes("command not found") ||
     raw.includes("action not found") ||
     raw.includes("unknown action") ||
@@ -698,8 +700,11 @@ export async function placeServerOrder(
         customFields.ECID ||
         customFields.serial ||
         customFields.email ||
+        customFields.Email ||
         customFields.username ||
+        customFields.Username ||
         customFields.account ||
+        customFields.Account ||
         customFields.custom_sn ||
         customFields.custom_ecid ||
         customFields.custom_email ||

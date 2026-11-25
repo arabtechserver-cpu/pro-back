@@ -27,6 +27,15 @@ import { validateBody } from '../middleware/validate';
 import { registerSchema, loginSchema } from '../schemas/auth.schema';
 import { extractClientIp } from '../utils/ipUtils';
 import { checkIpAccess, logDashboardAccess } from '../services/ipAccessService';
+import {
+  consumeBackupCode,
+  consumeUser2faChallenge,
+  createUser2faChallenge,
+  decryptTotpSecret,
+  getUser2faChallenge,
+  recordUser2faFailure,
+  verifyTotpCode
+} from '../utils/totp';
 
 
 const router = Router();
@@ -508,6 +517,16 @@ router.post('/login', turnstileMiddleware, validateBody(loginSchema), async (req
       });
     }
 
+    if (dbUser.twoFactorEnabled && dbUser.twoFactorSecret) {
+      const challengeToken = createUser2faChallenge({ id: dbUser.id, email: dbUser.email });
+      return res.json({
+        success: true,
+        require2fa: true,
+        challengeToken,
+        message: 'يرجى إدخال رمز المصادقة الثنائية (2FA) من تطبيق المصادقة'
+      });
+    }
+
     await touchUserSessionActivity(dbUser.id);
 
     const token = generateToken({
@@ -826,6 +845,99 @@ router.post('/admin/forgot-password/confirm', async (req, res) => {
 });
 
 
+// POST /api/auth/verify-2fa - Complete user login with authenticator TOTP or backup code
+router.post('/verify-2fa', async (req, res) => {
+  try {
+    const challengeToken = String(req.body?.challengeToken || '').trim();
+    const code = String(req.body?.code || '').trim();
+
+    if (!challengeToken || !code) {
+      return res.status(400).json({ success: false, error: 'رمز المصادقة ومعرف الجلسة مطلوبان' });
+    }
+
+    const challenge = getUser2faChallenge(challengeToken);
+    if (!challenge) {
+      return res.status(401).json({ success: false, error: 'انتهت صلاحية جلسة التحقق أو تم استنفاد المحاولات. أعد تسجيل الدخول.' });
+    }
+
+    const dbUser = await prisma.user.findUnique({
+      where: { id: challenge.userId },
+      include: { membershipTier: true }
+    });
+
+    if (!dbUser || dbUser.deletedAt || dbUser.status === 'suspended') {
+      consumeUser2faChallenge(challengeToken);
+      return res.status(403).json({ success: false, error: 'هذا الحساب غير متاح لتسجيل الدخول.' });
+    }
+
+    if (!dbUser.twoFactorEnabled || !dbUser.twoFactorSecret) {
+      consumeUser2faChallenge(challengeToken);
+      return res.status(400).json({ success: false, error: 'المصادقة الثنائية غير مفعلة لهذا الحساب.' });
+    }
+
+    const plainSecret = decryptTotpSecret(dbUser.twoFactorSecret);
+    const totpOk = verifyTotpCode(plainSecret, code);
+    const backupResult = !totpOk ? consumeBackupCode(dbUser.id, dbUser.twoFactorBackupCodes, code) : null;
+
+    if (!totpOk && !backupResult?.matched) {
+      const failure = recordUser2faFailure(challengeToken);
+      return res.status(401).json({
+        success: false,
+        error: failure.locked
+          ? 'تم تجاوز الحد الأقصى لمحاولات التحقق. أعد تسجيل الدخول.'
+          : `رمز المصادقة الثنائية غير صحيح. المحاولات المتبقية: ${failure.remainingAttempts}`
+      });
+    }
+
+    consumeUser2faChallenge(challengeToken);
+
+    await prisma.user.update({
+      where: { id: dbUser.id },
+      data: {
+        lastActivityAt: new Date(),
+        ...(backupResult?.matched ? { twoFactorBackupCodes: backupResult.remainingHashesJson } : {})
+      }
+    }).catch(() => {});
+
+    const token = generateToken({
+      id: dbUser.id,
+      email: dbUser.email,
+      role: dbUser.role,
+      tokenVersion: dbUser.tokenVersion ?? 1
+    }, '7d');
+    setAuthCookies(res, token, dbUser.role);
+
+    const effectiveDiscount = Math.max(
+      dbUser.customDiscount || 0,
+      dbUser.membershipTier?.discountPercentage || 0
+    );
+
+    return res.json({
+      success: true,
+      token,
+      idleTimeoutMs: USER_IDLE_TIMEOUT_MS,
+      user: {
+        id: dbUser.id,
+        fullName: dbUser.fullName,
+        email: dbUser.email,
+        username: dbUser.username,
+        phone: dbUser.phone,
+        country: dbUser.country,
+        status: dbUser.status,
+        balance: dbUser.balance,
+        role: dbUser.role,
+        membershipTierId: dbUser.membershipTierId,
+        membershipTier: dbUser.membershipTier,
+        customDiscount: dbUser.customDiscount || 0,
+        effectiveDiscount
+      }
+    });
+  } catch (error) {
+    console.error('2FA verify error:', error);
+    return res.status(500).json({ success: false, error: 'حدث خطأ أثناء التحقق من المصادقة الثنائية' });
+  }
+});
+
 // POST /api/auth/google - Google Sign-In & One-Tap Authentication
 router.post('/google', async (req, res) => {
   try {
@@ -930,6 +1042,16 @@ router.post('/google', async (req, res) => {
 
     if (user.status === 'suspended') {
       return res.status(403).json({ success: false, error: 'عذراً، هذا الحساب موقوف حالياً من قبل الإدارة' });
+    }
+
+    if (user.twoFactorEnabled && user.twoFactorSecret) {
+      const challengeToken = createUser2faChallenge({ id: user.id, email: user.email });
+      return res.json({
+        success: true,
+        require2fa: true,
+        challengeToken,
+        message: 'يرجى إدخال رمز المصادقة الثنائية (2FA) من تطبيق المصادقة'
+      });
     }
 
     const token = generateToken({

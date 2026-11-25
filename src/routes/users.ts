@@ -8,6 +8,20 @@ import { prepareApiActivation } from "../utils/api-activation";
 import { ensureStableApiKey } from "../utils/stable-api-key";
 import { validateBody } from "../middleware/validate";
 import { updateCredentialsSchema } from "../schemas/auth.schema";
+import {
+  buildOtpAuthUri,
+  clearPending2faSetup,
+  consumeBackupCode,
+  countRemainingBackupCodes,
+  createPending2faSetup,
+  decryptTotpSecret,
+  encryptTotpSecret,
+  generateBackupCodes,
+  generateOtpAuthQrSvg,
+  generateTotpSecret,
+  getPending2faSetup,
+  verifyTotpCode
+} from "../utils/totp";
 
 const router = Router();
 
@@ -30,6 +44,8 @@ export const safeUserSelect = {
   apiMargin: true,
   apiAllowedIps: true,
   apiDailyLimit: true,
+  twoFactorEnabled: true,
+  twoFactorEnabledAt: true,
   createdAt: true,
   updatedAt: true
 };
@@ -237,6 +253,207 @@ router.post("/update-credentials", authenticateToken, validateBody(updateCredent
   } catch (error: any) {
     console.error("Error updating credentials:", error);
     return res.status(500).json({ error: "حدث خطأ أثناء تحديث البيانات" });
+  }
+});
+
+// GET /api/users/2fa/status - Read current user's 2FA status and remaining backup codes count
+router.get("/2fa/status", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "غير مصرح لك" });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { twoFactorEnabled: true, twoFactorEnabledAt: true, twoFactorBackupCodes: true }
+    });
+    if (!user) return res.status(404).json({ success: false, error: "المستخدم غير موجود" });
+
+    return res.json({
+      success: true,
+      enabled: Boolean(user.twoFactorEnabled),
+      enabledAt: user.twoFactorEnabledAt,
+      remainingBackupCodes: user.twoFactorEnabled ? countRemainingBackupCodes(user.twoFactorBackupCodes) : 0
+    });
+  } catch {
+    return res.status(500).json({ success: false, error: "تعذر قراءة حالة المصادقة الثنائية" });
+  }
+});
+
+// POST /api/users/2fa/setup - Generate TOTP secret + QR SVG for authenticator apps
+router.post("/2fa/setup", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "غير مصرح لك" });
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, username: true, twoFactorEnabled: true }
+    });
+    if (!user) return res.status(404).json({ success: false, error: "المستخدم غير موجود" });
+    if (user.twoFactorEnabled) {
+      return res.status(400).json({ success: false, error: "المصادقة الثنائية مفعّلة بالفعل على هذا الحساب." });
+    }
+
+    const secret = generateTotpSecret();
+    createPending2faSetup(user.id, secret);
+    const otpauthUrl = buildOtpAuthUri(user.email || user.username, secret);
+    const qrSvg = await generateOtpAuthQrSvg(otpauthUrl);
+
+    return res.json({
+      success: true,
+      secret,
+      otpauthUrl,
+      qrSvg
+    });
+  } catch (error) {
+    console.error("2FA setup error:", error);
+    return res.status(500).json({ success: false, error: "تعذر تجهيز إعداد المصادقة الثنائية" });
+  }
+});
+
+// POST /api/users/2fa/enable - Confirm live 6-digit TOTP code and enable 2FA
+router.post("/2fa/enable", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "غير مصرح لك" });
+
+    const code = String(req.body?.code || "").trim();
+    const pendingSecret = getPending2faSetup(userId);
+    if (!pendingSecret) {
+      return res.status(400).json({ success: false, error: "انتهت صلاحية جلسة الإعداد. اضغط تفعيل لبدء رمز جديد." });
+    }
+
+    if (!verifyTotpCode(pendingSecret, code)) {
+      return res.status(400).json({ success: false, error: "رمز التحقق المكون من 6 أرقام غير صحيح. تأكد من وقت الجهاز وحاول مجدداً." });
+    }
+
+    const encryptedSecret = encryptTotpSecret(pendingSecret);
+    const { plainCodes, hashesJson } = generateBackupCodes(userId);
+    const enabledAt = new Date();
+
+    await prisma.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorEnabled: true,
+        twoFactorSecret: encryptedSecret,
+        twoFactorBackupCodes: hashesJson,
+        twoFactorEnabledAt: enabledAt
+      }
+    });
+    clearPending2faSetup(userId);
+
+    return res.json({
+      success: true,
+      backupCodes: plainCodes,
+      enabledAt,
+      message: "تم تفعيل المصادقة الثنائية (2FA) بنجاح."
+    });
+  } catch (error) {
+    console.error("2FA enable error:", error);
+    return res.status(500).json({ success: false, error: "تعذر تفعيل المصادقة الثنائية" });
+  }
+});
+
+// POST /api/users/2fa/disable - Disable 2FA using live TOTP or backup code
+router.post("/2fa/disable", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "غير مصرح لك" });
+
+    const code = String(req.body?.code || "").trim();
+    if (!code) {
+      return res.status(400).json({ success: false, error: "يرجى إدخال رمز المصادقة الثنائية أو أحد رموز الاسترداد" });
+    }
+
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, email: true, role: true, twoFactorEnabled: true, twoFactorSecret: true, twoFactorBackupCodes: true }
+    });
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+      return res.status(400).json({ success: false, error: "المصادقة الثنائية غير مفعّلة على هذا الحساب" });
+    }
+
+    const plainSecret = decryptTotpSecret(user.twoFactorSecret);
+    const totpValid = verifyTotpCode(plainSecret, code);
+    const backupCheck = !totpValid ? consumeBackupCode(user.id, user.twoFactorBackupCodes, code) : null;
+
+    if (!totpValid && !backupCheck?.matched) {
+      return res.status(400).json({ success: false, error: "رمز التحقق أو رمز الاسترداد غير صحيح" });
+    }
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        twoFactorEnabled: false,
+        twoFactorSecret: null,
+        twoFactorBackupCodes: null,
+        twoFactorEnabledAt: null,
+        tokenVersion: { increment: 1 }
+      },
+      select: { id: true, email: true, role: true, tokenVersion: true }
+    });
+
+    const newToken = generateToken({
+      id: updated.id,
+      email: updated.email,
+      role: updated.role,
+      tokenVersion: updated.tokenVersion
+    });
+    const isProd = process.env.NODE_ENV === "production";
+    const adminRole = ["admin", "super_admin"].includes(updated.role);
+    res.cookie?.(adminRole ? "admin_token" : "user_token", newToken, {
+      httpOnly: true,
+      secure: isProd,
+      sameSite: adminRole ? "strict" : "lax",
+      maxAge: (adminRole ? 12 : 7 * 24) * 60 * 60 * 1000,
+      path: "/"
+    });
+
+    return res.json({
+      success: true,
+      token: newToken,
+      message: "تم تعطيل المصادقة الثنائية (2FA) بنجاح."
+    });
+  } catch (error) {
+    console.error("2FA disable error:", error);
+    return res.status(500).json({ success: false, error: "تعذر تعطيل المصادقة الثنائية" });
+  }
+});
+
+// POST /api/users/2fa/regenerate-backup-codes - Issue fresh backup codes after verifying TOTP
+router.post("/2fa/regenerate-backup-codes", authenticateToken, async (req: any, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, error: "غير مصرح لك" });
+
+    const code = String(req.body?.code || "").trim();
+    const user = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { id: true, twoFactorEnabled: true, twoFactorSecret: true }
+    });
+    if (!user || !user.twoFactorEnabled || !user.twoFactorSecret) {
+      return res.status(400).json({ success: false, error: "المصادقة الثنائية غير مفعّلة على هذا الحساب" });
+    }
+
+    const plainSecret = decryptTotpSecret(user.twoFactorSecret);
+    if (!verifyTotpCode(plainSecret, code)) {
+      return res.status(400).json({ success: false, error: "رمز المصادقة المكون من 6 أرقام غير صحيح" });
+    }
+
+    const { plainCodes, hashesJson } = generateBackupCodes(user.id);
+    await prisma.user.update({
+      where: { id: userId },
+      data: { twoFactorBackupCodes: hashesJson }
+    });
+
+    return res.json({
+      success: true,
+      backupCodes: plainCodes,
+      message: "تم إصدار رموز استرداد جديدة بنجاح."
+    });
+  } catch (error) {
+    console.error("2FA regenerate backup codes error:", error);
+    return res.status(500).json({ success: false, error: "تعذر إنشاء رموز استرداد جديدة" });
   }
 });
 

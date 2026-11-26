@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict');
 const { test, after } = require('node:test');
 const { EventEmitter } = require('node:events');
+const dns = require('node:dns');
 const https = require('node:https');
+const { promisify } = require('node:util');
 const axios = require('axios');
 
 process.env.JWT_SECRET = process.env.JWT_SECRET || 'reliability-fixes-test-secret-123456';
@@ -22,13 +24,18 @@ const {
   isMarkupRejectedError,
   computePollingBackoffMs
 } = require('./dist/utils/telegramService');
+const originalLookupForRequire = dns.lookup;
+dns.lookup = (_host, callback) => callback(null, '8.8.8.8', 4);
+dns.lookup[promisify.custom] = async () => ({ address: '8.8.8.8', family: 4 });
 const {
   classifyDhruDispatchError,
   dispatchOrderToProvider
 } = require('./dist/services/orderDispatchService');
 const dhruApi = require('./dist/utils/dhru-api');
 const { extractProviderAccountInfo } = require('./dist/routes/providers');
+dns.lookup = originalLookupForRequire;
 const providerRouter = require('./dist/routes/providers').default;
+const authRouter = require('./dist/routes/auth').default;
 const { computeFoxreloadRetryCooldownMs } = require('./dist/services/foxreloadService');
 const { createPayPalOrder } = require('./dist/services/paypalService');
 const { PayPalGatewayError } = require('./dist/utils/paypalError');
@@ -582,5 +589,140 @@ test('dispatchOrderToProvider sends separate custom fields, syncs live balance, 
     dhruApi.placeServerOrder = origPlaceServerOrder;
     dhruApi.getAccountInfo = origGetAccountInfo;
     console.error = origConsoleError;
+  }
+});
+
+test('DHRU orders never let custom fields like username, key, id or action overwrite provider auth params', async (t) => {
+  const bodies = [];
+  t.mock.method(https, 'request', (_options, callback) => {
+    let raw = '';
+    const req = new EventEmitter();
+    req.write = (chunk) => { raw += chunk; };
+    req.end = () => {
+      bodies.push(new URLSearchParams(raw));
+      const res = new EventEmitter();
+      res.statusCode = 200;
+      callback(res);
+      res.emit('data', JSON.stringify({ SUCCESS: [{ REFERENCEID: 'ORD-777' }] }));
+      res.emit('end');
+    };
+    return req;
+  });
+
+  const provider = {
+    apiUrl: 'https://panel.example.com/api/index.php',
+    username: 'ARABTECHSERVERPRO',
+    apiKey: 'secret-provider-key'
+  };
+
+  const collidingFields = {
+    username: 'khaddour',
+    Username: 'khaddour',
+    key: 'cust-key',
+    id: '999999',
+    action: 'evil'
+  };
+
+  await dhruApi.placeServerOrder('16529', 1, collidingFields, '', provider);
+  await dhruApi.placeImeiOrder('16529', '123456789012345', collidingFields, provider);
+
+  assert.equal(bodies.length, 2);
+
+  for (const [idx, params] of bodies.entries()) {
+    assert.deepEqual(params.getAll('username'), ['ARABTECHSERVERPRO']);
+    assert.deepEqual(params.getAll('key'), ['secret-provider-key']);
+    assert.deepEqual(params.getAll('apiaccesskey'), ['secret-provider-key']);
+    assert.deepEqual(params.getAll('action'), [idx === 0 ? 'placeserverorder' : 'placeimeiorder']);
+    assert.deepEqual(params.getAll('ID'), ['16529']);
+    assert.deepEqual(params.getAll('SERVICEID'), ['16529']);
+    assert.equal(params.get('customfield[username]'), 'khaddour');
+    assert.equal(params.get('customfield[Username]'), 'khaddour');
+    assert.equal(params.get('customfield[key]'), 'cust-key');
+    assert.equal(params.get('customfield[id]'), '999999');
+    assert.equal(params.get('customfield[action]'), 'evil');
+    const decodedCustom = JSON.parse(Buffer.from(params.get('CUSTOMFIELD') || '', 'base64').toString('utf8'));
+    assert.equal(decodedCustom.username, 'khaddour');
+    assert.equal(decodedCustom.key, 'cust-key');
+    assert.equal(decodedCustom.id, '999999');
+    assert.equal(params.get('parameters[username]'), 'khaddour');
+  }
+});
+
+test('classifyDhruDispatchError classifies Authentication Failed cleanly under auth category', () => {
+  const authErr = classifyDhruDispatchError(
+    { ERROR: [{ MESSAGE: 'Authentication Failed' }] },
+    '123456789012345',
+    'EA Unlocker',
+    '16529'
+  );
+  assert.equal(authErr.category, 'auth');
+  assert.equal(authErr.isCreditError, false);
+  assert.equal(authErr.userFacingMsg.includes('EA Unlocker'), true);
+  assert.equal(authErr.userFacingMsg.includes('Authentication Failed'), true);
+});
+
+test('POST /api/auth/logout succeeds cleanly for idle-expired sessions and guests without HTTP 401', async () => {
+  const origFindUnique = prisma.user.findUnique;
+  const origUpdate = prisma.user.update;
+  const updateCalls = [];
+
+  prisma.user.findUnique = async () => ({
+    id: 'u-idle-logout',
+    role: 'user',
+    status: 'active',
+    deletedAt: null,
+    tokenVersion: 3,
+    lastActivityAt: new Date(Date.now() - 45 * 60 * 1000)
+  });
+  prisma.user.update = async (args) => {
+    updateCalls.push(args);
+    return args.data;
+  };
+
+  const logoutLayer = authRouter.stack.find((layer) => layer.route?.path === '/logout' && layer.route.methods.post);
+  assert.ok(logoutLayer, 'logout route must exist');
+  const handler = logoutLayer.route.stack.at(-1).handle;
+
+  const makeMockRes = () => {
+    const cleared = [];
+    const res = {
+      statusCode: 200,
+      body: null,
+      cleared,
+      clearCookie(name, opts) { cleared.push({ name, opts }); },
+      status(code) { res.statusCode = code; return res; },
+      json(payload) { res.body = payload; return res; }
+    };
+    return res;
+  };
+
+  try {
+    const idleToken = jwt.sign(
+      { id: 'u-idle-logout', email: 'idle@example.com', role: 'user', tokenVersion: 3 },
+      process.env.JWT_SECRET,
+      { expiresIn: '7d' }
+    );
+    const idleRes = makeMockRes();
+    await handler({ headers: { authorization: `Bearer ${idleToken}` } }, idleRes);
+    assert.equal(idleRes.statusCode, 200);
+    assert.equal(idleRes.body?.success, true);
+    assert.equal(idleRes.cleared.some((c) => c.name === 'user_token'), true);
+    assert.equal(idleRes.cleared.some((c) => c.name === 'admin_token'), true);
+    assert.equal(updateCalls.length, 1);
+    assert.deepEqual(updateCalls[0], {
+      where: { id: 'u-idle-logout' },
+      data: { tokenVersion: { increment: 1 }, lastActivityAt: null }
+    });
+
+    const guestRes = makeMockRes();
+    await handler({ headers: {} }, guestRes);
+    assert.equal(guestRes.statusCode, 200);
+    assert.equal(guestRes.body?.success, true);
+    assert.equal(guestRes.cleared.some((c) => c.name === 'user_token'), true);
+    assert.equal(guestRes.cleared.some((c) => c.name === 'admin_token'), true);
+    assert.equal(updateCalls.length, 1);
+  } finally {
+    prisma.user.findUnique = origFindUnique;
+    prisma.user.update = origUpdate;
   }
 });

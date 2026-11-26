@@ -274,6 +274,28 @@ export function normalizeTargetApiUrl(rawUrl?: string): string {
   return urlObj.toString();
 }
 
+const RESERVED_DHRU_TOP_LEVEL_KEYS = new Set([
+  "username",
+  "key",
+  "apiaccesskey",
+  "action",
+  "requestformat",
+  "parameters"
+]);
+
+const RESERVED_ORDER_PARAM_KEYS = new Set([
+  "serviceid",
+  "id",
+  "imei",
+  "qnt",
+  "customfield",
+  "key",
+  "apiaccesskey",
+  "action",
+  "requestformat",
+  "parameters"
+]);
+
 export function dhruApiRequest(
   action: DhruAction,
   parameters: Record<string, string> = {},
@@ -327,7 +349,10 @@ export function dhruApiRequest(
           bracketPairs.push([key, value]);
         } else {
           data.append(`parameters[${key}]`, value);
-          safePairs.push([key, value]);
+          // Customer fields (e.g. username/key) must not overwrite top-level provider auth keys.
+          if (!RESERVED_DHRU_TOP_LEVEL_KEYS.has(key.toLowerCase())) {
+            safePairs.push([key, value]);
+          }
         }
       });
 
@@ -614,7 +639,9 @@ export async function placeImeiOrder(
     params["customfield"] = base64Custom;
     Object.entries(cleanFields).forEach(([k, v]) => {
       params[`customfield[${k}]`] = v;
-      params[k] = v;
+      if (!RESERVED_ORDER_PARAM_KEYS.has(k.toLowerCase())) {
+        params[k] = v;
+      }
     });
   }
 
@@ -749,7 +776,9 @@ export async function placeServerOrder(
     params["customfield"] = base64Custom;
     Object.entries(cleanFields).forEach(([k, v]) => {
       params[`customfield[${k}]`] = v;
-      params[k] = v;
+      if (!RESERVED_ORDER_PARAM_KEYS.has(k.toLowerCase())) {
+        params[k] = v;
+      }
     });
   }
 

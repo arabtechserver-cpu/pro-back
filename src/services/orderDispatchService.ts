@@ -17,7 +17,7 @@ import { resolveOrderServiceType } from '../utils/order-response';
 import { sendTelegramPhotoNotification } from '../utils/telegramService';
 
 export interface DhruDispatchErrorClassification {
-  category: 'credit' | 'out_of_stock' | 'imei' | 'fields' | 'invalid_action' | 'other';
+  category: 'credit' | 'out_of_stock' | 'imei' | 'fields' | 'invalid_action' | 'auth' | 'other';
   isCreditError: boolean;
   title: string;
   userFacingMsg: string;
@@ -169,6 +169,25 @@ export function classifyDhruDispatchError(
       isCreditError: false,
       title: 'فشل الإرسال: نوع العملية غير مدعوم (Invalid Action)',
       userFacingMsg: `رفض المزود عملية الإرسال لهذه الخدمة. تحقق من نوع الخدمة وربط كودها (${dhruId}) لدى المزود (${providerName || 'المزود'}).`
+    };
+  }
+
+  const isAuthError =
+    responseStr.includes('authentication failed') ||
+    responseStr.includes('invalid api key') ||
+    responseStr.includes('invalid api access key') ||
+    responseStr.includes('invalid username') ||
+    responseStr.includes('ip not allowed') ||
+    responseStr.includes('ip address not allowed') ||
+    responseStr.includes('unauthorized') ||
+    responseStr.includes('access denied');
+
+  if (isAuthError) {
+    return {
+      category: 'auth',
+      isCreditError: false,
+      title: 'فشل الإرسال: خطأ مصادقة لدى المزود',
+      userFacingMsg: `رفض المزود (${providerName || 'المزود'}) المصادقة (${rawErrMsg}). تحقق من اسم المستخدم ومفتاح API وقائمة عناوين IP المسموحة لدى المزود ثم أعد المحاولة.`
     };
   }
 

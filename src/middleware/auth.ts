@@ -253,6 +253,34 @@ export const optionalAuth = async (req: AuthRequest, res: Response, next: NextFu
   return next();
 };
 
+export async function resolveSessionUserForLogout(req: Request) {
+  const candidateTokens = extractCandidateTokens(req);
+
+  for (const token of candidateTokens) {
+    try {
+      const decoded: any = jwt.verify(token, JWT_SECRET as string, { algorithms: ['HS256'] });
+      if (!decoded || (!decoded.id && !decoded.email)) continue;
+
+      const user = decoded.id
+        ? await prisma.user.findUnique({ where: { id: decoded.id } })
+        : await prisma.user.findUnique({ where: { email: String(decoded.email).trim().toLowerCase() } });
+
+      if (!user || user.deletedAt) continue;
+
+      const expectedVersion = user.tokenVersion || 1;
+      if (!Number.isInteger(decoded.tokenVersion) || decoded.tokenVersion !== expectedVersion) {
+        continue;
+      }
+
+      return user;
+    } catch {
+      // Ignore malformed/expired logout tokens and allow clean sign-out.
+    }
+  }
+
+  return null;
+}
+
 export const generateToken = (payload: any, customExpiresIn?: string | number) => {
   const defaultExpiry = (payload && typeof payload === 'object' && ['admin', 'super_admin'].includes(payload.role))
     ? '12h'

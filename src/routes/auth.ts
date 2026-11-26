@@ -3,7 +3,7 @@ import { Router } from 'express';
 import crypto from 'crypto';
 import { digestOtp, matchesOtp } from '../utils/otp-security';
 import { prisma } from "../utils/prisma";
-import { generateToken, authenticateToken } from '../middleware/auth';
+import { generateToken, authenticateToken, resolveSessionUserForLogout } from '../middleware/auth';
 import { isAdminRole, USER_IDLE_TIMEOUT_MS } from '../utils/userSessionPolicy';
 import { sendOtpEmailViaLoops, addContactToLoops, sendWelcomeRegistrationEmail } from '../utils/emailService';
 import {
@@ -415,16 +415,17 @@ router.post('/forgot-password', turnstileMiddleware, async (req, res) => {
 });
 
 // POST /api/auth/logout - Server-Side Session Invalidation
-router.post('/logout', authenticateToken, async (req: any, res) => {
+router.post('/logout', async (req: any, res) => {
   try {
-    if (req.user?.id) {
+    const user = await resolveSessionUserForLogout(req);
+    if (user?.id) {
       await prisma.user.update({
-        where: { id: req.user.id },
+        where: { id: user.id },
         data: { tokenVersion: { increment: 1 }, lastActivityAt: null }
       });
     }
-    res.clearCookie('user_token', { path: '/' });
-    res.clearCookie('admin_token', { path: '/' });
+    res.clearCookie?.('user_token', { path: '/' });
+    res.clearCookie?.('admin_token', { path: '/' });
     return res.json({ success: true, message: 'تم تسجيل الخروج وإبطال الجلسة بنجاح' });
   } catch (error: any) {
     console.error('Logout error:', error);
